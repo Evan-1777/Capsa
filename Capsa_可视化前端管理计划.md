@@ -152,7 +152,7 @@
   "data": null,
   "error": {
     "code": "PERMISSION_DENIED",
-    "message": "Key capsa_a1b2c3d4 对分组 proj 只有只读权限"
+    "message": "对分组 proj 只有只读权限，拒绝修改"
   }
 }
 ```

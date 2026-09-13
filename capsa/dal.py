@@ -175,10 +175,11 @@ def insert_memory(
     review_at: str | None,
     memory_id: str | None = None,
 ) -> str:
-    """Insert an entry, regenerating the id up to three times on a primary key clash."""
+    """Insert an entry; a generated id retries on a primary key clash, a supplied one does not."""
     stamp = utcnow()
+    candidate = memory_id
     for _ in range(3):
-        candidate = memory_id or new_memory_id()
+        candidate = candidate or new_memory_id()
         try:
             conn.execute(
                 "INSERT INTO memories (id, group_slug, title, summary, body, tags, review_at,"
@@ -198,11 +199,13 @@ def insert_memory(
         except sqlite3.IntegrityError as error:
             if "UNIQUE constraint failed" not in str(error):
                 raise
-            memory_id = None
+            if memory_id:
+                raise DuplicateMemoryId(memory_id) from None
+            candidate = None
             continue
         conn.commit()
         return candidate
-    raise DuplicateMemoryId(memory_id)
+    raise DuplicateMemoryId(candidate)
 
 
 def update_memory(conn: sqlite3.Connection, memory_id: str, fields: dict) -> bool:
@@ -214,7 +217,7 @@ def update_memory(conn: sqlite3.Connection, memory_id: str, fields: dict) -> boo
         changes["tags"] = json.dumps(changes["tags"] or [], ensure_ascii=False)
     assignments = ", ".join(f"{name} = ?" for name in changes)
     cursor = conn.execute(
-        f"UPDATE memories SET {assignments}, updated_at = ? WHERE id = ?",
+        f"UPDATE memories SET {assignments}, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
         [*changes.values(), utcnow(), memory_id],
     )
     conn.commit()

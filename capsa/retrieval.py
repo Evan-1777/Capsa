@@ -77,11 +77,11 @@ def find_similar_memories(
     candidates: list[dict], title: str, threshold: float = SIMILARITY_THRESHOLD
 ) -> list[dict]:
     """Candidates at or above the threshold, each annotated and sorted by similarity."""
-    similar = [
-        {**memory, "similarity": round(title_similarity(title, memory.get("title", "")), 2)}
-        for memory in candidates
-        if title_similarity(title, memory.get("title", "")) >= threshold
-    ]
+    similar = []
+    for memory in candidates:
+        score = title_similarity(title, memory.get("title", ""))
+        if score >= threshold:
+            similar.append({**memory, "similarity": round(score, 2)})
     similar.sort(key=lambda memory: memory["similarity"], reverse=True)
     return similar
 

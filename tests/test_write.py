@@ -233,6 +233,15 @@ def test_update_unknown_field_is_rejected(open_session, seeded, conn):
     assert after["updated_at"] == before["updated_at"]
 
 
+def test_update_on_deleted_entry_is_rejected(open_session, seeded, conn):
+    session = open_session(seeded["proj"]["token"])
+    forgotten = session.call("memory_forget", {"id": PROJ_MEMORY, "reason": "归档"})
+    assert forgotten.get("isError") is not True
+    response = session.call("memory_update", {"id": PROJ_MEMORY, "summary": "改"})
+    assert response["isError"] is True
+    assert response["content"][0]["text"] == f"记忆 {PROJ_MEMORY} 不存在或无权访问"
+
+
 def test_read_only_key_cannot_write(open_session, seeded, conn):
     key = create_key(conn, "ro", {"proj": "r"})
     session = open_session(key["token"])
@@ -257,7 +266,7 @@ def test_forbidden_and_missing_share_one_message(open_session, seeded, conn):
     forbidden = session.call("memory_update", {"id": STUDY_MEMORY, "summary": "s"})
     missing = session.call("memory_update", {"id": "mem_zzz999", "summary": "s"})
     assert forbidden["isError"] is True and missing["isError"] is True
-    # 文案模板逐字相同，唯一差异是调用方自己传入的 id，故不构成探测侧信道。
+    # 文案模板逐字相同，唯一差异是调用方自己传入的 id。
     assert forbidden["content"][0]["text"].replace(STUDY_MEMORY, "{id}") == missing["content"][
         0
     ]["text"].replace("mem_zzz999", "{id}")
@@ -376,6 +385,24 @@ def test_insert_memory_gives_up_after_three_collisions(conn, seeded, monkeypatch
         )
 
 
+def test_insert_memory_does_not_retry_a_supplied_id(conn, seeded, monkeypatch):
+    monkeypatch.setattr(
+        "capsa.dal.new_memory_id", lambda: pytest.fail("explicit id must not be regenerated")
+    )
+    with pytest.raises(dal.DuplicateMemoryId) as collision:
+        dal.insert_memory(
+            conn,
+            group_slug="proj",
+            title="t",
+            summary="s",
+            body="b",
+            tags=[],
+            review_at=None,
+            memory_id=PROJ_MEMORY,
+        )
+    assert collision.value.args[0] == PROJ_MEMORY
+
+
 def test_insert_memory_foreign_key_failure_is_not_retried(conn, seeded, monkeypatch):
     minted: list[str] = []
 
@@ -396,6 +423,7 @@ def test_update_and_soft_delete_survive_reconnect(conn, seeded):
     assert dal.update_memory(conn, PROJ_MEMORY, {}) is False
     assert dal.soft_delete_memory(conn, PROJ_MEMORY, "归档") is True
     assert dal.soft_delete_memory(conn, PROJ_MEMORY, "覆盖") is False
+    assert dal.update_memory(conn, PROJ_MEMORY, {"summary": "死后修改"}) is False
     conn.close()
     reopened = db.connect()
     try:

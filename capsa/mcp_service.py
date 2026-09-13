@@ -56,25 +56,13 @@ def _require_text(value: str | None, limit: int, label: str) -> str:
 
 
 def _locate_writable(conn, memory_id: str) -> dict:
-    """Resolve the target entry and require write permission on its group.
-
-    A forbidden entry and a missing entry share one message: the difference
-    would let an unauthorized caller probe whether a group exists.
-    """
+    """Resolve the target entry and require write permission on its group."""
     item = dal.get_memories_batch_for_access(conn, [memory_id], _grants())[0]
     if item["status"] != "authorized":
         raise ToolError(f"记忆 {memory_id} 不存在或无权访问")
-    permission = _grants().get(item["group_slug"])
-    if permission != "rw":
-        raise ToolError(
-            f"Key {_key_id()} 对分组 {item['group_slug']} 只有只读权限，拒绝修改"
-        )
+    if _grants().get(item["group_slug"]) != "rw":
+        raise ToolError(f"对分组 {item['group_slug']} 只有只读权限，拒绝修改")
     return item
-
-
-def _key_id() -> str:
-    token = get_access_token()
-    return (token.claims or {}).get("key_id", "") if token else ""
 
 
 def _parse_review_at(value: str) -> str:
@@ -160,7 +148,7 @@ def memory_save(
 ) -> str:
     grants = _grants()
     if grants.get(group) != "rw":
-        raise ToolError(f"Key {_key_id()} 对分组 {group} 没有写权限，拒绝写入")
+        raise ToolError(f"对分组 {group} 没有写权限，拒绝写入")
     _require_text(title, TITLE_MAX, "标题")
     _require_text(summary, SUMMARY_MAX, "摘要")
     _require_text(body, BODY_MAX, "正文")
@@ -231,7 +219,8 @@ def memory_update(
             fields["review_at"] = _parse_review_at(review_at)
         if not fields:
             raise ToolError("至少提供一个待更新字段")
-        dal.update_memory(conn, id, fields)
+        if not dal.update_memory(conn, id, fields):
+            raise ToolError(f"记忆 {id} 不存在或无权访问")
     finally:
         conn.close()
     return f"已更新记忆：{id} | 字段: {', '.join(fields)}"
