@@ -10,6 +10,7 @@ import json
 import sqlite3
 
 from capsa.db import utcnow
+from capsa.ids import new_memory_id
 
 _MEMORY_READ_FIELDS = (
     "id, group_slug, title, summary, body, tags, review_at, pinned, created_at, updated_at"
@@ -17,6 +18,12 @@ _MEMORY_READ_FIELDS = (
 _MEMORY_SEARCH_FIELDS = (
     "id, group_slug, title, summary, tags, review_at, pinned, updated_at"
 )
+
+_MEMORY_UPDATE_FIELDS = ("title", "summary", "body", "tags", "review_at", "pinned")
+
+
+class DuplicateMemoryId(Exception):
+    """Raised when every generated memory id collided with an existing primary key."""
 
 
 def _placeholders(count: int) -> str:
@@ -155,3 +162,94 @@ def list_keys(conn: sqlite3.Connection) -> list[dict]:
 def touch_last_used_at(conn: sqlite3.Connection, key_id: str) -> None:
     conn.execute("UPDATE keys SET last_used_at = ? WHERE id = ?", (utcnow(), key_id))
     conn.commit()
+
+
+def insert_memory(
+    conn: sqlite3.Connection,
+    *,
+    group_slug: str,
+    title: str,
+    summary: str,
+    body: str,
+    tags: list[str],
+    review_at: str | None,
+    memory_id: str | None = None,
+) -> str:
+    """Insert an entry, regenerating the id up to three times on a primary key clash."""
+    stamp = utcnow()
+    for _ in range(3):
+        candidate = memory_id or new_memory_id()
+        try:
+            conn.execute(
+                "INSERT INTO memories (id, group_slug, title, summary, body, tags, review_at,"
+                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    candidate,
+                    group_slug,
+                    title,
+                    summary,
+                    body,
+                    json.dumps(tags, ensure_ascii=False),
+                    review_at,
+                    stamp,
+                    stamp,
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            if "UNIQUE constraint failed" not in str(error):
+                raise
+            memory_id = None
+            continue
+        conn.commit()
+        return candidate
+    raise DuplicateMemoryId(memory_id)
+
+
+def update_memory(conn: sqlite3.Connection, memory_id: str, fields: dict) -> bool:
+    """Update the given whitelisted columns only; an empty mapping is a no-op."""
+    changes = {key: value for key, value in fields.items() if key in _MEMORY_UPDATE_FIELDS}
+    if not changes:
+        return False
+    if "tags" in changes:
+        changes["tags"] = json.dumps(changes["tags"] or [], ensure_ascii=False)
+    assignments = ", ".join(f"{name} = ?" for name in changes)
+    cursor = conn.execute(
+        f"UPDATE memories SET {assignments}, updated_at = ? WHERE id = ?",
+        [*changes.values(), utcnow(), memory_id],
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def soft_delete_memory(conn: sqlite3.Connection, memory_id: str, reason: str) -> bool:
+    cursor = conn.execute(
+        "UPDATE memories SET deleted_at = ?, deleted_reason = ? "
+        "WHERE id = ? AND deleted_at IS NULL",
+        (utcnow(), reason, memory_id),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def restore_memory(conn: sqlite3.Connection, memory_id: str) -> bool:
+    cursor = conn.execute(
+        "UPDATE memories SET deleted_at = NULL, deleted_reason = NULL "
+        "WHERE id = ? AND deleted_at IS NOT NULL",
+        (memory_id,),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def list_deleted_memories(
+    conn: sqlite3.Connection, group_slug: str | None = None
+) -> list[dict]:
+    sql = (
+        "SELECT id, group_slug, title, deleted_at, deleted_reason FROM memories "
+        "WHERE deleted_at IS NOT NULL"
+    )
+    params: list[str] = []
+    if group_slug:
+        sql += " AND group_slug = ?"
+        params.append(group_slug)
+    return [dict(row) for row in conn.execute(sql + " ORDER BY deleted_at DESC, id DESC", params)]

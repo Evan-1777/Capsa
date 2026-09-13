@@ -18,15 +18,23 @@ def next_ids(text: str) -> list[str]:
     return json.loads(match.group(1))
 
 
-def test_tools_list_exposes_four_read_only_tools(open_session, seeded):
+def test_tools_list_exposes_seven_tools(open_session, seeded):
     tools = open_session(seeded["proj"]["token"]).list_tools()
     assert [tool["name"] for tool in tools] == [
         "memory_groups",
         "memory_search",
         "memory_peek",
         "memory_read",
+        "memory_save",
+        "memory_update",
+        "memory_forget",
     ]
-    assert all(tool["annotations"]["readOnlyHint"] is True for tool in tools)
+    annotations = {tool["name"]: tool["annotations"] for tool in tools}
+    for name in ("memory_groups", "memory_search", "memory_peek", "memory_read"):
+        assert annotations[name]["readOnlyHint"] is True, name
+    assert annotations["memory_save"]["destructiveHint"] is False
+    assert annotations["memory_update"]["idempotentHint"] is True
+    assert annotations["memory_forget"]["destructiveHint"] is True
 
 
 def test_read_chain_is_wired_end_to_end(open_session, seeded):

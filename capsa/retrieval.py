@@ -6,6 +6,8 @@ import json
 import unicodedata
 from datetime import datetime, timezone
 
+SIMILARITY_THRESHOLD = 0.6
+
 
 def _is_cjk(char: str) -> bool:
     return "\u4e00" <= char <= "\u9fff"
@@ -50,6 +52,38 @@ def _tokens_of(word: str) -> list[str]:
 
 def tokenize(query: str) -> set[str]:
     return {token for word in _words(normalize(query)) for token in _tokens_of(word)}
+
+
+def normalize_review_at(value: str) -> str:
+    """Return an ISO 8601 timestamp normalized to UTC.
+
+    A timestamp without an offset is read as UTC. ValueError from
+    datetime.fromisoformat propagates so the tool layer can render it.
+    """
+    return _parse(value).astimezone(timezone.utc).isoformat()
+
+
+def title_similarity(left: str, right: str) -> float:
+    """Bigram Jaccard coefficient of two titles; two empty token sets score 0."""
+    left_tokens = tokenize(left)
+    right_tokens = tokenize(right)
+    union = left_tokens | right_tokens
+    if not union:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(union)
+
+
+def find_similar_memories(
+    candidates: list[dict], title: str, threshold: float = SIMILARITY_THRESHOLD
+) -> list[dict]:
+    """Candidates at or above the threshold, each annotated and sorted by similarity."""
+    similar = [
+        {**memory, "similarity": round(title_similarity(title, memory.get("title", "")), 2)}
+        for memory in candidates
+        if title_similarity(title, memory.get("title", "")) >= threshold
+    ]
+    similar.sort(key=lambda memory: memory["similarity"], reverse=True)
+    return similar
 
 
 def _parse(value: str) -> datetime:

@@ -20,7 +20,7 @@
 ## 1. 概述
 
 - **一句话定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 只读协议向 Agent 提供分组隔离、分级披露的长期记忆检索。
-- **当前阶段**：开发中——Phase 1（数据基座、三态授权防线与三级只读协议）实施期。
+- **当前阶段**：开发中——Phase 2（写入生命周期、近似查重与软删除闭环）交付完成。
 - **非目标**：不引入向量检索与自动抽取写入，不做多租户；Web 管理台、容器化与热备归 Phase 3。完整边界见 `SCOPE.md`。
 
 ## 2. 环境与运行
@@ -37,6 +37,9 @@
   .venv/bin/python -m pip install -e ".[test]"
   # 初始化数据库与标准分组（服务启动不建任何业务数据，未建表时 /healthz 返回 503）
   CAPSA_DB_PATH=/data/capsa.db .venv/bin/capsa init
+  # 回收站维护（管理员通道，不做 Key 作用域校验）
+  CAPSA_DB_PATH=/data/capsa.db .venv/bin/capsa memory list-deleted [--group proj]
+  CAPSA_DB_PATH=/data/capsa.db .venv/bin/capsa memory restore <memory_id>
   # 启动服务
   .venv/bin/uvicorn capsa.server:app --host 127.0.0.1 --port 8000
   ```
@@ -49,26 +52,28 @@
 capsa/
 ├── __init__.py      # 包声明
 ├── db.py            # 连接辅助、幂等建表、健康检查
-├── dal.py           # 三态授权数据访问层，唯一 SQL 出口
+├── dal.py           # 三态授权数据访问层与记忆写读入口，唯一 SQL 出口
 ├── ids.py           # 标识符与令牌生成
 ├── auth.py          # 令牌校验器，接入 FastMCP 鉴权
-├── retrieval.py     # 归一化、二字组分词、打分与排序
+├── retrieval.py     # 归一化、二字组分词、打分排序与复核时间规范化、标题近似查重
 ├── formatters.py    # L1/L2/L3 与分组列表的纯文本契约
-├── mcp_service.py   # FastMCP 实例与 4 个只读工具
+├── mcp_service.py   # FastMCP 实例与 4 个只读工具、3 个写入工具
 ├── server.py        # Starlette 根应用，挂载 /healthz 与 /mcp
-└── cli.py           # init / group / key 子命令
+└── cli.py           # init / group / key / memory 子命令
 tests/
 ├── conftest.py          # 临时库、种子数据、HTTP MCP 会话夹具
 ├── test_acceptance.py   # 六条 Phase 1 交付验收断言
 ├── test_e2e.py          # 只读链路、装配与"启动不写数据"断言
 ├── test_units.py        # 存储基座、DAL 契约、标识符与分词单测
-└── test_cli.py          # CLI 幂等、令牌长度、撤销与持久化
+├── test_cli.py          # CLI 幂等、令牌长度、撤销与持久化
+└── test_write.py        # 写入字段契约、查重提示、生命周期与权限分级
 ```
 
 ## 4. 架构与数据流
 
 - **核心模块**：`server.py` 是唯一 ASGI 入口，装配 starlette 内置 `RequestBodyLimitMiddleware`（1MB）后挂载 `/healthz` 与 `/mcp`；`mcp_service.py` 承载工具层，工具内不出现 SQL，全部经 `dal.py` 访问数据
-- **数据流**：Agent → Bearer 令牌 → FastMCP 校验器（`auth.py`）→ 工具层读取 claims 中的 `key_id` 与 `grants` → `dal.py` 三态判定 → `retrieval.py` 打分排序 → `formatters.py` 渲染纯文本
+- **读数据流**：Agent → Bearer 令牌 → FastMCP 校验器（`auth.py`）→ 工具层读取 claims 中的 `key_id` 与 `grants` → `dal.py` 三态判定 → `retrieval.py` 打分排序 → `formatters.py` 渲染纯文本
+- **写数据流**：工具层按 `grants` 校验 `rw` 权限与字段长度 → `retrieval.py` 规范化复核时间并计算标题近似度 → `dal.py` 写入并自行提交
 - **模块依赖**：`server → mcp_service → dal/retrieval/formatters → db`；`dal` 是唯一执行 SQL 的模块，`retrieval` 与 `formatters` 为纯函数模块
   - ★ 易错：`dal` 与 `db` 禁止反向依赖工具层；授权范围由调用方（工具层）从请求令牌注入，DAL 不接受全局状态
 
@@ -89,6 +94,8 @@ tests/
 - DAL 写函数自行 `commit()`——原因：`sqlite3` 默认隐式开启事务，漏提交会在连接关闭时静默回滚
 - 服务启动路径不得创建分组或 Key——原因：容器重启会产生隐式业务数据并污染测试；初始化走显式 `capsa init`
 - `forbidden` 判定只允许返回 `status` 与 `id` 两个键——原因：携带 `group_slug` 会泄露未授权分组名
+- 写入路径的错误一律走工具级 `isError: true`，HTTP 状态码只留给协议层问题（401 / 413）——原因：字段超限、无写权限、目标不存在都是工具自身能给出可操作反馈的问题，与既有的 `ids` 上限分层一致
+- 写入路径的 `forbidden` 与 `not_found` 共用同一文案模板，仅内嵌调用方自己传入的 id——原因：区分两者会让未授权分组的存在性成为可探测的侧信道
 
 ## 8. 决策记录
 
@@ -99,6 +106,10 @@ tests/
 - 2026-09-13 MCP 端点用 `Route` 直挂而非 `Mount("/mcp", ...)`——理由：`Mount` 不接受裸 `/mcp`，会先 307 再 404；改用子应用自带路径后，`curl` 与 FastMCP 客户端都能直达鉴权层，Phase 3 追加 `/api` 与静态根路径时同样按此顺序
 - 2026-09-13 关键词查询按"词元命中"过滤，而非按总分——理由：置顶（+3）与过期复核（-2）是排序权重，不是命中判据；若用总分过滤，置顶但完全无关的条目会被召回。命中判据独立为标题、摘要、标签任一含查询词元，列出无命中条目只是噪声
 - 2026-09-13 请求体 1MB 拦截改用 starlette 内置 `RequestBodyLimitMiddleware`——理由：自建 ASGI 中间件在分块分支抛出的异常会逃出 FastMCP 子应用，被上层渲染成 500；内置中间件是既有依赖，声明式与分块式两条路径都稳定返回 413
+- 2026-09-13 局部更新用白名单字段字典、`None` 表示置空——理由：Python 签名无法同时表达"未提供"与"显式置空"，为覆盖单个字段引入哨兵对象只增加概念，调用方还容易传错
+- 2026-09-13 记忆 ID 主键冲突时重新生成并重试至多 3 次——理由：6 位随机串在万条量级的碰撞已到可观测概率，三行重试即可消除用户可见的随机失败，加长 ID 或预生成唯一池都会改变已锁定的 ID 契约
+- 2026-09-13 标题近似查重只提示不拦截，条目照常落库——理由：误拦截的代价高于误提示，是否重复由 Agent 结合上下文判断
+- 2026-09-13 回收站 CLI 不做 Key 作用域校验——理由：与既有的 `group` / `key` 子命令口径一致，CLI 本就是持有数据库的管理员通道，签发与撤销也只在 CLI
 
 ## 9. 术语表
 

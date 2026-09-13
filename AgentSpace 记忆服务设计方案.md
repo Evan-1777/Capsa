@@ -459,7 +459,7 @@ score(m, terms)
 <div style="font-family:ui-monospace,monospace;font-size:12px;color:#2563eb">memories</div>
 <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:0 20px;font-size:12px;color:#52525b;line-height:1.9">
 <div>
-<span style="font-family:ui-monospace,monospace;color:#18181b">id</span> 主键，8 位随机串，形如 mem_7f3ka2<br>
+<span style="font-family:ui-monospace,monospace;color:#18181b">id</span> 主键，<code>mem_</code> 前缀加 6 位随机字符，总长度 10，形如 <code>mem_7f3ka2</code><br>
 <span style="font-family:ui-monospace,monospace;color:#18181b">group_slug</span> 外键 → groups<br>
 <span style="font-family:ui-monospace,monospace;color:#18181b">title</span> ≤ 60 字符<br>
 <span style="font-family:ui-monospace,monospace;color:#18181b">summary</span> ≤ 200 字符
@@ -468,7 +468,7 @@ score(m, terms)
 <span style="font-family:ui-monospace,monospace;color:#18181b">body</span> Markdown 正文，CHECK 长度 ≤ 64000<br>
 <span style="font-family:ui-monospace,monospace;color:#18181b">tags</span> JSON 数组<br>
 <span style="font-family:ui-monospace,monospace;color:#18181b">review_at</span> 复核时间点，可空<br>
-<span style="font-family:ui-monospace,monospace;color:#18181b">pinned · created_at · updated_at · deleted_at</span>
+<span style="font-family:ui-monospace,monospace;color:#18181b">pinned · created_at · updated_at · deleted_at · deleted_reason</span>
 </div>
 </div>
 </div>
@@ -483,7 +483,7 @@ score(m, terms)
 
 - `review_at` 服务于「追踪记忆」这类有时效的条目。到期后仍然能被检索到，但在结果里标注并降 2 分，而不是被静默排除——静默排除会让人以为记忆丢了。
 - `pinned` 是关键词排序唯一的人工干预点。没有它，重要的旧记忆会一直排在无关的新记忆后面。
-- `deleted_at` 是软删除。记忆是长期资产，误删的恢复成本高于多存一个字段的成本。
+- `deleted_at` 是软删除，`deleted_reason` 记录删除原因。记忆是长期资产，误删的恢复成本高于多存一个字段的成本；原因随条目一起留在回收站，`capsa memory list-deleted` 才能回答"这条为什么被删"。
 - `groups.description` 会出现在 `memory_groups` 的输出里，是 Agent 判断「这个分组该不该查」的唯一依据。写它是设计的一部分，不是可选项。
 
 不设 `source`、`confidence`、`version` 字段。前两个没有消费方（没有自动抽取，也就没有需要标注来源的场景），第三个的诉求由 `updated_at` 覆盖。
@@ -585,20 +585,23 @@ score(m, terms)
 
 | 情况 | 层 | 处理 |
 |---|---|---|
-| 标题、摘要或正文超长 | 工具执行错误 | 拒绝写入，返回实际字符数与上限，不截断 |
-| 无该分组写权限 | 工具执行错误 | 返回「Key `capsa_a1b2c3d4` 对分组 proj 只有只读权限」，不落库 |
+| 标题、摘要或正文超长 | 工具执行错误 | 拒绝写入，返回实际字符数与上限（如「标题超长 (当前 61 字符，上限 60 字符，拒绝写入)」），不截断，不落库 |
+| 无该分组写权限 | 工具执行错误 | `memory_save` 返回「Key `capsa_a1b2c3d4` 对分组 proj 没有写权限，拒绝写入」；`memory_update` 与 `memory_forget` 返回「只有只读权限，拒绝修改」。两者均不落库 |
+| 目标条目不存在或不在授权范围 | 工具执行错误 | 两者共用同一文案模板「记忆 `mem_7f3ka2` 不存在或无权访问」，仅内嵌调用方传入的 id，避免未授权分组的存在性成为侧信道 |
 | `ids` 超出条数上限 | 工具执行错误 | 拒绝，返回上限值与本次实际条数（参数校验在工具调度处完成，与其余工具错误同层渲染为 `isError: true`） |
 | HTTP 请求体超过 1 MB | HTTP 413 | 在接入层拒绝，不进入工具层 |
 | 正文超过 4000 字符 | 成功结果 | 截断并标注剩余字符数，响应附 `> 续读:` 行 |
 | 单次响应正文达到 20000 字符 | 成功结果 | 在额度处截断，其余条目与剩余内容靠 `offset` 续读 |
 | 单条不属于可访问分组 | 工具执行错误 | 该条标记「无权访问」，其余正常返回 |
-| 同分组存在高相似条目 | 成功结果 | `memory_save` 返回相似条目的 id 与标题，并照常创建，把取舍留给 Agent |
+| 同分组存在高相似条目 | 成功结果 | `memory_save` 返回相似条目的 id、标题与相似度，并照常创建，把取舍留给 Agent |
 | 令牌无效或已撤销 | HTTP 401 | 每个请求重新校验 Key，不进入工具层 |
 | 数据库不可用 | JSON-RPC internal error | 原样上报，不降级为业务错误 |
 
 错误分层按 MCP 规范落定：协议层问题走 JSON-RPC error 与 HTTP 状态码，工具自身能给出可操作反馈的问题走工具结果的 `isError: true`。参数条数上限属于后者——框架在进入工具体前完成校验，其结果仍以工具错误返回，不再细分到协议层。
 
-相似度判定用标题的二字组重合率，阈值 0.6。这个判定只做提示，不做拦截——误拦截比误提示的代价高。
+相似度判定用标题的二字组 Jaccard 系数 `|A ∩ B| / |A ∪ B|`，阈值 0.6，两侧集合皆空时相似度定义为 0。这个判定只做提示，不做拦截——误拦截比误提示的代价高。
+
+写入路径的错误分层与只读路径一致：字段超限、无写权限、目标不可达、`review_at` 非法、`clear_review_at` 与 `review_at` 同时给出、删除原因为空、未提供任何待更新字段，全部走工具级 `isError: true`（HTTP 仍为 200）。HTTP 状态码只留给协议层问题。
 
 ---
 

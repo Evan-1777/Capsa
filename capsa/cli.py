@@ -108,6 +108,36 @@ def cmd_key_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory_list_deleted(args: argparse.Namespace) -> int:
+    conn = _connect()
+    try:
+        entries = dal.list_deleted_memories(conn, args.group)
+    finally:
+        conn.close()
+    if not entries:
+        print("回收站为空")
+        return 0
+    for entry in entries:
+        print(
+            f"{entry['id']} | {entry['group_slug']} | 删除于 {entry['deleted_at']} | "
+            f"原因: {entry['deleted_reason']}"
+        )
+    return 0
+
+
+def cmd_memory_restore(args: argparse.Namespace) -> int:
+    conn = _connect()
+    try:
+        restored = dal.restore_memory(conn, args.memory_id)
+    finally:
+        conn.close()
+    if not restored:
+        print(f"未找到可恢复的记忆：{args.memory_id}", file=sys.stderr)
+        return 1
+    print(f"已恢复记忆：{args.memory_id}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="capsa", description="Capsa 记忆服务管理命令")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -135,6 +165,15 @@ def main(argv: list[str] | None = None) -> int:
     key_revoke.add_argument("key_id")
     key_revoke.set_defaults(func=cmd_key_revoke)
     key_commands.add_parser("list", help="列出 Key").set_defaults(func=cmd_key_list)
+
+    memory = commands.add_parser("memory", help="回收站维护")
+    memory_commands = memory.add_subparsers(dest="memory_command", required=True)
+    memory_list = memory_commands.add_parser("list-deleted", help="列出回收站条目")
+    memory_list.add_argument("--group", default=None, help="只列出指定分组")
+    memory_list.set_defaults(func=cmd_memory_list_deleted)
+    memory_restore = memory_commands.add_parser("restore", help="恢复已删除条目")
+    memory_restore.add_argument("memory_id")
+    memory_restore.set_defaults(func=cmd_memory_restore)
 
     args = parser.parse_args(argv)
     return args.func(args)
