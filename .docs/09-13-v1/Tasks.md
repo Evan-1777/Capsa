@@ -4,7 +4,7 @@
 **完成日期**：2026-09-13
 **关联 Plan**：`Plan.md` —— Capsa Phase 1 v1.0
 **总计 Task**：21 个（TASK-000 ~ TASK-020，全部 DONE）
-**回归测试结论**：`.venv/bin/python -m pytest -v` 退出码 0，58 passed、0 skipped、0 failed。另有真实 uvicorn 进程上的端到端复验：`/healthz` 200、无认证 `/mcp` 401、1.1MB 请求体 413、4 个只读工具列出、L1→L2→L3 链路贯通、`memory_read` 传 6 个 id 报中文 ToolError、撤销 Key 后 401、重启后分组 4 行与 Key 1 行不变。
+**回归测试结论**：`.venv/bin/python -m pytest -v` 退出码 0，64 passed、0 skipped、0 failed。另有真实 uvicorn 进程上的端到端复验：`/healthz` 200、无认证 `/mcp` 401、1.1MB 请求体 413、4 个只读工具列出、L1→L2→L3 链路贯通、`memory_read` 传 6 个 id 报中文 ToolError、撤销 Key 后 401、重启后分组 4 行与 Key 1 行不变。
 
 > **执行前置**：本机 Python 环境与规划文档假设存在偏差，动手前先读 Plan.md §2。所有命令基于仓库根目录，虚拟环境解释器为 `.venv/bin/python`。
 
@@ -207,18 +207,16 @@
 - **Status**：DONE
 - **Priority**：P0
 - **Depends on**：TASK-003
-- **Description**：新增 `capsa/middleware.py`，在 ASGI 层拦截超限请求体。
+- **Description**：在 ASGI 层拦截超限请求体。原计划自建 `capsa/middleware.py`，执行期改用 starlette 1.6 内置的 `RequestBodyLimitMiddleware`（已是既有依赖）：自建版本在分块分支抛出的异常会逃出 FastMCP 子应用，被上层渲染成 500，与验收标准冲突。
 - **Details**：
-  - `RequestSizeLimitMiddleware(app, max_bytes: int)`，纯 ASGI 中间件，不依赖具体框架
-  - 非 `http` 类型的 scope 直接放行
-  - `content-length` 头存在且大于上限时，不读取请求体，直接返回 413
-  - `content-length` 缺失或不可信时，包装 `receive` 累加实际字节数，累计超限即中止并返回 413
-  - 413 响应体为 `{"error": "payload_too_large", "message": "请求体超过 1048576 字节"}`
-  - 边界取严格大于：恰好等于上限的请求体放行
+  - `from starlette.middleware.body_limit import RequestBodyLimitMiddleware`，在 `server.py` 以 `app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_REQUEST_BYTES)` 挂载
+  - 声明式（`content-length`）与分块式（累计实际字节）两条路径都由内置中间件覆盖
+  - 413 响应体为纯文本 `Content Too Large`，与其余 HTTP 层错误一致
+  - 边界取严格大于：恰好等于上限的请求体放行，继续进入鉴权层
 - **Acceptance Criteria**：
-  - 带 `content-length` 的 1100000 字节请求返回 413，且响应体为 `{"error": "payload_too_large", "message": "请求体超过 1048576 字节"}`、`content-type` 为 `application/json`
-  - 无 `content-length` 的分块传输累计 1200000 字节返回 413；该用例直接调用中间件的 ASGI 接口并手工构造多条 `http.request` 消息，因为 `TestClient.post(content=bytes)` 会自动补上 `content-length`，走不到分块分支
-  - 恰好 1048576 字节的请求**不被中间件拦截**（断言未返回 413）；该请求带的是非法令牌，因此最终响应为 401 而非 200，只断言“未被 413 拦截”
+  - 带 `content-length` 的 1100000 字节请求返回 413
+  - 无 `content-length` 的分块传输累计超限返回 413；该用例经真实 app 发送（携带有效会话，否则请求体不会被读取）
+  - 恰好 1048576 字节的请求**不被拦截**（断言未返回 413）；该请求带的是非法令牌，因此最终响应为 401 而非 200，只断言“未被 413 拦截”
   - 上限内的正常请求不受影响
 
 ---
@@ -320,9 +318,9 @@
 - **Description**：新增 `capsa/server.py`，装配根 ASGI 应用并挂载 `/healthz` 与 `/mcp`。
 - **Details**：
   - 路由顺序固定为 `/healthz` 在前、`/mcp` 在后；Phase 3 将在其后追加 `/api` 与静态根路径，本阶段不预留空挂载
-  - MCP 子应用必须显式构造为 `mcp.http_app(path="/")`，并把其 lifespan 传给根应用 `Starlette(lifespan=mcp_app.lifespan)`；省略任一参数都会导致 `/mcp` 全量 404 或抛 task group 未初始化错误
+  - MCP 子应用构造为 `mcp.http_app(path="/mcp")`，并把其 lifespan 传给根应用 `Starlette(lifespan=mcp_app.lifespan)`；不传 lifespan 会抛 task group 未初始化错误（FastMCP 4 的 `http_app()` 默认路径已是 `/mcp`）
   - `/healthz` 为 GET，无认证；数据库可用返回 200 与 `{"status": "ok"}`，不可用返回 503 与 `{"status": "error", "message": "database unavailable"}`
-  - 通过 `app.add_middleware(RequestSizeLimitMiddleware, max_bytes=1048576)` 挂载 1MB 拦截
+  - 通过 `app.add_middleware(RequestBodyLimitMiddleware, max_body_size=1048576)` 挂载 1MB 拦截
   - 模块级导出 `app`，保证 `uvicorn capsa.server:app` 可直接启动
 - **Acceptance Criteria**：
   - 无认证 `GET /healthz` 返回 200 且响应体为 `{"status": "ok"}`
@@ -376,7 +374,7 @@
 - **Description**：在 `tests/` 下按验收断言逐条编写用例。
 - **Details**：
   - 用例一：依赖安装与启动 —— `GET /healthz` 返回 200 与 `{"status": "ok"}`；另以 monkeypatch 将 `capsa.server.check_db_health` 置为返回 `False`，断言返回 503 与 `{"status": "error", "message": "database unavailable"}`（用测试侧替换而非在生产代码里加“强制失败”开关）
-  - 用例二：1MB 拦截 —— 向 `POST /mcp` 发送 1100000 字节请求体返回 413；恰好 1048576 字节放行
+  - 用例二：1MB 拦截 —— 向 `POST /mcp` 发送 1100000 字节请求体返回 413；无 `content-length` 的分块传输累计超限返回 413；恰好 1048576 字节放行
   - 用例三：鉴权与撤销 —— 非法令牌返回 401；`revoke_key` 后同一令牌立即返回 401
   - 用例四：三态防线隔离 —— 越权条目在 L1 `memory_search`、L2 `memory_peek`、L3 `memory_read` 三级均输出 `[无权访问]`，且每一级响应全文不含其分组 slug、标题、摘要与正文
     - L3 用另一把 Key 的条目 id 直接调用 `memory_read`，断言输出恰为 `[无权访问]` 行且正文不可见；只测 L2 会漏掉 L3 泄露正文的路径
@@ -430,6 +428,6 @@
 |------|------|
 | Test | 以 `.venv/bin/python -m pytest -v` 为准；全部用例通过后方可进入归档 |
 | Document Maintenance | 完成 TASK-020；清理 `.pytest_cache/`、`__pycache__/` 等一次性产物 |
-| Archive | 归档目录 `.docs/09-12-v1/`；须先确认 Plan.md 与 Tasks.md 已标注 `状态：DONE` 并含完成日期与回归测试结论；若用户随即下达"继续 Phase 2"指令，可保留根目录文件作为新阶段起点 |
+| Archive | 归档目录 `.docs/09-13-v1/`；须先确认 Plan.md 与 Tasks.md 已标注 `状态：DONE` 并含完成日期与回归测试结论；若用户随即下达"继续 Phase 2"指令，可保留根目录文件作为新阶段起点 |
 | Git Commit | 仓库尚无提交身份，首次提交前需配置仓库级 `user.name` 与 `user.email`，不改动全局配置；提交信息以 Conventional Commits 类型前缀开头，正文用中文；本阶段为仓库首次提交，提交信息需说明这是 Phase 1 交付 |
 | 提交前置 | TASK-001 未完成前，仓库内不存在 `.gitignore`，此时执行 `git add -A` 会把 `.venv/` 与 `.devtools/`（约 270 MB）一并纳入暂存区。任何提交动作必须在 TASK-001 之后进行，暂存前先用 `git status --porcelain` 确认这两个目录未被列入 |

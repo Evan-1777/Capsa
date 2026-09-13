@@ -52,7 +52,6 @@ capsa/
 ├── dal.py           # 三态授权数据访问层，唯一 SQL 出口
 ├── ids.py           # 标识符与令牌生成
 ├── auth.py          # 令牌校验器，接入 FastMCP 鉴权
-├── middleware.py    # ASGI 请求体大小拦截
 ├── retrieval.py     # 归一化、二字组分词、打分与排序
 ├── formatters.py    # L1/L2/L3 与分组列表的纯文本契约
 ├── mcp_service.py   # FastMCP 实例与 4 个只读工具
@@ -68,7 +67,7 @@ tests/
 
 ## 4. 架构与数据流
 
-- **核心模块**：`server.py` 是唯一 ASGI 入口，装配请求体拦截中间件后挂载 `/healthz` 与 `/mcp`；`mcp_service.py` 承载工具层，工具内不出现 SQL，全部经 `dal.py` 访问数据
+- **核心模块**：`server.py` 是唯一 ASGI 入口，装配 starlette 内置 `RequestBodyLimitMiddleware`（1MB）后挂载 `/healthz` 与 `/mcp`；`mcp_service.py` 承载工具层，工具内不出现 SQL，全部经 `dal.py` 访问数据
 - **数据流**：Agent → Bearer 令牌 → FastMCP 校验器（`auth.py`）→ 工具层读取 claims 中的 `key_id` 与 `grants` → `dal.py` 三态判定 → `retrieval.py` 打分排序 → `formatters.py` 渲染纯文本
 - **模块依赖**：`server → mcp_service → dal/retrieval/formatters → db`；`dal` 是唯一执行 SQL 的模块，`retrieval` 与 `formatters` 为纯函数模块
   - ★ 易错：`dal` 与 `db` 禁止反向依赖工具层；授权范围由调用方（工具层）从请求令牌注入，DAL 不接受全局状态
@@ -82,7 +81,8 @@ tests/
 
 ## 6. 约束与已知坑
 
-- MCP 端点用 `Route("/mcp", endpoint=mcp_app)` 挂载，子应用自带路径 `mcp.http_app(path="/mcp")`；不用 `Mount("/mcp", ...)` 配 `path="/"`——原因：`Mount` 的路径正则是 `^/mcp/(?P<path>.*)$`，裸 `POST /mcp` 只得到 307 跳转，跳转目标又因空路径 404，标准 MCP 客户端与 `curl` 均无法连接（本机真实 uvicorn 实测）
+- MCP 端点用 `Route("/mcp", endpoint=mcp_app)` 挂载，子应用自带路径 `mcp.http_app(path="/mcp")`；不用 `Mount("/mcp", ...)`——原因：`Mount` 的路径正则是 `^/mcp/(?P<path>.*)$`，裸 `POST /mcp` 只得到 307 跳转，跳转目标又因空路径 404，标准 MCP 客户端与 `curl` 均无法连接（本机真实 uvicorn 实测）。FastMCP 4 的 `http_app()` 默认路径已是 `/mcp`，显式传入属冗余而非必需
+- 请求体 1MB 拦截用 starlette 内置 `RequestBodyLimitMiddleware`，不自建 ASGI 中间件——原因：自建版本在分块分支抛出的异常会逃出 FastMCP 子应用被渲染为 500；内置中间件的声明式与分块式两条路径都返回 413
 - FastMCP 子应用的 lifespan 必须交给根应用——原因：不传则 `/mcp` 请求抛 "task group was not initialized"
 - 端到端鉴权与越权断言必须走 HTTP 链路，不得使用 `fastmcp.Client(mcp)` 内存传输——原因：该传输取不到鉴权上下文，`get_access_token()` 返回 `None`
 - 数据库路径在调用期解析而非导入期——原因：导入期求值会让测试无法通过 `CAPSA_DB_PATH` 替换路径
@@ -97,7 +97,8 @@ tests/
 - 2026-09-12 检索采用内存全量打分而非 FTS5——理由：SQLite 的 `unicode61` 分词器对中文召回为 0，`trigram` 令两字中文查询失效，引入分词库等于背上词典依赖；个人记忆库规模在毫秒级
 - 2026-09-12 `ids` 超限报错落在工具级 `isError: true` 而非 JSON-RPC `invalid params`——理由：框架在进入工具体前完成校验，改到协议层需在调度之前接管参数校验，收益为零
 - 2026-09-13 MCP 端点用 `Route` 直挂而非 `Mount("/mcp", ...)`——理由：`Mount` 不接受裸 `/mcp`，会先 307 再 404；改用子应用自带路径后，`curl` 与 FastMCP 客户端都能直达鉴权层，Phase 3 追加 `/api` 与静态根路径时同样按此顺序
-- 2026-09-13 关键词查询过滤零分条目——理由：零分意味着标题、摘要与标签都不含任何查询词元，列出它们只是噪声，真正的"过度召回"是同分组内的弱相关条目
+- 2026-09-13 关键词查询按"词元命中"过滤，而非按总分——理由：置顶（+3）与过期复核（-2）是排序权重，不是命中判据；若用总分过滤，置顶但完全无关的条目会被召回。命中判据独立为标题、摘要、标签任一含查询词元，列出无命中条目只是噪声
+- 2026-09-13 请求体 1MB 拦截改用 starlette 内置 `RequestBodyLimitMiddleware`——理由：自建 ASGI 中间件在分块分支抛出的异常会逃出 FastMCP 子应用，被上层渲染成 500；内置中间件是既有依赖，声明式与分块式两条路径都稳定返回 413
 
 ## 9. 术语表
 

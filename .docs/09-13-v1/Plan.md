@@ -4,7 +4,7 @@
 **完成日期**：2026-09-13
 **日期**：2026-09-12
 **版本**：v1.0
-**回归测试结论**：`.venv/bin/python -m pytest -v` 退出码 0，58 个用例全部通过，0 跳过、0 失败。六条 Phase 1 交付验收断言各有对应用例：启动与依赖（`test_healthz_ok` / `test_healthz_database_unavailable`）、1MB 拦截（`test_oversized_body_rejected` / `test_exact_limit_not_rejected` / `test_chunked_body_over_limit_rejected`）、鉴权与撤销（`test_invalid_token_rejected` / `test_revoked_key_rejected`）、三态防线隔离（`test_forbidden_entries_leak_nothing` / `test_search_never_carries_unauthorized_entries` / `test_dal_forbidden_payload_has_only_status_and_id`）、打分与排序确定性（`test_chinese_bigram_query_hits_expected_entry` / `test_empty_query_browses_by_pinned_then_updated` / 其余 5 例）、体积截断与续读（`test_long_body_is_truncated_with_continuation` / `test_response_budget_stops_by_id_order`）。另在真实 uvicorn 进程上以 FastMCP 官方客户端复验通过：`/healthz` 200、无认证 `/mcp` 401、1.1MB 请求体 413、4 个工具列出、L1→L2→L3 链路贯通、撤销后 401。
+**回归测试结论**：`.venv/bin/python -m pytest -v` 退出码 0，64 个用例全部通过，0 跳过、0 失败。六条 Phase 1 交付验收断言各有对应用例：启动与依赖（`test_healthz_ok` / `test_healthz_database_unavailable`）、1MB 拦截（`test_oversized_body_rejected` / `test_exact_limit_not_rejected` / `test_chunked_body_over_limit_rejected`）、鉴权与撤销（`test_invalid_token_rejected` / `test_revoked_key_rejected`）、三态防线隔离（`test_forbidden_entries_leak_nothing` / `test_search_never_carries_unauthorized_entries` / `test_dal_forbidden_payload_has_only_status_and_id`）、打分与排序确定性（`test_chinese_bigram_query_hits_expected_entry` / `test_empty_query_browses_by_pinned_then_updated` / 其余 5 例）、体积截断与续读（`test_long_body_is_truncated_with_continuation` / `test_response_budget_stops_by_id_order`）。另在真实 uvicorn 进程上以 FastMCP 官方客户端复验通过：`/healthz` 200、无认证 `/mcp` 401、1.1MB 请求体 413、4 个工具列出、L1→L2→L3 链路贯通、撤销后 401。
 
 **执行期决策偏差**（已在执行中落定并回填文档）：
 1. MCP 端点的挂载方式改为 `Route("/mcp", endpoint=mcp.http_app(path="/mcp"))`。本 Plan §2.2 记录的"必须传 path=\"/\" 挂到 Mount(\"/mcp\")"经真实 uvicorn 实测证伪：`Mount` 的路径正则为 `^/mcp/(?P<path>.*)$`，裸 `POST /mcp` 得到 307，跳转目标又因空路径 404。`Capsa_落地交付分期规划.md` §2.2 与 §4.2 的两处装配片段已同步修正。
@@ -97,7 +97,7 @@ CAPSA_DB_PATH=/data/capsa.db .venv/bin/capsa init
 
 | 行为 | 实测结果 |
 |------|---------|
-| 挂载路径 | 直接使用 `mcp.http_app()` 挂到 `/mcp` 会全部 404，必须显式传 `path="/"` |
+| 挂载路径 | 子应用用具名路径 `mcp.http_app(path="/mcp")`、根应用用 `Route("/mcp", ...)` 直挂；`Mount("/mcp", ...)` 只匹配 `^/mcp/(?P<path>.*)$`，裸 `POST /mcp` 会先 307 再 404。FastMCP 4 的 `http_app()` 默认路径已是 `/mcp`，`path="/mcp"` 属显式冗余而非必需（见 §执行期决策偏差第 1 条） |
 | lifespan 传递 | 不把 MCP 子应用的 lifespan 交给根应用，所有 `/mcp` 请求抛 "task group was not initialized" |
 | 鉴权上下文 | HTTP 请求链路下 `get_access_token()` 正常返回 claims；**内存传输的 `Client(mcp)` 返回 None**，且该传输不支持注入 auth，因此端到端测试必须走 HTTP |
 | 工具内报错 | 工具体抛 `ToolError` 会被转换为 `isError: true` 的正常结果，HTTP 仍为 200；这正是设计方案 §6.4 要求的"工具执行错误"分层 |
@@ -174,7 +174,7 @@ CAPSA_DB_PATH=/data/capsa.db .venv/bin/capsa init
 | 风险 | 等级 | 缓解措施 |
 |------|------|----------|
 | FastMCP 4 的装配约束（挂载路径与 lifespan）易被遗漏，漏掉即全量 404 | 🟡 中 | 规划文档 §2.2 与 §4.2 的装配片段已按实测修正；§2.2 记录了两条约束的原因，TASK-015 的验收标准显式要求完成一次真实 MCP 握手 |
-| FastMCP 把 `ids` 上限校验渲染成英文 pydantic 报错，与设计方案 §6.4 的"invalid params"分层不一致 | 🟡 中 | 在工具体内显式校验并抛中文 `ToolError`，把分层差异与实际行为记入 §7 待办 |
+| FastMCP 把 `ids` 上限校验渲染成英文 pydantic 报错，与设计方案 §6.4 的"invalid params"分层不一致 | 🟡 中 | 在工具体内显式校验并抛中文 `ToolError`，把分层差异与实际行为记入 §7 遗留待办 |
 | `/data` 本机不存在，默认路径直接使用时建库失败 | 🟡 中 | 路径解析推迟到调用期；建库时自动创建父目录；测试全程用临时路径 |
 | 本机无 Git 提交身份，Commit 阶段会被拒绝 | 🟡 中 | 在仓库级配置本地身份，不改动全局配置；提交前确认 |
 | 检索为全量内存打分，超过约 3000 条后退化 | 🟢 低 | 设计方案给定了 hash 分片惰性扫描的升级路径，接口不变；本阶段不实现 |

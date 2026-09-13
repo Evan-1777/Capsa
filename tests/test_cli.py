@@ -78,6 +78,14 @@ def test_group_add_and_list(cli_db):
     assert "lab | 实验室 | 实验记录" in listing.stdout
 
 
+def test_group_add_conflict_reports_and_keeps_first(cli_db):
+    run_cli(cli_db, "group", "add", "lab", "实验室", "--desc", "实验记录")
+    second = run_cli(cli_db, "group", "add", "lab", "改名", "--desc", "新描述")
+    assert second.returncode == 1
+    assert "已存在" in second.stderr
+    assert "lab | 实验室 | 实验记录" in run_cli(cli_db, "group", "list").stdout
+
+
 def test_data_survives_process_restart(cli_db):
     run_cli(cli_db, "init")
     run_cli(cli_db, "key", "create", "持久", "--scopes", "proj:r")

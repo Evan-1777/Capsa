@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from starlette.applications import Starlette
+from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from capsa.db import check_db_health
 from capsa.mcp_service import mcp
-from capsa.middleware import RequestSizeLimitMiddleware
 
 MAX_REQUEST_BYTES = 1048576
 
@@ -33,4 +33,4 @@ routes = [
 ]
 
 app = Starlette(routes=routes, lifespan=mcp_app.lifespan)
-app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_REQUEST_BYTES)

@@ -51,8 +51,8 @@ def memory_groups() -> str:
     description=f"L1 标题层检索。query 省略时按置顶与更新时间倒序浏览；limit 上限 {SEARCH_LIMIT}。{USAGE}",
 )
 def memory_search(query: str | None = None, group: str | None = None, limit: int = 10) -> str:
-    if limit < 1 or limit > SEARCH_LIMIT:
-        raise ToolError(f"limit 上限为 {SEARCH_LIMIT}，本次传入 {limit}")
+    if not 1 <= limit <= SEARCH_LIMIT:
+        raise ToolError(f"limit 取值范围为 1~{SEARCH_LIMIT}，本次传入 {limit}")
     scopes = _grants()
     conn = db.connect()
     try:
@@ -80,8 +80,8 @@ def memory_peek(ids: list[str]) -> str:
 @mcp.tool(
     annotations=READ_ONLY,
     description=(
-        f"L3 正文层。ids 上限 {READ_LIMIT}，offset 为字符偏移，"
-        f"单条正文最多返回 {formatters.MAX_BODY_CHARS} 字符。{USAGE}"
+        f"L3 正文层。ids 上限 {READ_LIMIT}，offset 为字符偏移（负数按 0 处理，"
+        f"超出正文长度时返回结尾提示），单条正文最多返回 {formatters.MAX_BODY_CHARS} 字符。{USAGE}"
     ),
 )
 def memory_read(ids: list[str], offset: int = 0) -> str:

@@ -38,11 +38,6 @@ def test_healthz_database_unavailable(bare_client, monkeypatch):
 def test_oversized_body_rejected(client):
     response = client.post("/mcp", content=b"x" * 1_100_000, headers=auth_headers("cap_invalid"))
     assert response.status_code == 413
-    assert response.json() == {
-        "error": "payload_too_large",
-        "message": f"请求体超过 {MAX_REQUEST_BYTES} 字节",
-    }
-    assert response.headers["content-type"] == "application/json"
 
 
 def test_exact_limit_not_rejected(client):
@@ -50,31 +45,20 @@ def test_exact_limit_not_rejected(client):
     assert response.status_code == 401
 
 
-def test_chunked_body_over_limit_rejected():
-    """Hand-built ASGI call: TestClient.post always sets content-length."""
-    import anyio
+def test_chunked_body_over_limit_rejected(client, open_session, seeded):
+    """无 content-length 的分块传输在真实链路上累计超限并返回 413。
 
-    from capsa.middleware import RequestSizeLimitMiddleware
+    必须携带有效会话：无效令牌在鉴权层即被拒，请求体根本不会被读取，
+    走的不是分块累计分支。
+    """
+    session = open_session(seeded["proj"]["token"])
 
-    async def app(scope, receive, send):
-        while True:
-            message = await receive()
-            if not message.get("more_body"):
-                break
+    def body():
+        for _ in range(3):
+            yield b"x" * 500_000
 
-    sent = []
-    chunks = [b"x" * 500_000] * 3
-
-    async def receive():
-        chunk = chunks.pop(0)
-        return {"type": "http.request", "body": chunk, "more_body": bool(chunks)}
-
-    async def send(message):
-        sent.append(message)
-
-    scope = {"type": "http", "headers": [], "method": "POST", "path": "/mcp"}
-    anyio.run(RequestSizeLimitMiddleware(app, max_bytes=MAX_REQUEST_BYTES), scope, receive, send)
-    assert sent[0]["status"] == 413
+    response = client.post("/mcp", content=body(), headers=session.headers)
+    assert response.status_code == 413
 
 
 # 用例三：鉴权与撤销
@@ -233,6 +217,42 @@ def test_response_budget_stops_by_id_order():
     assert text.count("甲") == formatters.MAX_RESPONSE_CHARS
     expected_ids = json.dumps([f"mem_bulk{i:02d}" for i in range(1, 6)])
     assert f"> 续读: memory_read(ids={expected_ids}, offset=4000)" in text
+
+
+def test_pinned_entry_without_term_hit_is_not_recalled(open_session, conn, seeded):
+    insert_memory(conn, "mem_pin999", "proj", "完全不相关的置顶条目", pinned=1)
+    text = open_session(seeded["proj"]["token"]).text("memory_search", {"query": "密钥轮换"})
+    assert PROJ_MEMORY in text
+    assert "mem_pin999" not in text
+    assert "命中 1 条" in text
+
+
+def test_search_limit_below_one_is_rejected(open_session, seeded):
+    result = open_session(seeded["proj"]["token"]).call("memory_search", {"limit": 0})
+    assert result["isError"] is True
+    assert "1~20" in result["content"][0]["text"]
+
+
+def test_read_rejects_more_than_five_ids(open_session, seeded):
+    result = open_session(seeded["proj"]["token"]).call(
+        "memory_read", {"ids": [f"mem_x{i:05d}" for i in range(6)]}
+    )
+    assert result["isError"] is True
+    assert "ids 上限为 5" in result["content"][0]["text"]
+
+
+def test_negative_offset_is_clamped_to_zero(open_session, seeded):
+    text = open_session(seeded["proj"]["token"]).text(
+        "memory_read", {"ids": [PROJ_MEMORY], "offset": -5}
+    )
+    assert "正文里的机密内容" in text
+
+
+def test_offset_past_end_reports_termination(open_session, seeded):
+    text = open_session(seeded["proj"]["token"]).text(
+        "memory_read", {"ids": [PROJ_MEMORY], "offset": 999}
+    )
+    assert "（正文已到结尾，无更多内容）" in text
 
 
 # 无标签条目的标签字段

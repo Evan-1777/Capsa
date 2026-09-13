@@ -82,6 +82,14 @@ def score(memory: dict, terms: set[str], now: datetime | None = None) -> int:
     return total
 
 
+def _hits(memory: dict, terms: set[str]) -> bool:
+    """Whether a term matches a searchable field. Pinned and expiry are ranking
+    weights, not hits: a pinned entry sharing no term with the query is noise."""
+    fields = [normalize(memory.get("title", "")), normalize(memory.get("summary", ""))]
+    fields.extend(normalize(tag) for tag in json.loads(memory.get("tags") or "[]"))
+    return any(term in field for term in terms for field in fields)
+
+
 def rank_memories(
     memories: list[dict], query: str, now: datetime | None = None
 ) -> list[dict]:
@@ -100,10 +108,10 @@ def rank_memories(
         )
         return ranked
     now = now or datetime.now(timezone.utc)
+    # A keyword query returns matches only: an entry sharing no term with the
+    # query is noise even when pinned or live ranking would otherwise float it.
+    ranked = [memory for memory in ranked if _hits(memory, terms)]
     scores = {memory["id"]: score(memory, terms, now) for memory in ranked}
-    # A keyword query returns matches only: an entry scoring zero shares no term
-    # with the query, so listing it would be noise rather than over-recall.
-    ranked = [memory for memory in ranked if scores[memory["id"]] > 0]
     ranked.sort(
         key=lambda memory: (
             scores[memory["id"]],

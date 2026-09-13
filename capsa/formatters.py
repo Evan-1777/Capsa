@@ -90,6 +90,7 @@ def format_peek(items: list[dict]) -> str:
 
 
 def format_read(items: list[dict], offset: int = 0) -> str:
+    offset = max(offset, 0)
     lines: list[str] = []
     consumed = 0
     truncated: list[str] = []
@@ -115,7 +116,8 @@ def format_read(items: list[dict], offset: int = 0) -> str:
         lines.append(header)
         lines.append(f"# {item['title']}")
         lines.append("")
-        lines.append(body[offset : offset + take])
+        section = body[offset : offset + take]
+        lines.append(section or "（正文已到结尾，无更多内容）")
         lines.append("")
     if truncated:
         lines.append(

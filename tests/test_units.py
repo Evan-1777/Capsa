@@ -126,8 +126,9 @@ def test_group_counts_respect_scope_and_soft_delete(conn, seeded):
     )
     conn.commit()
     insert_memory(conn, "mem_ccc333", "proj", "仍在")
-    groups = dal.list_groups_with_counts(conn, {"proj": "rw", "study": "r"})
-    assert [group["slug"] for group in groups] == ["proj", "study"]
+    groups = {group["slug"]: group for group in dal.list_groups_with_counts(conn, {"proj": "rw", "study": "r"})}
+    assert groups["proj"]["count"] == 1
+    assert groups["study"]["count"] == 1
 
 
 def test_group_counts_and_permission(conn, seeded):
