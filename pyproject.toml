@@ -18,6 +18,8 @@ dependencies = [
 test = [
     "pytest==9.1.1",
     "httpx2==2.12.0",
+    # 编排文件的静态校验用例使用；运行期由 fastmcp 传递引入，不新增运行依赖
+    "pyyaml==6.0.3",
 ]
 
 [project.scripts]

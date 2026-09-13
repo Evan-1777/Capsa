@@ -660,14 +660,17 @@ find /opt/capsa/backup -name '*.db' -mtime +14 -delete
 
 ### 7.4 命令行
 
-服务之外只需要四个子命令，不做 Web 管理台：
+服务之外，低频运维命令保留在 CLI；Web 管理台只承担日常查阅与编辑，不提供 Key 与分组的维护入口：
 
 | 命令 | 作用 |
 |---|---|
+| `capsa init` | 预置 proj / study / life / track 四个标准分组 |
 | `capsa group add <slug> <name> --desc "..."` | 建分组 |
 | `capsa key create <name> --scopes proj:rw,study:r` | 签发 Key，明文只打印这一次 |
 | `capsa key revoke <keyid>` | 撤销，下一次调用立即失效 |
-| `capsa review [--group proj]` | 复用三级检索函数列出记忆，供人工审阅 |
+| `capsa memory list-deleted` / `capsa memory restore <id>` | 回收站列出与恢复，管理员通道 |
+| `capsa review [--group proj] [--query 关键词]` | 复用三级检索函数列出记忆，供人工审阅 |
+| `capsa backup [dir]` / `capsa restore <snapshot>` | 在线热备快照与回灌 |
 
 命令行前缀与项目名一致，服务、数据文件、Key 前缀与 CLI 共用一个词，配置和排障时不需要在多套命名之间换算。
 
@@ -690,8 +693,8 @@ find /opt/capsa/backup -name '*.db' -mtime +14 -delete
 |---|---|---|
 | P0 | 建表、授权层、`memory_groups` / `_search` / `_peek` / `_read`、Key CLI、容器化部署 | 用两把不同作用域的 Key 连接，检索到的分组互不可见 |
 | P1 | `memory_save` / `_update` / `_forget`、相似条目提示、`review_at` 到期降权 | 只读 Key 写库被拒；超长标题被拒且返回实际字符数；软删除后默认检索不再返回 |
-| P2 | 检索调优（权重、标签参与）、`capsa review` 审阅命令、备份定时任务 | 同一查询在 CLI 与 MCP 两侧返回顺序一致 |
-| P3 | 按需触发，见第九节 | — |
+| P2 | 检索调优（权重、标签参与）随 Phase 1 落地；`capsa review` 审阅命令与备份定时任务（`capsa backup` / `restore` + 宿主机 Cron）随 Phase 3 落地 | 同一查询在 CLI 与 MCP 两侧返回顺序一致 |
+| P3 | 按需触发，见第九节；其中 Web 管理台已提前作为 Capsa Studio 于 Phase 3 交付（Key 签发 / 分组维护 / 热备仍保留在 CLI） | — |
 
 P0 与 P1 合计在一天工作量级。P3 不应在 P0 之前动工。
 
@@ -707,7 +710,7 @@ P0 与 P1 合计在一天工作量级。P3 不应在 P0 之前动工。
 | 自动抽取写入 | 从对话蒸馏事实是记忆污染的主要来源，且需要额外的模型调用 | 不触发。写入始终是显式动作 |
 | 知识图谱 | 实体关系推理不是本项目要解决的问题，成本高 | 不触发 |
 | 多用户 / 多租户 | 个人项目，多一层租户隔离只会让每条查询都多一个条件 | 出现第二个真实使用者 |
-| Web 管理台 | CLI 覆盖审阅需求，界面维护成本高于它节省的时间 | 每日审阅操作超过 20 次 |
+| Web 管理台 | 原触发条件（跨设备查阅与 Markdown 排版摩擦）已达成，Web 管理台作为 Capsa Studio 随 Phase 3 交付；Key 签发 / 分组维护 / 热备与还原仍保留在 CLI | 已触发并交付，演进说明见 `Capsa_可视化前端管理计划.md` §一.1 |
 | 待审状态机 | 会把写入变成两段式，且当前的四条约束已覆盖污染风险 | 出现「Agent 写入的错误记忆被采纳并造成实际损失」的案例 |
 | 对话流水归档 | 体量大、复用率低，会稀释检索质量 | 不触发 |
 | 多副本部署 | SQLite 与多副本冲突，个人规模无扩容诉求 | 单机无法承载时先换存储再谈 |

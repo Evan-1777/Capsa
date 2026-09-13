@@ -248,33 +248,58 @@ build-backend = "hatchling.build"
 
 ```python
 # capsa/server.py
+"""Root ASGI application: /healthz, /mcp, the Web API and the built SPA."""
+
+import os
+
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 from starlette.responses import JSONResponse
-from capsa.middleware import RequestSizeLimitMiddleware
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
+
 from capsa.db import check_db_health
-from capsa.mcp_service import mcp # FastMCP("capsa") 实例
+from capsa.mcp_service import mcp
+from capsa.web_api import web_api_app
+
+MAX_REQUEST_BYTES = 1048576
+
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+
 
 async def healthz(request):
-    ok = check_db_health()
-    if ok:
+    if check_db_health():
         return JSONResponse({"status": "ok"}, status_code=200)
-    return JSONResponse({"status": "error", "message": "database unavailable"}, status_code=503)
+    return JSONResponse(
+        {"status": "error", "message": "database unavailable"}, status_code=503
+    )
 
-# FastMCP 子应用自带 /mcp 路径；其 lifespan 必须交给根应用，
-# 否则 /mcp 请求抛 "task group was not initialized"
+
+# 子应用自带 /mcp 路径，根应用用 Route 直接挂载。
+# 不用 Mount("/mcp", ...)：Mount 的路径正则是 ^/mcp/(?P<path>.*)$，裸 /mcp 只会
+# 得到 307 跳转，而跳转更会因缺少 lifespan 上下文抛 task group 未初始化。
+# 其 lifespan 必须交给根应用，否则 /mcp 请求抛 "task group was not initialized"。
 mcp_app = mcp.http_app(path="/mcp")
 
-# 基础路由（Phase 1 范围）
-routes = [
-    Route("/healthz", endpoint=healthz, methods=["GET"]),
-    Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]),
-]
 
-# Phase 3 将在此追加 Mount("/api", app=web_api_app) 与 Mount("/", app=StaticFiles(...))
+def create_app(static_directory: str | None = None) -> Starlette:
+    """Build the root application; the static root is mounted only when it exists."""
+    directory = static_dir if static_directory is None else static_directory
+    # 注册顺序固定：先具体前缀，再根路径静态托管，静态托管不得劫持 /api。
+    routes = [
+        Route("/healthz", endpoint=healthz, methods=["GET"]),
+        Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]),
+        Mount("/api", app=web_api_app),
+    ]
+    # capsa/static 是构建产物，未构建时不挂载根路由，/ 返回 404 而非启动失败。
+    if os.path.isdir(directory):
+        routes.append(Mount("/", app=StaticFiles(directory=directory, html=True)))
+    application = Starlette(routes=routes, lifespan=mcp_app.lifespan)
+    application.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_REQUEST_BYTES)
+    return application
 
-app = Starlette(routes=routes, lifespan=mcp_app.lifespan)
-app.add_middleware(RequestSizeLimitMiddleware, max_bytes=1048576) # 1MB 拦截
+
+app = create_app()
 ```
 
 #### 3. 数据表结构与索引 (`capsa/db.py`)
@@ -329,10 +354,10 @@ ON memories(group_slug, pinned DESC, updated_at DESC);
 - **专有搜索列表 (`list_active_memories_for_search`)**：专供检索引擎使用，拼接参数化 SQL：`WHERE group_slug IN (?, ...) AND deleted_at IS NULL`。
 - **分组元数据查询 (`list_groups_with_counts`)**：返回授权范围内的分组名、描述、权限及有效条目数。
 
-#### 5. 鉴权层与请求体大小防护 (`capsa/auth.py` & `capsa/middleware.py`)
+#### 5. 鉴权层与请求体大小防护 (`capsa/auth.py` & starlette `RequestBodyLimitMiddleware`)
 - **Key 格式**：明文为 `capsa_{key_id}_{secret_32}`；
 - **SHA256 实时查验**：提取 Bearer Token 并计算 SHA256，验证 `revoked_at IS NULL`，校验通过后异步刷新 `last_used_at`；
-- **1MB 请求体限制中间件**：在 ASGI 层拦截请求体，超过 1,048,576 字节直接响应 HTTP 413。
+- **1MB 请求体限制**：复用 starlette 内置 `RequestBodyLimitMiddleware(max_body_size=1_048_576)`，超过 1,048,576 字节直接响应 HTTP 413。
 
 #### 6. 确定性打分与排序算法 (`capsa/retrieval.py`)
 - **归一化**：Unicode NFC 转换 + 转小写；时间以 UTC 为准；
@@ -428,59 +453,88 @@ Phase 3 中，`capsa/server.py` 拓展为包含 Web API 与静态前端的完整
 # 否则裸 /mcp 会得到 307 跳转（见 §2.2 第 2 节）
 import os
 from starlette.applications import Starlette
+from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 from starlette.routing import Mount, Route
 from starlette.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
-from capsa.middleware import RequestSizeLimitMiddleware
 from capsa.db import check_db_health
 from capsa.mcp_service import mcp
 from capsa.web_api import web_api_app # Starlette RESTful 子应用
 
-async def healthz(request):
-    ok = check_db_health()
-    if ok:
-        return JSONResponse({"status": "ok"}, status_code=200)
-    return JSONResponse({"status": "error", "message": "database unavailable"}, status_code=503)
+MAX_REQUEST_BYTES = 1048576
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 
-# FastMCP 子应用自带 /mcp 路径，根应用用 Route 直接挂载
+
+async def healthz(request):
+    if check_db_health():
+        return JSONResponse({"status": "ok"}, status_code=200)
+    return JSONResponse(
+        {"status": "error", "message": "database unavailable"}, status_code=503
+    )
+
+
+# 子应用自带 /mcp 路径，根应用用 Route 直接挂载
 mcp_app = mcp.http_app(path="/mcp")
 
-# 严格按顺序注册路由：先具体前缀，后根路径静态托管
-routes = [
-    Route("/healthz", endpoint=healthz, methods=["GET"]),
-    Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]), # FastMCP Streamable HTTP
-    Mount("/api", app=web_api_app),           # Web RESTful API
-]
 
-if os.path.isdir(static_dir):
-    routes.append(Mount("/", app=StaticFiles(directory=static_dir, html=True)))
+def create_app(static_directory: str | None = None) -> Starlette:
+    """静态根路径由工厂参数决定是否挂载；注册顺序固定：先具体前缀，后根路径静态托管。"""
+    directory = static_dir if static_directory is None else static_directory
+    routes = [
+        Route("/healthz", endpoint=healthz, methods=["GET"]),
+        Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]), # FastMCP Streamable HTTP
+        Mount("/api", app=web_api_app),           # Web RESTful API
+    ]
+    # capsa/static 是构建产物，未构建时不挂载根路由，/ 返回 404 而非启动失败。
+    if os.path.isdir(directory):
+        routes.append(Mount("/", app=StaticFiles(directory=directory, html=True)))
+    application = Starlette(routes=routes, lifespan=mcp_app.lifespan)
+    application.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_REQUEST_BYTES) # 1MB 拦截
+    return application
 
-app = Starlette(routes=routes, lifespan=mcp_app.lifespan)
-app.add_middleware(RequestSizeLimitMiddleware, max_bytes=1048576) # 1MB 拦截
+
+app = create_app()
 ```
 
 #### 2. DAL Web 列表接口规范 (`capsa/dal.py`)
 为消除 Web 接口自行拼 SQL 的隐患，在 `dal.py` 显式扩展专供 Web 列表的查询函数：
 ```python
 def list_memories_for_web(
+    conn: sqlite3.Connection,
     scopes: dict[str, str],
     status: str = "active",  # "active" | "overdue" | "deleted"
     group: str | None = None,
-    query: str | None = None,
     offset: int = 0,
     limit: int = 20,
 ) -> tuple[list[dict], int]:
+    """Paged active / overdue / deleted listing inside the authorized groups.
+
+    Keyword matching is deliberately absent: hits and ordering belong to
+    retrieval.rank_memories, so the SQL here never filters on a query.
     """
-    专供 Web 端调用的记忆列表与检索入口。
-    - 严格依据 scopes 进行 group_slug 参数化过滤 (WHERE group_slug IN (?, ...))
-    - status == 'active': deleted_at IS NULL
-    - status == 'overdue': deleted_at IS NULL AND review_at IS NOT NULL AND review_at < datetime.now(timezone.utc).isoformat()
-    - status == 'deleted': deleted_at IS NOT NULL (包含 deleted_reason 字段)
-    - query: 支持关键词与二字组匹配过滤
-    - 返回: (items, total_count)
-    """
+    slugs = sorted(scopes)
+    if not slugs:
+        return [], 0
+    if status == "active":
+        condition, params = "deleted_at IS NULL", []
+    elif status == "deleted":
+        condition, params = "deleted_at IS NOT NULL", []
+    else:
+        condition = "deleted_at IS NULL AND review_at IS NOT NULL AND review_at < ?"
+        params = [utcnow()]
+    where = f"group_slug IN ({_placeholders(len(slugs))}) AND {condition}"
+    if group:
+        where += " AND group_slug = ?"
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM memories WHERE {where}", [*slugs, *params, *([group] if group else [])]
+    ).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT {_WEB_LIST_COLUMNS} FROM memories WHERE {where} "
+        "ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ? OFFSET ?",
+        [*slugs, *params, *([group] if group else []), limit, offset],
+    )
+    return [dict(row) for row in rows], total
 ```
 
 #### 3. 后端 RESTful API 规范与信封 (`capsa/web_api.py`)
@@ -488,7 +542,7 @@ def list_memories_for_web(
 - 列表成功格式：`{"success": true, "data": {"items": [...], "total": N, "offset": 0, "limit": 20}, "error": null}`
 - 单条成功格式：`{"success": true, "data": { ... }, "error": null}`
 - 失败格式：`{"success": false, "data": null, "error": {"code": "...", "message": "..."}}`
-- 错误码枚举：`UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), `PAYLOAD_TOO_LARGE` (413), `VALIDATION_ERROR` (422), `INTERNAL_ERROR` (500)。
+- 错误码枚举：`UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), `VALIDATION_ERROR` (422), `INTERNAL_ERROR` (500)。请求体超限的 413 由根应用的 `RequestBodyLimitMiddleware` 直接返回纯文本，不经过统一信封，因此不设错误码。
 - 核心端点列表：
   - `GET /api/auth/me`：校验 Key 并返回 `{key_id, name, scopes}`；
   - `GET /api/groups`：获取当前 Key 授权分组与统计；
@@ -522,15 +576,18 @@ def list_memories_for_web(
 
 **`Dockerfile`**（多阶段构建，容器内零 Node.js 运行时）：
 ```dockerfile
-# Stage 1: Build Frontend Assets
+# 阶段一：构建前端静态产物（最终镜像不保留 Node 运行时）
 FROM node:20-alpine AS web-builder
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
-RUN npm run build
+# 产物目录与本阶段的拷贝源必须一致：Vite 只在 outDir 位于项目根内时自建目录，
+# /build 越出 web/，因此先显式创建。
+ENV CAPSA_STATIC_DIR=/build/static
+RUN mkdir -p $CAPSA_STATIC_DIR && npm run build
 
-# Stage 2: Production Python Runtime
+# 阶段二：Python 运行时
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -546,9 +603,9 @@ RUN useradd -m -u 1000 -s /bin/bash capsa \
     && mkdir -p /data /backup /app/capsa/static \
     && chown -R capsa:capsa /app /data /backup
 
-COPY --chown=capsa:capsa pyproject.toml .
+COPY --chown=capsa:capsa pyproject.toml ./
 COPY --chown=capsa:capsa capsa/ capsa/
-COPY --from=web-builder --chown=capsa:capsa /web/dist/ capsa/static/
+COPY --from=web-builder --chown=capsa:capsa /build/static/ capsa/static/
 
 RUN pip install --no-cache-dir .
 
@@ -601,14 +658,14 @@ volumes:
 **`Caddyfile`**：
 ```caddy
 {$CAPSA_DOMAIN:localhost} {
-    request_body {
-        max_size 1MB
-    }
+	request_body {
+		max_size 1MB
+	}
 
-    # 反代至后端，flush_interval -1 禁用响应缓冲以保证流式传输实时性
-    reverse_proxy capsa:8000 {
-        flush_interval -1
-    }
+	# flush_interval -1 关闭响应缓冲，保证流式响应即时下发
+	reverse_proxy capsa:8000 {
+		flush_interval -1
+	}
 }
 ```
 
@@ -618,13 +675,13 @@ volumes:
 3. **套件三：Playwright 浏览器前端烟测 (`npm run test:e2e`)**：覆盖凭据存销、401 清理、XSS 净化、375px 移动端单栏与核心 CRUD 浏览器自动化测试。
 
 ### 4.3 Phase 3 交付验收断言
-- [ ] **完整路由装配断言**：`GET /` 成功返回前端页面，`GET /healthz` 返回 200，`POST /mcp` 正常握手，`GET /api/memories` 正常响应；
-- [ ] **Web 界面与 XSS 防护断言**：注入 `<script>` 或 `javascript:` 链接被完全清洗无执行；
-- [ ] **Playwright 浏览器测试断言**：运行 `npm run test:e2e`，凭据存销、401 清理、XSS 拦截、375px 移动端单栏全绿通过；
-- [ ] **全流程 CRUD 与回收站断言**：界面创建、Markdown 排版展示、软删除填写 reason、回收站展示 reason 并一键恢复成功；
-- [ ] **宿主机热备断言**：调用 `capsa backup` 生成有效快照文件，自动清理 14 天前旧文件；
-- [ ] **人机排序同源断言**：CLI `capsa review` 排序与 MCP `memory_search` 100% 一致；
-- [ ] **自动化 E2E 全通断言**：5 步 Agent 烟测与 7 步生命周期测试通过率 100%。
+- [ ] **完整路由装配断言**（本机 pytest 覆盖）：`GET /` 成功返回前端页面，`GET /healthz` 返回 200，`POST /mcp` 正常握手，`GET /api/memories` 正常响应；
+- [ ] **Web 界面与 XSS 防护断言**（本机 Playwright 覆盖）：注入 `<script>` 或 `javascript:` 链接被完全清洗无执行；
+- [ ] **Playwright 浏览器测试断言**（本机 Playwright 全绿，云端 CI 同验）：运行 `npm run test:e2e`，凭据存销、401 清理、XSS 拦截、375px 移动端单栏全绿通过；
+- [ ] **全流程 CRUD 与回收站断言**（本机 pytest 与 Playwright 覆盖）：界面创建、Markdown 排版展示、软删除填写 reason、回收站展示 reason 并一键恢复成功；
+- [ ] **宿主机热备断言**（本机 pytest 覆盖，Crontab 实际调度由云端 CI 验收）：调用 `capsa backup` 生成有效快照文件，自动清理 14 天前旧文件；
+- [ ] **人机排序同源断言**（本机 pytest 覆盖，云端 CI 同验）：CLI `capsa review` 排序与 MCP `memory_search` 100% 一致；
+- [ ] **自动化 E2E 全通断言**（本机 pytest 与 Playwright 覆盖；5 步 Agent 烟测与 7 步生命周期测试在真实镜像上由云端 CI 验收）：5 步 Agent 烟测与 7 步生命周期测试通过率 100%。
 
 ---
 

@@ -1,0 +1,347 @@
+"""Web RESTful API: unified envelope, Bearer guard and the eight endpoints.
+
+Authorization is shared with the MCP tool layer through the same DAL three-state
+judgement and the same field-validation function; only the transport rendering
+differs (HTTP status codes versus tool-level isError).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+
+from fastmcp.exceptions import ToolError
+from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
+from starlette.applications import Starlette
+from starlette.requests import HTTPConnection, Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+from capsa import dal, db, retrieval
+from capsa.auth import CapsaTokenVerifier
+from capsa.mcp_service import BODY_MAX, SUMMARY_MAX, TITLE_MAX, require_text
+
+logger = logging.getLogger(__name__)
+
+# 413 不在此列：1MB 拦截发生在根应用的中间件层，响应体是 starlette 内置的纯文本，
+# 不经过本模块的信封。其余五个错误码对应处理器可自行渲染的失败。
+UNAUTHORIZED = "UNAUTHORIZED"
+FORBIDDEN = "FORBIDDEN"
+NOT_FOUND = "NOT_FOUND"
+VALIDATION_ERROR = "VALIDATION_ERROR"
+INTERNAL_ERROR = "INTERNAL_ERROR"
+
+# 不含调用方传入的 id：条目不存在、已软删除、分组不可见三种情形的 404 响应体
+# 必须逐字相同，否则响应体就成了探测未授权分组的侧信道。
+_MISSING = "记忆不存在或无权访问"
+
+
+def _ok(data, status: int = 200) -> JSONResponse:
+    return JSONResponse({"success": True, "data": data, "error": None}, status_code=status)
+
+
+def _fail(code: str, message: str, status: int) -> JSONResponse:
+    return JSONResponse(
+        {"success": False, "data": None, "error": {"code": code, "message": message}},
+        status_code=status,
+    )
+
+
+class BearerAuthGuard:
+    """Reject unauthenticated requests before any handler runs.
+
+    Wraps the same backend the MCP endpoint uses, so token parsing and
+    revocation behave identically; only the failure rendering differs.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self.backend = BearerAuthBackend(CapsaTokenVerifier())
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        authenticated = await self.backend.authenticate(HTTPConnection(scope))
+        if authenticated is None:
+            response = _fail(UNAUTHORIZED, "缺少或无效的 Bearer 令牌", 401)
+            return await response(scope, receive, send)
+        scope["auth"], scope["user"] = authenticated
+        await self.app(scope, receive, send)
+
+
+def _grants(request: Request) -> dict[str, str]:
+    """Authorized group to permission map, taken from the verified token claims."""
+    token = getattr(request.scope.get("user"), "access_token", None)
+    if token is None or not token.claims:
+        return {}
+    return token.claims.get("grants", {})
+
+
+def _list_item(row: dict, grants: dict[str, str]) -> dict:
+    item = {field: row.get(field) for field in dal.WEB_LIST_FIELDS}
+    item["tags"] = json.loads(item["tags"] or "[]")
+    item["permission"] = grants.get(item["group_slug"])
+    item["is_overdue"] = retrieval.is_expired(item["review_at"])
+    return item
+
+
+def _detail_item(row: dict, grants: dict[str, str]) -> dict:
+    item = {field: row[field] for field in dal.WEB_ITEM_FIELDS}
+    item["tags"] = json.loads(item["tags"] or "[]")
+    item["permission"] = grants.get(item["group_slug"])
+    item["is_overdue"] = retrieval.is_expired(item["review_at"])
+    return item
+
+
+def _bounded_int(request: Request, name: str, default: int, minimum: int, maximum: int | None) -> int:
+    raw = request.query_params.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ToolError(f"{name} 必须是整数") from None
+    if value < minimum or (maximum is not None and value > maximum):
+        ceiling = "无上限" if maximum is None else str(maximum)
+        raise ToolError(f"{name} 取值范围为 {minimum}~{ceiling}，本次传入 {value}")
+    return value
+
+
+async def _json_body(request: Request) -> dict:
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ToolError("请求体不是合法的 JSON") from None
+    if not isinstance(payload, dict):
+        raise ToolError("请求体必须是 JSON 对象")
+    return payload
+
+
+def _review_at(value) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ToolError(f"review_at 不是合法的 ISO 8601 时间：{value}")
+    try:
+        return retrieval.normalize_review_at(value)
+    except ValueError:
+        raise ToolError(f"review_at 不是合法的 ISO 8601 时间：{value}") from None
+
+
+def _tags(value) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(tag, str) for tag in value):
+        raise ToolError("tags 必须是字符串数组")
+    return value
+
+
+async def auth_me(request: Request) -> JSONResponse:
+    key_id = request.user.access_token.claims.get("key_id", "")
+    conn = db.connect()
+    try:
+        key = dal.get_key(conn, key_id)
+    finally:
+        conn.close()
+    if key is None:
+        return _fail(UNAUTHORIZED, "凭据无效或已被吊销", 401)
+    return _ok({"key_id": key["id"], "name": key["name"], "scopes": key["scopes"]})
+
+
+async def list_groups(request: Request) -> JSONResponse:
+    conn = db.connect()
+    try:
+        items = dal.list_groups_with_counts(conn, _grants(request))
+    finally:
+        conn.close()
+    return _ok({"items": items, "total": len(items), "offset": 0, "limit": len(items)})
+
+
+async def memories_list(request: Request) -> JSONResponse:
+    status = request.query_params.get("status", "active")
+    if status not in ("active", "overdue", "deleted"):
+        raise ToolError(f"status 只接受 active / overdue / deleted，本次传入 {status}")
+    limit = _bounded_int(request, "limit", 20, 1, 100)
+    offset = _bounded_int(request, "offset", 0, 0, None)
+    group = request.query_params.get("group") or None
+    query = (request.query_params.get("query") or "").strip()
+    if query and status != "active":
+        raise ToolError("关键词检索只作用于活跃条目，status 需为 active")
+    grants = _grants(request)
+    conn = db.connect()
+    try:
+        if query:
+            candidates = dal.list_active_memories_for_search(conn, grants, group)
+            ranked = retrieval.rank_memories(candidates, query)
+            total = len(ranked)
+            rows = ranked[offset : offset + limit]
+        else:
+            rows, total = dal.list_memories_for_web(conn, grants, status, group, offset, limit)
+    finally:
+        conn.close()
+    items = [_list_item(row, grants) for row in rows]
+    return _ok({"items": items, "total": total, "offset": offset, "limit": limit})
+
+
+async def memory_detail(request: Request) -> JSONResponse:
+    memory_id = request.path_params["id"]
+    grants = _grants(request)
+    conn = db.connect()
+    try:
+        row = dal.get_memory_for_web(conn, memory_id)
+    finally:
+        conn.close()
+    if row is None or row["deleted_at"] is not None or row["group_slug"] not in grants:
+        return _fail(NOT_FOUND, _MISSING, 404)
+    return _ok(_detail_item(row, grants))
+
+
+async def memory_create(request: Request) -> JSONResponse:
+    payload = await _json_body(request)
+    group = payload.get("group")
+    if not isinstance(group, str) or not group:
+        raise ToolError("group 不能为空")
+    if _grants(request).get(group) != "rw":
+        return _fail(FORBIDDEN, f"对分组 {group} 没有写权限，拒绝写入", 403)
+    title = require_text(payload.get("title"), TITLE_MAX, "标题")
+    summary = require_text(payload.get("summary"), SUMMARY_MAX, "摘要")
+    body = require_text(payload.get("body"), BODY_MAX, "正文")
+    tags = _tags(payload.get("tags"))
+    stamp = _review_at(payload.get("review_at"))
+    conn = db.connect()
+    try:
+        candidates = dal.list_active_memories_for_search(conn, {group: "rw"}, group)
+        similar = retrieval.find_similar_memories(candidates, title)
+        try:
+            memory_id = dal.insert_memory(
+                conn,
+                group_slug=group,
+                title=title,
+                summary=summary,
+                body=body,
+                tags=tags,
+                review_at=stamp,
+            )
+        except sqlite3.IntegrityError:
+            raise ToolError(f"分组 {group} 不存在，拒绝写入") from None
+    finally:
+        conn.close()
+    return _ok(
+        {
+            "id": memory_id,
+            "similar_items": [
+                {"id": item["id"], "title": item["title"], "similarity": item["similarity"]}
+                for item in similar
+            ],
+        }
+    )
+
+
+def _locate_writable(conn: sqlite3.Connection, memory_id: str, grants: dict[str, str]):
+    """Resolve the target and its write permission; returns a response on refusal."""
+    item = dal.get_memories_batch_for_access(conn, [memory_id], grants)[0]
+    if item["status"] != "authorized":
+        return _fail(NOT_FOUND, _MISSING, 404)
+    if grants.get(item["group_slug"]) != "rw":
+        return _fail(FORBIDDEN, f"对分组 {item['group_slug']} 只有只读权限，拒绝修改", 403)
+    return None
+
+
+async def memory_update(request: Request) -> JSONResponse:
+    memory_id = request.path_params["id"]
+    payload = await _json_body(request)
+    if payload.get("clear_review_at") and payload.get("review_at") is not None:
+        raise ToolError("clear_review_at 与 review_at 不能同时给出")
+    grants = _grants(request)
+    conn = db.connect()
+    try:
+        refusal = _locate_writable(conn, memory_id, grants)
+        if refusal is not None:
+            return refusal
+        fields: dict = {}
+        if payload.get("title") is not None:
+            fields["title"] = require_text(payload["title"], TITLE_MAX, "标题")
+        if payload.get("summary") is not None:
+            fields["summary"] = require_text(payload["summary"], SUMMARY_MAX, "摘要")
+        if payload.get("body") is not None:
+            fields["body"] = require_text(payload["body"], BODY_MAX, "正文")
+        if payload.get("tags") is not None:
+            fields["tags"] = _tags(payload["tags"])
+        if payload.get("pinned") is not None:
+            fields["pinned"] = int(payload["pinned"])
+        if payload.get("clear_review_at"):
+            fields["review_at"] = None
+        elif payload.get("review_at") is not None:
+            fields["review_at"] = _review_at(payload["review_at"])
+        if not fields:
+            raise ToolError("至少提供一个待更新字段")
+        if not dal.update_memory(conn, memory_id, fields):
+            return _fail(NOT_FOUND, _MISSING, 404)
+    finally:
+        conn.close()
+    return _ok({"id": memory_id, "action": "updated"})
+
+
+async def memory_delete(request: Request) -> JSONResponse:
+    memory_id = request.path_params["id"]
+    payload = await _json_body(request)
+    grants = _grants(request)
+    conn = db.connect()
+    try:
+        refusal = _locate_writable(conn, memory_id, grants)
+        if refusal is not None:
+            return refusal
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ToolError("删除原因不能为空")
+        if not dal.soft_delete_memory(conn, memory_id, reason.strip()):
+            return _fail(NOT_FOUND, _MISSING, 404)
+    finally:
+        conn.close()
+    return _ok({"id": memory_id, "action": "deleted"})
+
+
+async def memory_restore(request: Request) -> JSONResponse:
+    memory_id = request.path_params["id"]
+    grants = _grants(request)
+    conn = db.connect()
+    try:
+        row = dal.get_memory_for_web(conn, memory_id)
+        if row is None or row["group_slug"] not in grants:
+            return _fail(NOT_FOUND, _MISSING, 404)
+        if grants.get(row["group_slug"]) != "rw":
+            return _fail(FORBIDDEN, f"对分组 {row['group_slug']} 只有只读权限，拒绝修改", 403)
+        if row["deleted_at"] is None:
+            return _fail(NOT_FOUND, _MISSING, 404)
+        dal.restore_memory(conn, memory_id)
+    finally:
+        conn.close()
+    return _ok({"id": memory_id, "action": "restored"})
+
+
+async def tool_error_handler(request: Request, exc: ToolError) -> JSONResponse:
+    return _fail(VALIDATION_ERROR, str(exc), 422)
+
+
+async def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.error("Web API 未处理异常: %s", exc, exc_info=exc)
+    return _fail(INTERNAL_ERROR, "服务内部错误", 500)
+
+
+routes = [
+    Route("/auth/me", endpoint=auth_me, methods=["GET"]),
+    Route("/groups", endpoint=list_groups, methods=["GET"]),
+    Route("/memories", endpoint=memories_list, methods=["GET"]),
+    Route("/memories", endpoint=memory_create, methods=["POST"]),
+    Route("/memories/{id}", endpoint=memory_detail, methods=["GET"]),
+    Route("/memories/{id}", endpoint=memory_update, methods=["PUT"]),
+    Route("/memories/{id}", endpoint=memory_delete, methods=["DELETE"]),
+    Route("/memories/{id}/restore", endpoint=memory_restore, methods=["POST"]),
+]
+
+web_api_app = Starlette(
+    routes=routes,
+    exception_handlers={ToolError: tool_error_handler, Exception: internal_error_handler},
+)
+web_api_app.add_middleware(BearerAuthGuard)

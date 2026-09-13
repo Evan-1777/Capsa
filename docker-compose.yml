@@ -1,0 +1,33 @@
+services:
+  capsa:
+    build: .
+    restart: unless-stopped
+    environment:
+      - CAPSA_DB_PATH=/data/capsa.db
+    volumes:
+      - capsa-data:/data
+      - capsa-backup:/backup
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - CAPSA_DOMAIN=${CAPSA_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      capsa:
+        condition: service_healthy
+
+volumes:
+  capsa-data:
+  capsa-backup:
+  caddy-data:
+  caddy-config:

@@ -38,6 +38,10 @@ def auth_headers(token: str | None) -> dict[str, str]:
     return headers
 
 
+def web_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 def parse_body(response) -> dict:
     if "text/event-stream" in response.headers.get("content-type", ""):
         for line in response.text.splitlines():

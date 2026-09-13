@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
-from capsa import dal, db
+from capsa import dal, db, retrieval
 from capsa.auth import issue_key
 from capsa.ids import hash_token
+
+BACKUP_KEEP_DAYS = 14
+BACKUP_DIR_DEFAULT = "/backup"
+BACKUP_PREFIX = "capsa-"
 
 DEFAULT_GROUPS = [
     ("proj", "项目", "项目相关记忆：架构决策、实施进度与接口约定"),
@@ -138,6 +145,70 @@ def cmd_memory_restore(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    # CLI 是管理员通道，按读写权限取出全部已建分组。
+    conn = _connect()
+    try:
+        scopes = {group["slug"]: "rw" for group in dal.list_groups(conn)}
+        memories = dal.list_active_memories_for_search(conn, scopes, args.group)
+    finally:
+        conn.close()
+    ranked = retrieval.rank_memories(memories, args.query or "")[: args.limit]
+    if not ranked:
+        print("没有符合条件的记忆")
+        return 0
+    for index, item in enumerate(ranked, start=1):
+        print(
+            f"[{index}] {item['id']} | {item['group_slug']} | "
+            f"{item['updated_at'][:10]} | {item['title']}"
+        )
+    return 0
+
+
+def cmd_backup(args: argparse.Namespace) -> int:
+    target_dir = Path(args.target_dir or os.environ.get("CAPSA_BACKUP_DIR") or BACKUP_DIR_DEFAULT)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = target_dir / f"{BACKUP_PREFIX}{db.utcnow()[:10]}.db"
+    source = db.connect()
+    destination = sqlite3.connect(snapshot)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+    print(f"已生成快照：{snapshot}")
+    cutoff = datetime.now(timezone.utc).date() - timedelta(days=args.keep_days)
+    removed = 0
+    for path in sorted(target_dir.glob(f"{BACKUP_PREFIX}*.db")):
+        try:
+            created = date.fromisoformat(path.name[len(BACKUP_PREFIX) : -len(".db")])
+        except ValueError:
+            continue
+        if created <= cutoff:
+            path.unlink()
+            removed += 1
+    print(f"已清理 {removed} 个过期快照")
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    snapshot = Path(args.snapshot_path)
+    if not snapshot.is_file():
+        print(f"未找到快照文件：{snapshot}", file=sys.stderr)
+        return 1
+    target_path = Path(db.db_path())
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    source = sqlite3.connect(snapshot)
+    destination = db.connect()
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+    print(f"已恢复：{snapshot} 到 {target_path}，请重启服务")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="capsa", description="Capsa 记忆服务管理命令")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -174,6 +245,21 @@ def main(argv: list[str] | None = None) -> int:
     memory_restore = memory_commands.add_parser("restore", help="恢复已删除条目")
     memory_restore.add_argument("memory_id")
     memory_restore.set_defaults(func=cmd_memory_restore)
+
+    review = commands.add_parser("review", help="按检索同源顺序审阅活跃记忆")
+    review.add_argument("--group", default=None, help="只审阅指定分组")
+    review.add_argument("--query", default=None, help="关键词，与 MCP memory_search 同源")
+    review.add_argument("--limit", type=int, default=20, help="最多输出条数")
+    review.set_defaults(func=cmd_review)
+
+    backup = commands.add_parser("backup", help="生成在线热备快照并清理过期文件")
+    backup.add_argument("target_dir", nargs="?", default=None, help="快照目录，默认 CAPSA_BACKUP_DIR 或 /backup")
+    backup.add_argument("--keep-days", type=int, default=BACKUP_KEEP_DAYS, help="保留天数")
+    backup.set_defaults(func=cmd_backup)
+
+    restore = commands.add_parser("restore", help="用快照覆盖当前数据库")
+    restore.add_argument("snapshot_path")
+    restore.set_defaults(func=cmd_restore)
 
     args = parser.parse_args(argv)
     return args.func(args)

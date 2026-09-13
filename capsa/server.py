@@ -1,16 +1,22 @@
-"""Root ASGI application: /healthz plus the mounted MCP endpoint."""
+"""Root ASGI application: /healthz, /mcp, the Web API and the built SPA."""
 
 from __future__ import annotations
+
+import os
 
 from starlette.applications import Starlette
 from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from capsa.db import check_db_health
 from capsa.mcp_service import mcp
+from capsa.web_api import web_api_app
 
 MAX_REQUEST_BYTES = 1048576
+
+static_dir = os.path.join(os.path.dirname(__file__), "static")
 
 
 async def healthz(request):
@@ -27,10 +33,21 @@ async def healthz(request):
 # 其 lifespan 必须交给根应用，否则 /mcp 请求抛 "task group was not initialized"。
 mcp_app = mcp.http_app(path="/mcp")
 
-routes = [
-    Route("/healthz", endpoint=healthz, methods=["GET"]),
-    Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]),
-]
+def create_app(static_directory: str | None = None) -> Starlette:
+    """Build the root application; the static root is mounted only when it exists."""
+    directory = static_dir if static_directory is None else static_directory
+    # 注册顺序固定：先具体前缀，再根路径静态托管，静态托管不得劫持 /api。
+    routes = [
+        Route("/healthz", endpoint=healthz, methods=["GET"]),
+        Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]),
+        Mount("/api", app=web_api_app),
+    ]
+    # capsa/static 是构建产物，未构建时不挂载根路由，/ 返回 404 而非启动失败。
+    if os.path.isdir(directory):
+        routes.append(Mount("/", app=StaticFiles(directory=directory, html=True)))
+    application = Starlette(routes=routes, lifespan=mcp_app.lifespan)
+    application.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_REQUEST_BYTES)
+    return application
 
-app = Starlette(routes=routes, lifespan=mcp_app.lifespan)
-app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_REQUEST_BYTES)
+
+app = create_app()

@@ -14,3 +14,12 @@ __pycache__/
 
 # 环境变量
 .env
+# 前端工程与构建产物
+node_modules/
+capsa/static/
+web/dist/
+web/test-results/
+web/playwright-report/
+
+# E2E 运行时签发的临时令牌
+web/tests/keys.json

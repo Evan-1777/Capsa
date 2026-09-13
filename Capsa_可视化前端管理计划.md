@@ -55,7 +55,7 @@
   <div style="font-size:11px;color:#52525b;margin-top:6px;line-height:1.7">
     • 严禁解析原始 HTML (<code>skipHtml</code>)<br>
     • 引入 <code>rehype-sanitize</code> 白名单过滤<br>
-    • 协议限定: 仅允许 <code>http/https/mailto</code><br>
+    • 协议过滤交由 <code>rehype-sanitize</code> 默认规则集<br>
     • 外链强制 <code>rel="noopener noreferrer"</code>
   </div>
 </div>
@@ -83,13 +83,13 @@
 - 用户初次进入界面时显示登录卡片，要求输入已持有的 API Key（如 `capsa_a1b2c3d4_xxxx`）；
 - 验证成功后将 Key 写入浏览器的 `sessionStorage`；
 - 右上角常驻「退出登录」按钮，点击立即清空 `sessionStorage` 并重置界面至锁屏；
-- 全局 Axios/Fetch 拦截器：一旦任意请求返回 **HTTP 401**，立即销毁内存凭据并跳转回登录弹窗，提示「凭据已失效或被吊销」。
+- 全局 Axios/Fetch 拦截器：一旦任意请求返回 **HTTP 401**，立即销毁内存凭据并跳转回登录弹窗，提示「凭据无效或已被吊销」。
 
 ### 2. Markdown 渲染安全策略（严格防 XSS）
 记忆正文可能由各类外部 Agent 写入，不可假定其安全。前端通过禁用原始 HTML、白名单清洗和协议过滤，阻断定义范围内的跨站脚本注入路径：
 - 使用 `react-markdown` 搭配 `rehype-sanitize`（基于 GitHub 清洗规则白名单）；
 - 显式设置配置项：`skipHtml={true}`，禁止渲染任意内联 HTML 标签（如 `<script>`、`<iframe>`、`<img onerror=...>` 等一律转为纯文本转义字符）；
-- 链接协议白名单：仅放行 `http:`、`https:` 与 `mailto:`，彻底过滤 `javascript:` 与 `data:` 伪协议；
+- 标签、事件属性与 `javascript:`/`data:` 伪协议的过滤交由 `rehype-sanitize` 默认规则集（GitHub 白名单），不手写协议黑名单；
 - 所有超链接统一附加 `target="_blank" rel="noopener noreferrer"`。
 
 ---
@@ -151,7 +151,7 @@
   "success": false,
   "data": null,
   "error": {
-    "code": "PERMISSION_DENIED",
+    "code": "FORBIDDEN",
     "message": "对分组 proj 只有只读权限，拒绝修改"
   }
 }
@@ -161,7 +161,7 @@
 - `UNAUTHORIZED` (HTTP 401)：未携带 Token 或 Token 无效/被吊销；
 - `FORBIDDEN` (HTTP 403)：访问未授权分组或只读 Key 尝试写操作；
 - `NOT_FOUND` (HTTP 404)：条目不存在；
-- `PAYLOAD_TOO_LARGE` (HTTP 413)：请求体大于 1MB；
+- HTTP 413：请求体大于 1MB，由根应用的 `RequestBodyLimitMiddleware` 直接返回纯文本，不经过统一信封，因此没有对应错误码；
 - `VALIDATION_ERROR` (HTTP 422)：字段超长（标题>60、摘要>200、正文>64000）；
 - `INTERNAL_ERROR` (HTTP 500)：底层数据库或服务异常。
 
@@ -249,9 +249,11 @@
 ### 1. 前端工程文件结构 (`web/`)
 ```
 web/
+├── .npmrc                  # npm 缓存指向本机 .devtools
 ├── package.json
 ├── package-lock.json
 ├── vite.config.ts
+├── playwright.config.ts    # Playwright 配置，webServer 调 tests/serve.sh 起真实 uvicorn
 ├── tsconfig.json
 ├── tailwind.config.js
 ├── postcss.config.js
@@ -261,8 +263,13 @@ web/
 │   ├── App.tsx
 │   ├── api.ts              # Fetch 客户端封装、sessionStorage 凭据注入与 401 拦截
 │   ├── types.ts            # 前端契约类型定义 (与后端 JSON 信封对齐)
+│   ├── useAsync.ts         # 统一的加载/空/错误/未授权状态机
+│   ├── env.d.ts            # vite.config.ts 中 process 的最小类型声明
 │   ├── components/
+│   │   ├── Login.tsx       # 登录卡片与「连接」校验
 │   │   ├── Header.tsx      # 分组展示与退出登录
+│   │   ├── States.tsx      # 骨架屏、空态、错误横幅与未授权态
+│   │   ├── Markdown.tsx    # react-markdown + rehype-sanitize 安全渲染
 │   │   ├── MemoryList.tsx  # 记忆主列表与骨架屏
 │   │   ├── MemoryDetail.tsx# Markdown 安全渲染与操作按钮
 │   │   ├── EditDrawer.tsx  # 原地抽屉编辑器与字数校验器
@@ -271,7 +278,9 @@ web/
 │   └── styles/
 │       └── index.css       # Tailwind 导入
 └── tests/
-    └── e2e.spec.ts         # Playwright 最小端到端浏览器自动化烟测
+    ├── e2e.spec.ts         # Playwright 最小端到端浏览器自动化烟测
+    ├── keys.json           # serve.sh 签发的运行时令牌（不入库）
+    └── serve.sh            # 临时库 + 两把 Key，exec 启动 uvicorn
 ```
 
 ### 2. 前端锁定依赖清单 (`web/package.json`)
@@ -310,68 +319,84 @@ web/
 
 ### 3. Playwright 浏览器自动化烟测套件 (`web/tests/e2e.spec.ts`)
 ```typescript
-import { test, expect } from '@playwright/test';
+import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-test.describe('Capsa Studio 浏览器核心链路烟测', () => {
-  test('1. 凭据存储与退出销毁测试', async ({ page }) => {
-    await page.goto('/');
-    await page.fill('input[type="password"]', 'capsa_testkey_12345678901234567890123456789012');
-    await page.click('button:has-text("连接")');
-    await expect(page.locator('text=记忆工作台')).toBeVisible();
+const here = dirname(fileURLToPath(import.meta.url));
+const keys = JSON.parse(readFileSync(join(here, "keys.json"), "utf-8")) as {
+  rw: string;
+  readonly: string;
+};
 
-    // 检查 sessionStorage
-    const token = await page.evaluate(() => sessionStorage.getItem('capsa_key'));
-    expect(token).toBeTruthy();
+async function signIn(page: Page, key: string) {
+  await page.goto("/");
+  await page.getByLabel("API Key").fill(key);
+  await page.getByRole("button", { name: "连接" }).click();
+  await expect(page.getByRole("navigation", { name: "主视图" })).toBeVisible();
+}
 
-    // 点击退出登录
-    await page.click('button:has-text("退出")');
-    const clearedToken = await page.evaluate(() => sessionStorage.getItem('capsa_key'));
-    expect(clearedToken).toBeNull();
-    await expect(page.locator('input[type="password"]')).toBeVisible();
-  });
+test("1. 凭据只存 sessionStorage，退出即清空", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "连接" })).toBeVisible();
+  await signIn(page, keys.rw);
+  expect(await page.evaluate(() => sessionStorage.getItem("capsa_key"))).toBe(keys.rw);
 
-  test('2. XSS 脚本与伪协议净化拦截测试', async ({ page }) => {
-    // 注入恶意 Markdown
-    await page.goto('/');
-    await page.evaluate(() => sessionStorage.setItem('capsa_key', 'capsa_testkey_12345678901234567890123456789012'));
-    await page.reload();
+  await page.getByRole("button", { name: "退出" }).click();
+  await expect(page.getByRole("button", { name: "连接" })).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem("capsa_key"))).toBeNull();
+});
 
-    // 验证 <script> 标签被过滤为文本而非执行
-    await page.click('text=新建记忆');
-    await page.fill('input[placeholder*="标题"]', '安全测试');
-    await page.fill('input[placeholder*="摘要"]', 'XSS 拦截');
-    await page.fill('textarea[placeholder*="正文"]', '<script>window.xss_flag=true;</script>[点击链接](javascript:window.xss_link=true)');
-    await page.click('button:has-text("保存")');
+test("4. Markdown 管道拦截脚本、事件属性与伪协议", async ({ page }) => {
+  await signIn(page, keys.rw);
+  await page.getByLabel("检索记忆").fill("XSS 探针");
+  await page.getByRole("button", { name: "新建记忆" }).first().click();
+  await page.getByLabel("标题").fill("XSS 探针");
+  await page.getByLabel("摘要").fill("净化管道");
+  await page.getByLabel("正文").fill('<script>window.xss_flag=true;</script>\n\n[点击](javascript:window.xss_link=true)');
+  await page.getByRole("button", { name: "创建" }).click();
 
-    // 验证 flag 为空且脚本未执行
-    const xssFlag = await page.evaluate(() => (window as any).xss_flag);
-    expect(xssFlag).toBeUndefined();
-  });
+  await page.getByRole("button", { name: /XSS 探针/ }).first().click();
+  await expect(page.getByRole("article")).toBeVisible();
+  expect(await page.evaluate(() => (window as never as { xss_flag?: boolean }).xss_flag)).toBeUndefined();
+  expect(await page.evaluate(() => (window as never as { xss_link?: boolean }).xss_link)).toBeUndefined();
+  await expect(page.locator("script", { hasText: "xss_flag" })).toHaveCount(0);
+  await expect(page.locator("[onerror]")).toHaveCount(0);
+  await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
+});
 
-  test('3. 移动端 375px 响应式单栏与抽屉展开测试', async ({ page }) => {
-    await page.setViewportSize({ width: 375, height: 667 });
-    await page.goto('/');
-    await page.evaluate(() => sessionStorage.setItem('capsa_key', 'capsa_testkey_12345678901234567890123456789012'));
-    await page.reload();
+test("9. 移动端 375px 单栏与抽屉全屏", async ({ page }) => {
+  const title = "移动端探针";
+  await signIn(page, keys.rw);
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.getByLabel("检索记忆").fill(title);
+  await page.getByRole("button", { name: new RegExp(title) }).first().click();
+  await expect(page.getByRole("button", { name: "返回列表" })).toBeVisible();
 
-    // 移动端单栏导航
-    await expect(page.locator('nav[aria-label="移动端导航"]')).toBeVisible();
-  });
+  await page.getByRole("button", { name: "返回列表" }).click();
+  await page.getByRole("button", { name: "新建记忆" }).first().click();
+  const drawer = page.getByRole("heading", { name: "新建记忆" }).locator("..");
+  const box = await drawer.boundingBox();
+  expect(Math.round(box?.width ?? 0)).toBe(375);
 });
 ```
 
 ### 4. Docker 多阶段构建实现 (Dockerfile)
 生产镜像采用两阶段构建，**VPS 镜像最终仅保留 Python 运行时，Node.js 零残留**：
 ```dockerfile
-# Stage 1: Build Frontend Assets
+# 阶段一：构建前端静态产物（最终镜像不保留 Node 运行时）
 FROM node:20-alpine AS web-builder
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
-RUN npm run build
+# 产物目录与本阶段的拷贝源必须一致：Vite 只在 outDir 位于项目根内时自建目录，
+# /build 越出 web/，因此先显式创建。
+ENV CAPSA_STATIC_DIR=/build/static
+RUN mkdir -p $CAPSA_STATIC_DIR && npm run build
 
-# Stage 2: Production Python Runtime
+# 阶段二：Python 运行时
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -387,9 +412,9 @@ RUN useradd -m -u 1000 -s /bin/bash capsa \
     && mkdir -p /data /backup /app/capsa/static \
     && chown -R capsa:capsa /app /data /backup
 
-COPY --chown=capsa:capsa pyproject.toml .
+COPY --chown=capsa:capsa pyproject.toml ./
 COPY --chown=capsa:capsa capsa/ capsa/
-COPY --from=web-builder --chown=capsa:capsa /web/dist/ capsa/static/
+COPY --from=web-builder --chown=capsa:capsa /build/static/ capsa/static/
 
 RUN pip install --no-cache-dir .
 

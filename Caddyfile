@@ -1,0 +1,10 @@
+{$CAPSA_DOMAIN:localhost} {
+	request_body {
+		max_size 1MB
+	}
+
+	# flush_interval -1 关闭响应缓冲，保证流式响应即时下发
+	reverse_proxy capsa:8000 {
+		flush_interval -1
+	}
+}

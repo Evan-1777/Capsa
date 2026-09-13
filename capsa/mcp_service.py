@@ -46,7 +46,7 @@ def _reject_over_limit(ids: list[str], limit: int) -> None:
         raise ToolError(f"ids 上限为 {limit}，本次传入 {len(ids)} 条")
 
 
-def _require_text(value: str | None, limit: int, label: str) -> str:
+def require_text(value: str | None, limit: int, label: str) -> str:
     """Shared non-empty and length check; returns the value for the caller to store."""
     if value is None or not value.strip():
         raise ToolError(f"{label}不能为空")
@@ -149,9 +149,9 @@ def memory_save(
     grants = _grants()
     if grants.get(group) != "rw":
         raise ToolError(f"对分组 {group} 没有写权限，拒绝写入")
-    _require_text(title, TITLE_MAX, "标题")
-    _require_text(summary, SUMMARY_MAX, "摘要")
-    _require_text(body, BODY_MAX, "正文")
+    require_text(title, TITLE_MAX, "标题")
+    require_text(summary, SUMMARY_MAX, "摘要")
+    require_text(body, BODY_MAX, "正文")
     stamp = _parse_review_at(review_at) if review_at else None
     conn = db.connect()
     try:
@@ -204,11 +204,11 @@ def memory_update(
         _locate_writable(conn, id)
         fields: dict = {}
         if title is not None:
-            fields["title"] = _require_text(title, TITLE_MAX, "标题")
+            fields["title"] = require_text(title, TITLE_MAX, "标题")
         if summary is not None:
-            fields["summary"] = _require_text(summary, SUMMARY_MAX, "摘要")
+            fields["summary"] = require_text(summary, SUMMARY_MAX, "摘要")
         if body is not None:
-            fields["body"] = _require_text(body, BODY_MAX, "正文")
+            fields["body"] = require_text(body, BODY_MAX, "正文")
         if tags is not None:
             fields["tags"] = tags
         if pinned is not None:

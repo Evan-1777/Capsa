@@ -21,6 +21,17 @@ _MEMORY_SEARCH_FIELDS = (
 
 _MEMORY_UPDATE_FIELDS = ("title", "summary", "body", "tags", "review_at", "pinned")
 
+# Web 列表与详情的字段契约：列表始终带回收站字段，详情另带正文。
+WEB_LIST_FIELDS = (
+    "id", "group_slug", "title", "summary", "tags", "review_at", "pinned",
+    "updated_at", "deleted_at", "deleted_reason",
+)
+WEB_ITEM_FIELDS = ("id", "group_slug", "title", "summary", "body", "tags", "review_at",
+                   "pinned", "created_at", "updated_at", "deleted_at", "deleted_reason")
+
+_WEB_LIST_COLUMNS = ", ".join(WEB_LIST_FIELDS)
+_WEB_ITEM_COLUMNS = ", ".join(WEB_ITEM_FIELDS)
+
 
 class DuplicateMemoryId(Exception):
     """Raised when every generated memory id collided with an existing primary key."""
@@ -256,3 +267,57 @@ def list_deleted_memories(
         sql += " AND group_slug = ?"
         params.append(group_slug)
     return [dict(row) for row in conn.execute(sql + " ORDER BY deleted_at DESC, id DESC", params)]
+
+
+def list_memories_for_web(
+    conn: sqlite3.Connection,
+    scopes: dict[str, str],
+    status: str = "active",
+    group: str | None = None,
+    offset: int = 0,
+    limit: int = 20,
+) -> tuple[list[dict], int]:
+    """Paged active / overdue / deleted listing inside the authorized groups.
+
+    Keyword matching is deliberately absent: hits and ordering belong to
+    retrieval.rank_memories, so the SQL here never filters on a query.
+    """
+    slugs = sorted(scopes)
+    if not slugs:
+        return [], 0
+    if status == "active":
+        condition, params = "deleted_at IS NULL", []
+    elif status == "deleted":
+        condition, params = "deleted_at IS NOT NULL", []
+    else:
+        condition = "deleted_at IS NULL AND review_at IS NOT NULL AND review_at < ?"
+        params = [utcnow()]
+    where = f"group_slug IN ({_placeholders(len(slugs))}) AND {condition}"
+    if group:
+        where += " AND group_slug = ?"
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM memories WHERE {where}", [*slugs, *params, *([group] if group else [])]
+    ).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT {_WEB_LIST_COLUMNS} FROM memories WHERE {where} "
+        "ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ? OFFSET ?",
+        [*slugs, *params, *([group] if group else []), limit, offset],
+    )
+    return [dict(row) for row in rows], total
+
+
+def get_memory_for_web(conn: sqlite3.Connection, memory_id: str) -> dict | None:
+    """Fetch one entry without filtering deleted_at, so the recycle bin can locate it."""
+    row = conn.execute(
+        f"SELECT {_WEB_ITEM_COLUMNS} FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_key(conn: sqlite3.Connection, key_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT id, name, scopes FROM keys WHERE id = ?", (key_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"], "scopes": json.loads(row["scopes"])}
