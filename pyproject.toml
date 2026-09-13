@@ -1,0 +1,31 @@
+[project]
+name = "capsa"
+version = "0.1.0"
+description = "Personal Agent Memory Service over MCP"
+requires-python = ">=3.12"
+# starlette 与 pydantic 的版本下限由 fastmcp 4 决定（fastmcp-slim[server] 要求
+# starlette>=1.0.1、pydantic>=2.12.0），不能按更低版本钉死
+# 测试依赖用 httpx2：starlette 1.6 的 TestClient 优先导入 httpx2，
+# 仅在缺失时回退 httpx 并告警
+dependencies = [
+    "fastmcp==4.0.0",
+    "starlette==1.6.0",
+    "uvicorn[standard]==0.52.4",
+    "pydantic==2.13.5",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest==9.1.1",
+    "httpx2==2.12.0",
+]
+
+[project.scripts]
+capsa = "capsa.cli:main"
+
+[build-system]
+requires = ["hatchling==1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["capsa"]

@@ -1,0 +1,141 @@
+"""Administrative CLI: init, group, key."""
+
+from __future__ import annotations
+
+import argparse
+import sqlite3
+import sys
+
+from capsa import dal, db
+from capsa.auth import issue_key
+from capsa.ids import hash_token
+
+DEFAULT_GROUPS = [
+    ("proj", "项目", "项目相关记忆：架构决策、实施进度与接口约定"),
+    ("study", "学习", "学习笔记：技术原理、资料摘要与练习记录"),
+    ("life", "生活", "生活记录：计划、清单与日常事务"),
+    ("track", "追踪", "需要按期复核的追踪事项"),
+]
+
+
+def _connect() -> sqlite3.Connection:
+    conn = db.connect()
+    db.init_schema(conn)
+    return conn
+
+
+def _parse_scopes(raw: str) -> dict[str, str]:
+    scopes: dict[str, str] = {}
+    for pair in raw.split(","):
+        slug, _, permission = pair.partition(":")
+        if slug.strip():
+            scopes[slug.strip()] = permission.strip() or "r"
+    return scopes
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    conn = _connect()
+    try:
+        for slug, name, description in DEFAULT_GROUPS:
+            dal.add_group(conn, slug, name, description)
+    finally:
+        conn.close()
+    print(f"已预置标准分组：{', '.join(slug for slug, _, _ in DEFAULT_GROUPS)}")
+    return 0
+
+
+def cmd_group_add(args: argparse.Namespace) -> int:
+    conn = _connect()
+    try:
+        dal.add_group(conn, args.slug, args.name, args.desc)
+        group = dal.get_group(conn, args.slug)
+    finally:
+        conn.close()
+    print(f"分组 {group['slug']} | {group['name']} | {group['description']}")
+    return 0
+
+
+def cmd_group_list(args: argparse.Namespace) -> int:
+    conn = _connect()
+    try:
+        groups = dal.list_groups(conn)
+    finally:
+        conn.close()
+    for group in groups:
+        print(f"{group['slug']} | {group['name']} | {group['description']}")
+    return 0
+
+
+def cmd_key_create(args: argparse.Namespace) -> int:
+    scopes = _parse_scopes(args.scopes)
+    key_id, plain = issue_key()
+    conn = _connect()
+    try:
+        dal.create_key(conn, key_id, args.name, hash_token(plain), scopes)
+    finally:
+        conn.close()
+    print(f"Key ID: {key_id}")
+    print(f"令牌: {plain}")
+    print("明文令牌仅本次显示，服务端只存 SHA256，之后无法找回。")
+    return 0
+
+
+def cmd_key_revoke(args: argparse.Namespace) -> int:
+    conn = _connect()
+    try:
+        revoked = dal.revoke_key(conn, args.key_id)
+    finally:
+        conn.close()
+    if not revoked:
+        print(f"未找到可撤销的 Key：{args.key_id}", file=sys.stderr)
+        return 1
+    print(f"已撤销 Key：{args.key_id}")
+    return 0
+
+
+def cmd_key_list(args: argparse.Namespace) -> int:
+    conn = _connect()
+    try:
+        keys = dal.list_keys(conn)
+    finally:
+        conn.close()
+    for key in keys:
+        state = f"已撤销 {key['revoked_at']}" if key["revoked_at"] else "有效"
+        print(f"{key['id']} | {key['name']} | {key['scopes']} | {state}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="capsa", description="Capsa 记忆服务管理命令")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    commands.add_parser("init", help="预置 proj/study/life/track 四个标准分组").set_defaults(
+        func=cmd_init
+    )
+
+    group = commands.add_parser("group", help="分组维护")
+    group_commands = group.add_subparsers(dest="group_command", required=True)
+    group_add = group_commands.add_parser("add", help="新增分组")
+    group_add.add_argument("slug")
+    group_add.add_argument("name")
+    group_add.add_argument("--desc", default="")
+    group_add.set_defaults(func=cmd_group_add)
+    group_commands.add_parser("list", help="列出分组").set_defaults(func=cmd_group_list)
+
+    key = commands.add_parser("key", help="Key 签发与撤销")
+    key_commands = key.add_subparsers(dest="key_command", required=True)
+    key_create = key_commands.add_parser("create", help="签发 Key")
+    key_create.add_argument("name")
+    key_create.add_argument("--scopes", required=True, help="形如 proj:rw,study:r")
+    key_create.set_defaults(func=cmd_key_create)
+    key_revoke = key_commands.add_parser("revoke", help="撤销 Key")
+    key_revoke.add_argument("key_id")
+    key_revoke.set_defaults(func=cmd_key_revoke)
+    key_commands.add_parser("list", help="列出 Key").set_defaults(func=cmd_key_list)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
