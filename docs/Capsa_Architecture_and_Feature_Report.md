@@ -36,92 +36,87 @@ Capsa 选择了一条**极简、轻量、高确定性**的硬核工程路线：
 Capsa 采用清晰的「单向依赖、严格分层」架构。系统整体划分为 4 个职责鲜明的层级：网络接入层、协议与传输适配层、领域逻辑层、持久化存储层。
 
 <div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; background-color: #f8fafc; margin: 20px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-  <div style="font-weight: 600; font-size: 15px; margin-bottom: 16px; color: #0f172a; display: flex; align-items: center; gap: 8px;">
-    <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: #2563eb;"></span>
-    Capsa 全景架构与分层拓扑图
-  </div>
-  <div style="display: flex; flex-direction: column; gap: 12px;">
-    
-    <!-- 接入层 -->
-    <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-      <div style="font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px;">1. 网络与反向代理接入层（Edge & Ingress）</div>
-      <div style="display: flex; gap: 10px; font-size: 13px; color: #1e293b;">
-        <span style="background: #e0f2fe; color: #0369a1; padding: 4px 8px; border-radius: 4px; font-weight: 500;">Caddy 2 (自动 HTTPS / 1MB 请求体限制 / 无缓冲流式转发)</span>
-        <span style="background: #f1f5f9; color: #475569; padding: 4px 8px; border-radius: 4px;">端口 80/443</span>
-      </div>
-    </div>
+<div style="font-weight: 600; font-size: 15px; margin-bottom: 16px; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+<span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: #2563eb;"></span>
+Capsa 全景架构与分层拓扑图
+</div>
+<div style="display: flex; flex-direction: column; gap: 12px;">
 
-    <!-- 根应用装配 -->
-    <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-      <div style="font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px;">2. ASGI 根应用与中间件（Root Starlette Application / capsa/server.py）</div>
-      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font-size: 12px; text-align: center;">
-        <div style="background: #f8fafc; border: 1px dashed #cbd5e1; padding: 8px; border-radius: 4px;">
-          <b style="color: #0f172a;">GET /healthz</b><br><span style="color: #64748b;">DB 可用性探测</span>
-        </div>
-        <div style="background: #f8fafc; border: 1px dashed #cbd5e1; padding: 8px; border-radius: 4px;">
-          <b style="color: #0f172a;">/mcp</b><br><span style="color: #64748b;">FastMCP 子应用直挂</span>
-        </div>
-        <div style="background: #f8fafc; border: 1px dashed #cbd5e1; padding: 8px; border-radius: 4px;">
-          <b style="color: #0f172a;">/api/*</b><br><span style="color: #64748b;">REST API (Bearer 守卫)</span>
-        </div>
-        <div style="background: #f8fafc; border: 1px dashed #cbd5e1; padding: 8px; border-radius: 4px;">
-          <b style="color: #0f172a;">/ (Root)</b><br><span style="color: #64748b;">Capsa Studio SPA 静态托管</span>
-        </div>
-      </div>
-      <div style="margin-top: 8px; font-size: 11px; color: #94a3b8; text-align: right;">
-        * 全局挂载 Starlette 内置 RequestBodyLimitMiddleware（1MB 截断）
-      </div>
-    </div>
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px;">1. 网络与反向代理接入层（Edge & Ingress）</div>
+<div style="display: flex; gap: 10px; font-size: 13px; color: #1e293b;">
+<span style="background: #e0f2fe; color: #0369a1; padding: 4px 8px; border-radius: 4px; font-weight: 500;">Caddy 2 (自动 HTTPS / 1MB 请求体限制 / 无缓冲流式转发)</span>
+<span style="background: #f1f5f9; color: #475569; padding: 4px 8px; border-radius: 4px;">端口 80/443</span>
+</div>
+</div>
 
-    <!-- 双传输适配层 -->
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-      <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-        <div style="font-size: 12px; font-weight: 600; color: #2563eb; margin-bottom: 6px;">3A. MCP 传输适配层 (capsa/mcp_service.py)</div>
-        <div style="font-size: 11px; color: #475569; line-height: 1.5;">
-          • 4 个只读工具（search / peek / read / groups）<br>
-          • 3 个写入工具（create / update / delete）<br>
-          • 报错返回工具级 <code>isError: true</code>，纯文本渲染
-        </div>
-      </div>
-      <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-        <div style="font-size: 12px; font-weight: 600; color: #059669; margin-bottom: 6px;">3B. Web RESTful API (capsa/web_api.py)</div>
-        <div style="font-size: 11px; color: #475569; line-height: 1.5;">
-          • 8 个端点（认证 / 分组 / 列表 / 详情 / 增删改 / 恢复）<br>
-          • 统一 JSON 信封：<code>{success, data, error}</code><br>
-          • 错误映射为 HTTP 状态码 + 业务错误码
-        </div>
-      </div>
-    </div>
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px;">2. ASGI 根应用与中间件（Root Starlette Application / capsa/server.py）</div>
+<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font-size: 12px; text-align: center;">
+<div style="background: #f8fafc; border: 1px dashed #cbd5e1; padding: 8px; border-radius: 4px;">
+<b style="color: #0f172a;">GET /healthz</b><br><span style="color: #64748b;">DB 可用性探测</span>
+</div>
+<div style="background: #f8fafc; border: 1px dashed #cbd5e1; padding: 8px; border-radius: 4px;">
+<b style="color: #0f172a;">/mcp</b><br><span style="color: #64748b;">FastMCP 子应用直挂</span>
+</div>
+<div style="background: #f8fafc; border: 1px dashed #cbd5e1; padding: 8px; border-radius: 4px;">
+<b style="color: #0f172a;">/api/*</b><br><span style="color: #64748b;">REST API (Bearer 守卫)</span>
+</div>
+<div style="background: #f8fafc; border: 1px dashed #cbd5e1; padding: 8px; border-radius: 4px;">
+<b style="color: #0f172a;">/ (Root)</b><br><span style="color: #64748b;">Capsa Studio SPA 静态托管</span>
+</div>
+</div>
+<div style="margin-top: 8px; font-size: 11px; color: #94a3b8; text-align: right;">
+* 全局挂载 Starlette 内置 RequestBodyLimitMiddleware（1MB 截断）
+</div>
+</div>
 
-    <!-- 领域与逻辑层 -->
-    <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-      <div style="font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px;">4. 领域纯函数与数据访问层 (Domain & Data Access Layer)</div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; font-size: 12px;">
-        <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px;">
-          <b style="color: #0f172a;">capsa/dal.py</b><br>
-          <span style="color: #64748b; font-size: 11px;">系统唯一 SQL 出口、三态权限判别、软删除状态机</span>
-        </div>
-        <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px;">
-          <b style="color: #0f172a;">capsa/retrieval.py</b><br>
-          <span style="color: #64748b; font-size: 11px;">二字组分词、相关度排序、标题相似度查重、时间标准化</span>
-        </div>
-        <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px;">
-          <b style="color: #0f172a;">capsa/auth.py</b><br>
-          <span style="color: #64748b; font-size: 11px;">Bearer 令牌校验、SHA-256 散列匹配、即时吊销检查</span>
-        </div>
-      </div>
-    </div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-size: 12px; font-weight: 600; color: #2563eb; margin-bottom: 6px;">3A. MCP 传输适配层 (capsa/mcp_service.py)</div>
+<div style="font-size: 11px; color: #475569; line-height: 1.5;">
+• 4 个只读工具（search / peek / read / groups）<br>
+• 3 个写入工具（create / update / delete）<br>
+• 报错返回工具级 <code>isError: true</code>，纯文本渲染
+</div>
+</div>
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-size: 12px; font-weight: 600; color: #059669; margin-bottom: 6px;">3B. Web RESTful API (capsa/web_api.py)</div>
+<div style="font-size: 11px; color: #475569; line-height: 1.5;">
+• 8 个端点（认证 / 分组 / 列表 / 详情 / 增删改 / 恢复）<br>
+• 统一 JSON 信封：<code>{success, data, error}</code><br>
+• 错误映射为 HTTP 状态码 + 业务错误码
+</div>
+</div>
+</div>
 
-    <!-- 持久化存储 -->
-    <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-      <div style="font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px;">5. 持久化存储与热备层 (Storage & Backup / capsa/db.py & cli.py)</div>
-      <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #334155;">
-        <span><b>SQLite3 (WAL 模式)</b>：连接级别短连接，零常驻连接池泄露风险，<code>groups</code> / <code>api_keys</code> / <code>memories</code> 3 张核心表</span>
-        <span style="background: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; font-size: 11px;">Online Backup API 在线热备</span>
-      </div>
-    </div>
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px;">4. 领域纯函数与数据访问层 (Domain & Data Access Layer)</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; font-size: 12px;">
+<div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px;">
+<b style="color: #0f172a;">capsa/dal.py</b><br>
+<span style="color: #64748b; font-size: 11px;">系统唯一 SQL 出口、三态权限判别、软删除状态机</span>
+</div>
+<div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px;">
+<b style="color: #0f172a;">capsa/retrieval.py</b><br>
+<span style="color: #64748b; font-size: 11px;">二字组分词、相关度排序、标题相似度查重、时间标准化</span>
+</div>
+<div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px;">
+<b style="color: #0f172a;">capsa/auth.py</b><br>
+<span style="color: #64748b; font-size: 11px;">Bearer 令牌校验、SHA-256 散列匹配、即时吊销检查</span>
+</div>
+</div>
+</div>
 
-  </div>
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px;">5. 持久化存储与热备层 (Storage & Backup / capsa/db.py & cli.py)</div>
+<div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #334155;">
+<span><b>SQLite3 (WAL 模式)</b>：连接级别短连接，零常驻连接池泄露风险，<code>groups</code> / <code>api_keys</code> / <code>memories</code> 3 张核心表</span>
+<span style="background: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; font-size: 11px;">Online Backup API 在线热备</span>
+</div>
+</div>
+
+</div>
 </div>
 
 ### 2.2 核心模块调用契约与依赖流向
@@ -211,30 +206,30 @@ Agent 通过标准 MCP 协议，使用其持有的 Bearer Token 与 Capsa 通信
 为了防止恶意探测或越权，Capsa 在数据访问层（`capsa/dal.py`）确立了**严格的三态防线**：
 
 <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0;">
-  <thead>
-    <tr style="background-color: #f1f5f9; text-align: left;">
-      <th style="padding: 10px; border: 1px solid #cbd5e1; width: 15%;">判定状态</th>
-      <th style="padding: 10px; border: 1px solid #cbd5e1; width: 35%;">触发条件</th>
-      <th style="padding: 10px; border: 1px solid #cbd5e1; width: 50%;">系统的安全防御行为</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="padding: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #059669;">authorized</td>
-      <td style="padding: 10px; border: 1px solid #cbd5e1;">条目存在，且当前 Token 具备该分组访问权限</td>
-      <td style="padding: 10px; border: 1px solid #cbd5e1;">正常放行，返回数据。</td>
-    </tr>
-    <tr>
-      <td style="padding: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #dc2626;">forbidden</td>
-      <td style="padding: 10px; border: 1px solid #cbd5e1;">条目存在，但当前 Token <b>无权访问</b>该条目所在的分组</td>
-      <td style="padding: 10px; border: 1px solid #cbd5e1;"><b>绝不泄露分组名与标题！</b>底层仅返回 <code>status="forbidden"</code> 与 ID。在 Web 端和 MCP 端统一呈现为「记忆不存在或无权访问」（与 404 响应逐字一致）。</td>
-    </tr>
-    <tr>
-      <td style="padding: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #64748b;">not_found</td>
-      <td style="padding: 10px; border: 1px solid #cbd5e1;">数据库中不存在该 ID，或该条目已被软删除</td>
-      <td style="padding: 10px; border: 1px solid #cbd5e1;">返回不存在。</td>
-    </tr>
-  </tbody>
+<thead>
+<tr style="background-color: #f1f5f9; text-align: left;">
+<th style="padding: 10px; border: 1px solid #cbd5e1; width: 15%;">判定状态</th>
+<th style="padding: 10px; border: 1px solid #cbd5e1; width: 35%;">触发条件</th>
+<th style="padding: 10px; border: 1px solid #cbd5e1; width: 50%;">系统的安全防御行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="padding: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #059669;">authorized</td>
+<td style="padding: 10px; border: 1px solid #cbd5e1;">条目存在，且当前 Token 具备该分组访问权限</td>
+<td style="padding: 10px; border: 1px solid #cbd5e1;">正常放行，返回数据。</td>
+</tr>
+<tr>
+<td style="padding: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #dc2626;">forbidden</td>
+<td style="padding: 10px; border: 1px solid #cbd5e1;">条目存在，但当前 Token <b>无权访问</b>该条目所在的分组</td>
+<td style="padding: 10px; border: 1px solid #cbd5e1;"><b>绝不泄露分组名与标题！</b>底层仅返回 <code>status="forbidden"</code> 与 ID。在 Web 端和 MCP 端统一呈现为「记忆不存在或无权访问」（与 404 响应逐字一致）。</td>
+</tr>
+<tr>
+<td style="padding: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #64748b;">not_found</td>
+<td style="padding: 10px; border: 1px solid #cbd5e1;">数据库中不存在该 ID，或该条目已被软删除</td>
+<td style="padding: 10px; border: 1px solid #cbd5e1;">返回不存在。</td>
+</tr>
+</tbody>
 </table>
 
 > 💡 **给 Coding 爱好者的批注：什么是「侧信道防泄露」（Side-Channel Protection）？**  
@@ -296,40 +291,40 @@ Capsa Studio 是一个嵌入式单页应用（SPA），专为个人开发者审�
 Capsa 的数据库 schema 极度精简优雅，定义于 `capsa/db.py`，包含 3 张表：
 
 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 16px 0; font-family: sans-serif;">
-  
-  <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-    <div style="font-weight: 600; font-size: 13px; color: #0f172a; border-bottom: 2px solid #3b82f6; padding-bottom: 6px; margin-bottom: 8px;">groups (分组表)</div>
-    <div style="font-size: 11px; color: #475569; line-height: 1.6;">
-      • <b>slug</b> (TEXT PK, 如 proj/study)<br/>
-      • <b>name</b> (TEXT, 中文名称)<br/>
-      • <b>description</b> (TEXT, 分组说明)<br/>
-      • <b>created_at</b> (TEXT ISO-8601)
-    </div>
-  </div>
 
-  <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-    <div style="font-weight: 600; font-size: 13px; color: #0f172a; border-bottom: 2px solid #10b981; padding-bottom: 6px; margin-bottom: 8px;">api_keys (令牌凭据表)</div>
-    <div style="font-size: 11px; color: #475569; line-height: 1.6;">
-      • <b>id</b> (TEXT PK, 8 位唯一识别码)<br/>
-      • <b>token_hash</b> (TEXT, SHA-256 密文)<br/>
-      • <b>name</b> (TEXT, 密钥用途说明)<br/>
-      • <b>scopes_json</b> (TEXT, 授权字典)<br/>
-      • <b>revoked_at</b> (TEXT, 撤销标记)
-    </div>
-  </div>
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-weight: 600; font-size: 13px; color: #0f172a; border-bottom: 2px solid #3b82f6; padding-bottom: 6px; margin-bottom: 8px;">groups (分组表)</div>
+<div style="font-size: 11px; color: #475569; line-height: 1.6;">
+• <b>slug</b> (TEXT PK, 如 proj/study)<br/>
+• <b>name</b> (TEXT, 中文名称)<br/>
+• <b>description</b> (TEXT, 分组说明)<br/>
+• <b>created_at</b> (TEXT ISO-8601)
+</div>
+</div>
 
-  <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
-    <div style="font-weight: 600; font-size: 13px; color: #0f172a; border-bottom: 2px solid #8b5cf6; padding-bottom: 6px; margin-bottom: 8px;">memories (核心记忆表)</div>
-    <div style="font-size: 11px; color: #475569; line-height: 1.6;">
-      • <b>id</b> (TEXT PK, mem_ + 6位随机码)<br/>
-      • <b>group_slug</b> (TEXT FK, 关联 groups)<br/>
-      • <b>title, summary, body</b> (TEXT)<br/>
-      • <b>tags_json</b> (TEXT JSON 数组)<br/>
-      • <b>pinned</b> (INTEGER, 0/1 置顶标记)<br/>
-      • <b>review_at</b> (TEXT, 复核期限)<br/>
-      • <b>deleted_at, deleted_reason</b> (软删除)
-    </div>
-  </div>
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-weight: 600; font-size: 13px; color: #0f172a; border-bottom: 2px solid #10b981; padding-bottom: 6px; margin-bottom: 8px;">api_keys (令牌凭据表)</div>
+<div style="font-size: 11px; color: #475569; line-height: 1.6;">
+• <b>id</b> (TEXT PK, 8 位唯一识别码)<br/>
+• <b>token_hash</b> (TEXT, SHA-256 密文)<br/>
+• <b>name</b> (TEXT, 密钥用途说明)<br/>
+• <b>scopes_json</b> (TEXT, 授权字典)<br/>
+• <b>revoked_at</b> (TEXT, 撤销标记)
+</div>
+</div>
+
+<div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px;">
+<div style="font-weight: 600; font-size: 13px; color: #0f172a; border-bottom: 2px solid #8b5cf6; padding-bottom: 6px; margin-bottom: 8px;">memories (核心记忆表)</div>
+<div style="font-size: 11px; color: #475569; line-height: 1.6;">
+• <b>id</b> (TEXT PK, mem_ + 6位随机码)<br/>
+• <b>group_slug</b> (TEXT FK, 关联 groups)<br/>
+• <b>title, summary, body</b> (TEXT)<br/>
+• <b>tags_json</b> (TEXT JSON 数组)<br/>
+• <b>pinned</b> (INTEGER, 0/1 置顶标记)<br/>
+• <b>review_at</b> (TEXT, 复核期限)<br/>
+• <b>deleted_at, deleted_reason</b> (软删除)
+</div>
+</div>
 
 </div>
 
