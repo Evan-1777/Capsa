@@ -29,6 +29,7 @@ Read in order (skip missing paths; note skips in the report):
 ## Guardrails
 
 - Read-only: NO file edits, NO writes, NO bash modifications
+- No subagents: single-layer task, finish within this session
 - Prefer grep/find/read over bash ls
 - Return structured findings, not raw output
 - Be concise but thorough

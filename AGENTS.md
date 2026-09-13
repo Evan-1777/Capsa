@@ -127,6 +127,7 @@
 
 所有 subagent 共享：
 - `inherit_context: false` — 隔离会话；以目标为单位委托，允许并行多开，同一时刻不超过 3 个
+- **嵌套**：subagent 仅由主线 spawn，被委托方不得再 spawn subagent——任务须在单层内完成
 - 执行中不与主 Agent 通信；遇障碍 `advisor` → 自行决策 → 继续；整链结束后 return 最终报告
 - **Model**：由调用端传入，定义中禁止硬编码
 - **thinking**：`off / minimal / low / medium / high / xhigh`（`med`=`medium`），默认 `high`
@@ -151,7 +152,7 @@ Spawn prompt 模板：
 ```
 Goal: {one-line goal}
 Read: Project.md, SCOPE.md, Plan.md, Tasks.md (.docs/ or root).
-Rules: read-only, no edits; return structured findings in explore format.
+Rules: read-only, no edits; no subagents; return structured findings in explore format.
 ```
 
 ### executor
@@ -162,7 +163,7 @@ Spawn prompt 模板：
 ```
 Goal: {one-line goal}
 Read: Project.md, SCOPE.md, Plan.md, Tasks.md (.docs/ or root).
-Rules: no parent channel; on blockers call advisor; return executor format report.
+Rules: no parent channel; no subagents; on blockers call advisor; return executor format report.
 ```
 
 ## 工作流组合

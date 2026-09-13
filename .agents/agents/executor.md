@@ -21,6 +21,10 @@ Prefer SCOPE/Project over Task details on conflict; record conflicts.
 Execute → Test → Document Maintenance → Archive → Git Commit  
 (per AGENTS.md; mark Tasks DONE only when acceptance criteria pass)
 
+## Boundaries
+
+No subagents: single-layer task, run the chain in this session.
+
 ## Obstacles
 
 No parent channel (no mid-run return / resume / ask_question for design decisions).
