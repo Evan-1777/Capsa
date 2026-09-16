@@ -29,3 +29,5 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.image }}:${{ inputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
