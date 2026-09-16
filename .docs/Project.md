@@ -20,13 +20,14 @@
 ## 1. 概述
 
 - **一句话定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套权限对称的 Web 管理台。
-- **当前阶段**：Phase 3（Capsa Studio 管理台、REST API、容器编排与在线热备）交付完成。
+- **当前阶段**：Phase 4（单服务编排、宿主 TLS、CI 镜像交付）交付完成。
 - **非目标**：不引入向量检索与自动抽取写入，不做多租户；Key 签发/撤销、分组维护与回收站 CLI 仍为管理员通道，不 Web 化。完整边界见 `SCOPE.md`。
-- **设计与交付文档**：设计方案、落地交付分期规划、可视化前端管理计划与架构功能报告已随 Phase 3 归档至 `.docs/09-13-v3/docs/`
+- **设计与交付文档**：Phase 3 的设计方案、落地交付分期规划、可视化前端管理计划与架构功能报告归档于 `.docs/09-13-v3/docs/`；Phase 4 的部署形态收敛归档于 `.docs/09-16-v1/`。归档是带日期的历史快照，其中描述的容器编排形态以本文件与 `README.md` 为准
 
 ## 2. 环境与运行
 
 - **运行平台**：Linux x86_64；本机开发，生产为 `docker compose` 部署到个人 VPS
+  - 镜像由 GitHub Actions 手动触发构建并推送到 GHCR，`docker-compose.yml` 只拉取不构建；TLS 由宿主机反向代理终止，容器只发布回环端口
 - **Shell**：bash
 - **版本管理**：git，主干分支 `master`
 - **语言 / 运行时**：Python 3.12.14，由仓库内 uv 0.12.13 落位的独立 CPython 提供；系统仅 3.14 且缺 ensurepip，不可用
@@ -52,6 +53,7 @@
 - **如何构建前端**：`cd web && npm ci && npm run build`，产物落在 `capsa/static/`（该目录不入版本库，由 `capsa/server.py` 条件挂载）
   - ★ 易错：npm 必须走 `web/.npmrc` 指定的 `.devtools/npm-cache`；本机默认缓存目录不可写，不设会直接失败
 - **如何测试**：Python 侧 `.venv/bin/python -m pytest -v`；前端侧 `cd web && npm run test:e2e`（Playwright 驱动系统 Chrome，经 `web/tests/serve.sh` 起真实 uvicorn）。两侧用例全程使用临时数据库，不触碰 `/data`
+- **如何构建镜像**：仅手动触发。网页在仓库 Actions 页签选 `build-image`，命令行 `gh workflow run build-image.yml -f tag=v0.1.0`；本地等价命令 `docker build -t ghcr.io/evan-1777/capsa:dev .`。私有 GHCR 包需先 `docker login ghcr.io`（PAT 需 `read:packages`）
 - **定时热备（宿主机 Cron）**：`0 3 * * * docker compose -f /opt/capsa/docker-compose.yml exec -T capsa capsa backup /backup`
 
 ## 3. 目录结构与模块职责
@@ -76,6 +78,10 @@ web/                     # Capsa Studio：Vite + React 18 + TypeScript + Tailwin
 ├── src/api.ts           # 凭据（sessionStorage）、统一信封解析与 401 拦截
 ├── src/useAsync.ts      # 加载 / 空 / 错误 / 未授权四态的状态机
 └── tests/e2e.spec.ts    # 浏览器端到端套件
+README.md                # 定位、架构、部署、宿主反代接入与运维速查
+Dockerfile               # 两阶段构建：Node 产出静态产物，Python 打包运行时
+docker-compose.yml       # 单服务编排，只拉取 GHCR 镜像
+.github/workflows/       # build-image.yml：手动触发的镜像构建
 tests/
 ├── conftest.py             # 临时库、种子数据、HTTP MCP 会话与 web_headers 夹具
 ├── test_acceptance.py      # 六条 Phase 1 交付验收断言
@@ -86,7 +92,8 @@ tests/
 ├── test_web_api.py         # 8 个端点、统一信封、错误码映射与授权对称性
 ├── test_phase3_assembly.py # 路由顺序、静态根路径的条件挂载
 ├── test_phase3_cli.py      # review 同源序、backup/restore 快照链路
-└── test_phase3_deploy.py   # Dockerfile / compose / Caddyfile / Cron 的静态校验
+├── test_deploy.py          # Dockerfile / compose / Cron 的静态校验
+└── test_ci_workflow.py      # 镜像构建工作流的触发器、权限与推送参数静态校验
 ```
 
 ## 4. 架构与数据流
@@ -95,6 +102,7 @@ tests/
 - **读数据流**：Agent → Bearer 令牌 → FastMCP 校验器（`auth.py`）→ 工具层读取 claims 中的 `key_id` 与 `grants` → `dal.py` 三态判定 → `retrieval.py` 打分排序 → `formatters.py` 渲染纯文本
 - **写数据流**：适配层按 `grants` 校验 `rw` 权限与字段长度 → `retrieval.py` 规范化复核时间并计算标题近似度 → `dal.py` 写入并自行提交
 - **Web 数据流**：浏览器 → `/api` 的 `BearerAuthGuard`（内部复用 `BearerAuthBackend(CapsaTokenVerifier())`，未认证直接回 401 信封）→ 处理器从 `request.user` 的 claims 读 `grants` → `dal.py` 三态判定 → JSON 统一信封（`{success, data, error}`）；静态根路径由同一根应用条件挂载，注册在 `/api` 之后，不得劫持 API
+- **部署形态**：公网 → 宿主机反向代理（TLS 终止、响应不缓冲）→ 容器 `127.0.0.1:8000` → `capsa-data` 数据卷。应用层是唯一职责边界：容器自带 `/healthz` 健康检查与 1MB 请求体上限，宿主反代不重复配置上限，只须关闭响应缓冲以保证 MCP 流式下发
 - **模块依赖**：`server → mcp_service/web_api → dal/retrieval/formatters → db`；`dal` 是唯一执行 SQL 的模块，`retrieval` 与 `formatters` 为纯函数模块
   - ★ 易错：`dal` 与 `db` 禁止反向依赖工具层；授权范围由调用方（工具层 / API 层）从请求令牌注入，DAL 不接受全局状态
 
@@ -123,6 +131,9 @@ tests/
 - 根应用按 `create_app(static_directory)` 工厂构造，静态目录由参数注入——原因：是否挂载根路由取决于构建产物当时是否存在，导入期定死的模块级常量无法在测试里替换
 - npm 缓存固定到 `.devtools/npm-cache`（`web/.npmrc`）——原因：本机默认缓存目录不可写，npm 会直接报错退出
 - Playwright 用 `channel: "chrome"` 驱动系统 Chrome——原因：本机已有 Chrome，下载自带 chromium 是约 300 MB 的一次性产物，与 SCOPE §5 冲突
+- 私有 GHCR 包在 VPS 上拉取前必须 `docker login ghcr.io`——原因：仓库与包均为私有，未登录时 `docker compose pull` 直接返回 401
+- compose 端口默认写 `${CAPSA_BIND:-127.0.0.1}:8000:8000`——原因：固定 `0.0.0.0` 在防火墙未配好时等于明文公网暴露，固定回环又让容器化反代无法接入；容器化反代用该变量指向宿主网桥地址覆盖
+- 宿主反代必须关闭响应缓冲（Nginx 的 `proxy_buffering off`）——原因：MCP Streamable HTTP 逐块下发，缓冲会让连接成功但工具结果迟迟不返回；该职责原由 `Caddyfile` 的 `flush_interval -1` 承担，反代移出仓库后随之转移给宿主
 - E2E 的服务与令牌由 `web/tests/serve.sh` 现场生成（临时库 + 两把 Key，令牌写入被忽略的 `web/tests/keys.json`）——原因：硬编码假令牌只能验证前端形态，无法覆盖真实鉴权链路
 
 ## 8. 决策记录
@@ -144,6 +155,13 @@ tests/
 - 2026-09-13 字段校验与上限常量复用 `mcp_service.require_text` 与 `TITLE_MAX/SUMMARY_MAX/BODY_MAX`，不新建 `validation.py`——理由：一处契约一处文案，两侧只在 HTTP 分层上不同（MCP 回工具级 `isError`，Web 回 422 `VALIDATION_ERROR`）；为一个函数与三个常量引入新模块和一层胶水，收益为零
 - 2026-09-13 关键词检索不在 SQL 里做过滤，`list_memories_for_web` 不接受 `query`——理由：命中判据与排序统一由 `retrieval.rank_memories` 承担，SQL `LIKE` 与二字组判据不等价（标签检索全盲、跨词命中丢失），且 `total` 会失真
 - 2026-09-13 备份保留策略按文件名日期（`capsa-YYYY-MM-DD.db`）计算 14 天，不依赖 mtime——理由：确定性可测，跨文件系统复制不会改写文件名；快照用连接级 `Connection.backup()` 生成，WAL 模式下直接复制文件会产生损坏快照
+
+- 2026-09-16 移除仓库自带的 Caddy 容器，TLS 与反向代理交给宿主机——理由：证书生命周期与应用发布解耦，宿主已有反代可直接复用；仓库内维护一份 Caddyfile 等于绑定一种反代选型
+- 2026-09-16 compose 收敛为单服务且只写 `image` 不写 `build`——理由：VPS 无需 Node 与 pip 构建链，部署退化为 pull + up，镜像成为可回滚的版本化产物
+- 2026-09-16 容器端口默认绑定回环并用 `CAPSA_BIND` 覆盖——理由：默认不向公网暴露明文端口，同时保留容器化反代的接入路径
+- 2026-09-16 健康检查只保留 `Dockerfile` 的 `HEALTHCHECK`——理由：单服务后不再需要 `depends_on` 健康门控，compose 内重复声明会产生第二处间隔与超时定义
+- 2026-09-16 镜像构建只在 CI 手动触发，工作流用内置 `GITHUB_TOKEN` 登录 GHCR——理由：用户要求手动点击，避免每次推送消耗配额；无长期密钥入库，权限按 `packages: write` 最小授予
+- 2026-09-16 归档目录内的历史设计文档不回溯改写——理由：归档是带日期的历史快照，改写会让它与其时决策不符；事实变更记录在本文件与 `README.md`
 
 ## 9. 术语表
 

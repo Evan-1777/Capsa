@@ -1,4 +1,4 @@
-"""Static validation of the container orchestration files."""
+"""Static validation of the container deployment files."""
 
 from __future__ import annotations
 
@@ -10,19 +10,24 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_compose_services_volumes_and_health_dependency():
-    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    assert set(compose["services"]) == {"capsa", "caddy"}
-    assert compose["services"]["capsa"]["restart"] == "unless-stopped"
-    assert compose["services"]["capsa"]["volumes"] == ["capsa-data:/data", "capsa-backup:/backup"]
-    assert compose["services"]["capsa"]["expose"] == ["8000"]
-    assert compose["services"]["caddy"]["depends_on"]["capsa"]["condition"] == "service_healthy"
-    assert {name for name in compose["volumes"]} == {
-        "capsa-data",
-        "capsa-backup",
-        "caddy-data",
-        "caddy-config",
-    }
+def _compose() -> dict:
+    return yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+
+
+def test_compose_is_a_single_pull_only_service():
+    compose = _compose()
+    service = compose["services"]["capsa"]
+    assert set(compose["services"]) == {"capsa"}
+    assert "build" not in service
+    assert service["image"] == "ghcr.io/evan-1777/capsa:${CAPSA_TAG:-latest}"
+    assert service["restart"] == "unless-stopped"
+    assert service["environment"] == ["CAPSA_DB_PATH=/data/capsa.db"]
+    assert service["volumes"] == ["capsa-data:/data", "capsa-backup:/backup"]
+    assert set(compose["volumes"]) == {"capsa-data", "capsa-backup"}
+
+
+def test_compose_port_binds_loopback_unless_overridden():
+    assert _compose()["services"]["capsa"]["ports"] == ["${CAPSA_BIND:-127.0.0.1}:8000:8000"]
 
 
 def test_dockerfile_is_multi_stage_and_never_runs_as_root():
@@ -40,13 +45,6 @@ def test_frontend_build_output_path_matches_the_copy_source():
     assert re.search(rf"mkdir -p \$CAPSA_STATIC_DIR", text)
     copy = re.search(r"^COPY --from=web-builder \S+ (\S+/) capsa/static/$", text, re.M)
     assert copy.group(1) == f"{declared}/"
-
-
-def test_caddyfile_matches_the_request_body_contract():
-    text = (ROOT / "Caddyfile").read_text(encoding="utf-8")
-    assert "max_size 1MB" in text
-    assert "flush_interval -1" in text
-    assert "reverse_proxy capsa:8000" in text
 
 
 def test_cron_line_is_documented():

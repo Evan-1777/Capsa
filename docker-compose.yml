@@ -1,33 +1,18 @@
+# 单服务编排：镜像由 CI 构建并推送到 GHCR，此处只拉取运行，不在部署机构建。
+# TLS 与反向代理归宿主机，端口默认只绑回环，由宿主反代接入。
 services:
   capsa:
-    build: .
+    image: ghcr.io/evan-1777/capsa:${CAPSA_TAG:-latest}
     restart: unless-stopped
     environment:
       - CAPSA_DB_PATH=/data/capsa.db
     volumes:
       - capsa-data:/data
       - capsa-backup:/backup
-    expose:
-      - "8000"
-
-  caddy:
-    image: caddy:alpine
-    restart: unless-stopped
+    # 默认只监听回环；容器化反代加入同一网络时用 CAPSA_BIND 覆盖绑定地址。
     ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      - CAPSA_DOMAIN=${CAPSA_DOMAIN:-localhost}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      capsa:
-        condition: service_healthy
+      - "${CAPSA_BIND:-127.0.0.1}:8000:8000"
 
 volumes:
   capsa-data:
   capsa-backup:
-  caddy-data:
-  caddy-config:
