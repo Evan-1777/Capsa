@@ -1,11 +1,13 @@
 # Plan：Capsa 部署形态收敛 —— 单服务编排、宿主 TLS 与 CI 镜像交付
 
-**状态**：PENDING
+**状态**：DONE
 **日期**：2026-09-16
+**完成日期**：2026-09-16
 **版本**：v1.0
 **关联基线**：`.docs/09-13-v3/Plan.md`（Phase 3 容器编排与交付）、`.docs/SCOPE.md` §项目备注 2、`.docs/Project.md` §2 / §3 / §4
 **前置阶段**：Phase 3 已交付并归档于 `.docs/09-13-v3/`
 **回归基线（规划时实测）**：`.venv/bin/python -m pytest -q` → 161 passed，0 failed，0 skipped
+**回归结论（交付时实测）**：`.venv/bin/python -m pytest -q` → 166 passed，0 failed，0 skipped；CI 工作流经一次真实手动触发运行，结论 success，镜像 `ghcr.io/evan-1777/capsa:v0.1.0` 已推送
 
 ---
 
