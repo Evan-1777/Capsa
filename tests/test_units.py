@@ -12,7 +12,7 @@ import pytest
 from capsa import dal, db, retrieval
 from capsa.auth import CapsaTokenVerifier, issue_key
 from capsa.ids import hash_token, new_memory_id
-from tests.conftest import create_key, insert_memory
+from tests.conftest import MARCH, create_key, insert_memory
 
 
 # TASK-004 存储基座
@@ -97,6 +97,13 @@ def test_search_list_is_scoped_and_body_free(conn, seeded):
 
 def test_search_list_group_filter(conn, seeded):
     assert [row["id"] for row in dal.list_active_memories_for_search(conn, {"proj": "rw", "study": "r"}, "study")] == ["mem_bbb222"]
+
+
+def test_search_list_projects_body_only_on_demand(conn, seeded):
+    """正文列按需投影：默认查询不读，显式开启才带回。"""
+    assert "body" not in dal.list_active_memories_for_search(conn, {"proj": "rw"})[0]
+    rows = dal.list_active_memories_for_search(conn, {"proj": "rw"}, include_body=True)
+    assert rows[0]["body"] == "正文里的机密内容"
 
 
 # TASK-007 分组入口
@@ -212,3 +219,34 @@ def test_single_character_cjk_kept_whole():
 def test_score_counts_duplicate_terms_once():
     memory = {"title": "授权 授权", "summary": "", "tags": "[]", "review_at": None, "pinned": 0}
     assert retrieval.score(memory, retrieval.tokenize("授权 授权")) == 4
+
+
+# TASK-005 正文兜底命中与非对称低权重打分
+def test_body_hits_are_off_by_default():
+    memory = {"title": "无关", "summary": "无关", "tags": "[]", "review_at": None, "pinned": 0,
+              "body": "xyzzy"}
+    terms = retrieval.tokenize("xyzzy")
+    assert retrieval._hits(memory, terms) is False
+    assert retrieval._hits(memory, terms, include_body=True) is True
+
+
+def test_body_hits_score_below_metadata_and_stay_capped():
+    base = {"summary": "", "tags": "[]", "review_at": None, "pinned": 0}
+    terms = retrieval.tokenize("xyzzy")
+    body_only = {**base, "title": "无关", "body": "xyzzy"}
+    assert retrieval.score(body_only, terms, include_body=True) == retrieval.BODY_HIT_WEIGHT
+    summary_hit = {**base, "title": "无关", "summary": "xyzzy", "body": "无关"}
+    title_hit = {**base, "title": "xyzzy", "summary": "", "body": "无关"}
+    assert retrieval.score(summary_hit, terms, include_body=True) == 1.0
+    assert retrieval.score(title_hit, terms, include_body=True) == 4.0
+    many = retrieval.tokenize("xyzzy alpha beta gamma delta")
+    stuffed = {**base, "title": "无关", "body": "xyzzy alpha beta gamma delta"}
+    assert retrieval.score(stuffed, many, include_body=True) == retrieval.BODY_SCORE_CAP
+
+
+def test_title_hit_outranks_body_hit_on_the_same_term():
+    stamp = {"summary": "", "tags": "[]", "review_at": None, "pinned": 0, "updated_at": MARCH}
+    title_hit = {**stamp, "id": "mem_title1", "title": "xyzzy 说明", "body": "无关"}
+    body_hit = {**stamp, "id": "mem_body01", "title": "无关", "body": "xyzzy 暗号"}
+    ranked = retrieval.rank_memories([body_hit, title_hit], "xyzzy", include_body=True)
+    assert [memory["id"] for memory in ranked] == ["mem_title1", "mem_body01"]

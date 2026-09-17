@@ -89,7 +89,7 @@ def test_forbidden_entries_leak_nothing(open_session, seeded, tool):
 
 
 def test_search_never_carries_unauthorized_entries(open_session, seeded):
-    """L1 的防线是条目根本不进入候选集，而非渲染成 [无权访问]。"""
+    """检索层的防线是条目根本不进入候选集，而非渲染成 [无权访问]。"""
     text = open_session(seeded["proj"]["token"]).text("memory_search", {"query": "授权"})
     assert STUDY_MEMORY not in text
     assert "[无权访问]" not in text
@@ -259,3 +259,65 @@ def test_offset_past_end_reports_termination(open_session, seeded):
 def test_memory_without_tags_renders_dash(open_session, seeded):
     text = open_session(seeded["proj"]["token"]).text("memory_search", {})
     assert "标签: -" in text
+
+
+# 正文兜底检索：默认不投影正文，显式开启才参与召回与低权重排序
+def test_body_fallback_is_off_by_default(open_session, conn, seeded):
+    insert_memory(conn, "mem_deep01", "proj", "会议纪要", "讨论了下季度排期", "xyzzy 令牌端点")
+    text = open_session(seeded["proj"]["token"]).text("memory_search", {"query": "xyzzy"})
+    assert "命中 0 条" in text
+    assert "mem_deep01" not in text
+
+
+def test_body_fallback_recalls_and_ranks_below_title_hits(open_session, conn, seeded):
+    insert_memory(
+        conn, "mem_deep02", "proj", "部署手册", "服务器操作步骤", "xyzzy 令牌端点",
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    insert_memory(
+        conn, "mem_name01", "proj", "xyzzy 令牌方案", "标题直接命中", "无关正文",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    session = open_session(seeded["proj"]["token"])
+    text = session.text("memory_search", {"query": "xyzzy", "include_body": True})
+    assert "命中 2 条" in text
+    assert text.index("mem_name01") < text.index("mem_deep02")
+
+
+def test_body_fallback_never_crosses_group_scopes(open_session, conn, seeded):
+    insert_memory(conn, "mem_deep03", "study", "学习记录", "其他分组的条目", "xyzzy 只在这里")
+    text = open_session(seeded["proj"]["token"]).text(
+        "memory_search", {"query": "xyzzy", "include_body": True}
+    )
+    assert "命中 0 条" in text
+    assert "mem_deep03" not in text
+
+
+def test_empty_query_with_include_body_still_browses_in_order(
+    open_session, conn, seeded, monkeypatch
+):
+    """空 query 是浏览：include_body 不生效，DAL 仍不投影正文，顺序为置顶 + 更新时间倒序。"""
+    projections: list[bool] = []
+    original = dal.list_active_memories_for_search
+
+    def spy(connection, scopes, group=None, include_body=False):
+        projections.append(include_body)
+        return original(connection, scopes, group, include_body=include_body)
+
+    monkeypatch.setattr(dal, "list_active_memories_for_search", spy)
+    insert_memory(
+        conn, "mem_pin003", "proj", "置顶旧条目", "摘要", "xyzzy 正文", pinned=1,
+        updated_at="2025-01-01T00:00:00+00:00",
+    )
+    insert_memory(
+        conn, "mem_old004", "proj", "较新条目", "摘要", "普通正文",
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    session = open_session(seeded["proj"]["token"])
+    text = session.text("memory_search", {"query": "", "include_body": True})
+    order = [text.index(memory_id) for memory_id in ("mem_pin003", "mem_old004", PROJ_MEMORY)]
+    assert "标签: -" in text and order == sorted(order)
+    assert projections == [False]
+
+    session.text("memory_search", {"query": "xyzzy", "include_body": True})
+    assert projections == [False, True]

@@ -37,6 +37,18 @@ def test_tools_list_exposes_seven_tools(open_session, seeded):
     assert annotations["memory_forget"]["destructiveHint"] is True
 
 
+def test_every_tool_documents_itself_without_usage_coaching(open_session, seeded):
+    """工具契约自解释：描述非空、无调用顺序训诫，且每个参数都带注解。"""
+    tools = open_session(seeded["proj"]["token"]).list_tools()
+    for tool in tools:
+        description = tool["description"] or ""
+        assert description.strip(), tool["name"]
+        assert "读取协议" not in description, tool["name"]
+        assert "不要" not in description, tool["name"]
+        for parameter, spec in tool["inputSchema"]["properties"].items():
+            assert spec.get("description"), f"{tool['name']}.{parameter}"
+
+
 def test_read_chain_is_wired_end_to_end(open_session, seeded):
     session = open_session(seeded["proj"]["token"])
     groups = session.text("memory_groups")

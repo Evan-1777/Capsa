@@ -7,7 +7,8 @@
 | 提供 | 不提供 |
 |---|---|
 | 四个只读工具（分组、检索、摘要、正文）与三个写入工具（新建、更新、软删除） | 向量检索与自动抽取写入 |
-| 三级披露：标题层、摘要层、正文层 | 多租户 |
+| 三级披露：检索返回元数据、peek 返回摘要、read 返回正文 | 多租户 |
+| MCP 检索可按需把正文并入匹配（`include_body`，低权重兜底） | Web 与 CLI 的正文检索 |
 | 三态授权：授权、不可见、不存在；未授权分组不披露存在性 | Key 签发与撤销的 Web 化（保留在 CLI） |
 | 时效复核、回收站软删除与恢复 | 分组标识（slug）创建后的修改 |
 | 全权限单管理员 Web 管理台：工作台、分类管理、时效复核、回收站 | 独立用户表、多角色 RBAC 与 Cookie/Session |
@@ -153,6 +154,8 @@ CAPSA_TAG=v0.1.0        # 部署具体版本，便于回滚
 
 Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`memory_read` 为只读；`memory_save`、`memory_update`、`memory_forget` 为写入。作用域形如 `proj:rw,study:r`，`rw` 可读写，`r` 只读；通配 `*:rw` 得到全库读写，`*:r` 全库只读，显式分组键优先于通配。
 
+`memory_search` 默认匹配标题、标签与摘要，返回结果不含正文；当特定代码片段或配置细节没有出现在这些字段里时，可传 `include_body=True` 把正文并入匹配。正文命中按低权重计分（每词元 0.2 分、封顶 0.8 分），低于摘要单次命中的 1 分，因此同一关键词下标题命中条目始终排在仅正文命中的条目之前。该参数仅在 `query` 非空时生效：空 `query` 是按置顶与更新时间浏览，不会加载正文。
+
 ## Web 管理台
 
 浏览器打开 `https://<你的域名>/`，粘贴**管理员令牌**登录：要么是 `capsa key create admin --scopes "*:rw"` 签发的通配 Key，要么是服务端 `CAPSA_ADMIN_TOKEN` 的值。凭据只存在 `sessionStorage`，关闭标签页即失效。
@@ -240,7 +243,7 @@ docker compose exec -T capsa capsa backup /backup --keep-days 14
 docker compose exec -T capsa capsa restore /backup/capsa-2026-09-16.db
 ```
 
-`review` 与 MCP 的 `memory_search` 共用同一条检索与排序实现，同一分组、同一关键词下两者的条目顺序逐条一致。
+`review` 与 MCP 的 `memory_search` 共用同一条检索与排序实现，同一分组、同一关键词下两者的条目顺序逐条一致；`review` 与管理台检索不启用正文兜底，只匹配标题、标签与摘要。
 
 ## 目录结构
 
@@ -251,7 +254,7 @@ capsa/                 Python 服务
   permissions.py       权限判定单一来源：permission_for 与管理级令牌
   web_api.py           REST API：统一信封、管理员网关守卫、十个端点
   dal.py               三态授权数据访问层，唯一 SQL 出口
-  retrieval.py         分词、打分排序与近似查重
+  retrieval.py         分词、打分排序（含正文低权重兜底）与近似查重
   formatters.py        三级披露的纯文本契约
   cli.py               init / group / key / memory / review / backup / restore
 web/                   Capsa Studio：Vite + React 18 + TypeScript + Tailwind

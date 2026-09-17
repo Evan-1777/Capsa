@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 
 SIMILARITY_THRESHOLD = 0.6
 
+# 正文兜底命中权重：元数据基础分（标题 4 / 摘要 1）必须严格压过正文得分。
+BODY_HIT_WEIGHT = 0.2
+BODY_SCORE_CAP = 0.8
+
 
 def _is_cjk(char: str) -> bool:
     return "\u4e00" <= char <= "\u9fff"
@@ -102,30 +106,42 @@ def is_expired(review_at: str | None, now: datetime | None = None) -> bool:
     return _parse(review_at) < now
 
 
-def score(memory: dict, terms: set[str], now: datetime | None = None) -> int:
+def score(
+    memory: dict, terms: set[str], now: datetime | None = None, include_body: bool = False
+) -> float:
+    """Weighted score; 正文命中按 BODY_HIT_WEIGHT 计分并封顶 BODY_SCORE_CAP。
+
+    正文权重是小数，末尾统一 round 收敛浮点尾差，让排序与断言都可精确复现。
+    """
     title = normalize(memory.get("title", ""))
     summary = normalize(memory.get("summary", ""))
     tags = [normalize(tag) for tag in json.loads(memory.get("tags") or "[]")]
     total = 4 * sum(1 for term in terms if term in title)
     total += sum(1 for term in terms if term in summary)
     total += 2 * sum(1 for term in terms if any(term in tag for tag in tags))
+    if include_body:
+        body = normalize(memory.get("body") or "")
+        total += min(BODY_HIT_WEIGHT * sum(1 for term in terms if term in body), BODY_SCORE_CAP)
     if memory.get("pinned"):
         total += 3
     if is_expired(memory.get("review_at"), now):
         total -= 2
-    return total
+    return round(total, 2)
 
 
-def _hits(memory: dict, terms: set[str]) -> bool:
+def _hits(memory: dict, terms: set[str], include_body: bool = False) -> bool:
     """Whether a term matches a searchable field. Pinned and expiry are ranking
-    weights, not hits: a pinned entry sharing no term with the query is noise."""
+    weights, not hits: a pinned entry sharing no term with the query is noise.
+    正文默认不参与命中判定，仅 include_body 时并入候查字段。"""
     fields = [normalize(memory.get("title", "")), normalize(memory.get("summary", ""))]
     fields.extend(normalize(tag) for tag in json.loads(memory.get("tags") or "[]"))
+    if include_body:
+        fields.append(normalize(memory.get("body") or ""))
     return any(term in field for term in terms for field in fields)
 
 
 def rank_memories(
-    memories: list[dict], query: str, now: datetime | None = None
+    memories: list[dict], query: str, now: datetime | None = None, include_body: bool = False
 ) -> list[dict]:
     """Rank a copy of the input; the input list keeps its original order.
 
@@ -144,8 +160,10 @@ def rank_memories(
     now = now or datetime.now(timezone.utc)
     # A keyword query returns matches only: an entry sharing no term with the
     # query is noise even when pinned or live ranking would otherwise float it.
-    ranked = [memory for memory in ranked if _hits(memory, terms)]
-    scores = {memory["id"]: score(memory, terms, now) for memory in ranked}
+    ranked = [memory for memory in ranked if _hits(memory, terms, include_body)]
+    scores = {
+        memory["id"]: score(memory, terms, now, include_body=include_body) for memory in ranked
+    }
     ranked.sort(
         key=lambda memory: (
             scores[memory["id"]],

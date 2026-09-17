@@ -19,6 +19,8 @@ _MEMORY_READ_FIELDS = (
 _MEMORY_SEARCH_FIELDS = (
     "id, group_slug, title, summary, tags, review_at, pinned, updated_at"
 )
+# 正文投影只有 MCP 兜底检索显式开启时才使用，默认不查正文字段。
+_MEMORY_SEARCH_WITH_BODY_FIELDS = f"{_MEMORY_SEARCH_FIELDS}, body"
 
 _MEMORY_UPDATE_FIELDS = ("title", "summary", "body", "tags", "review_at", "pinned")
 
@@ -69,10 +71,14 @@ def get_memories_batch_for_access(
 
 
 def list_active_memories_for_search(
-    conn: sqlite3.Connection, scopes: dict[str, str], group: str | None = None
+    conn: sqlite3.Connection,
+    scopes: dict[str, str],
+    group: str | None = None,
+    include_body: bool = False,
 ) -> list[dict]:
-    """Active entries inside the authorized groups; never returns body.
+    """Active entries inside the authorized groups.
 
+    正文按需投影：include_body 为真时才把 body 列带进结果，默认查询不读正文列。
     通配 rw 覆盖全库，此时不生成分组占位符，只保留可选的精确分组过滤。
     """
     # 通配覆盖全库与读写级别无关：*:r 同样全库可见，权限由 permission_for 逐条决定。
@@ -87,7 +93,8 @@ def list_active_memories_for_search(
     if group:
         conditions.append("group_slug = ?")
         params.append(group)
-    sql = f"SELECT {_MEMORY_SEARCH_FIELDS} FROM memories WHERE {' AND '.join(conditions)}"
+    fields = _MEMORY_SEARCH_WITH_BODY_FIELDS if include_body else _MEMORY_SEARCH_FIELDS
+    sql = f"SELECT {fields} FROM memories WHERE {' AND '.join(conditions)}"
     return [dict(row) for row in conn.execute(sql, params)]
 
 

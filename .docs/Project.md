@@ -15,14 +15,15 @@
 | 踩到新坑或确立新约束 | §6 约束与已知坑 |
 | 关键技术选型定型 | §8 决策记录 |
 | 引入项目特有名词 | §9 术语表 |
+| 调整检索匹配范围或打分权重 | §4 架构与数据流、§9 术语表 |
 | 运行 / 启动 / 测试方式变化 | §2 环境与运行 |
 
 ## 1. 概述
 
 - **一句话定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。
-- **当前阶段**：Phase 5（Web 单管理员面板与分类管理改造）交付完成。
+- **当前阶段**：Phase 6（按需正文检索与 MCP 提示词信噪比重构）交付完成。
 - **非目标**：不引入向量检索与自动抽取写入，不做多租户，不引入独立用户表、多角色 RBAC 与 Cookie/Session；Key 签发/撤销与回收站 CLI 仍为管理员通道，不 Web 化。完整边界见 `SCOPE.md`。
-- **设计与交付文档**：Phase 3 的设计方案、落地交付分期规划、可视化前端管理计划与架构功能报告归档于 `.docs/09-13-v3/docs/`；Phase 4 的部署形态收敛归档于 `.docs/09-16-v1/`。归档是带日期的历史快照，其中描述的容器编排形态以本文件与 `README.md` 为准
+- **设计与交付文档**：Phase 3 的设计方案、落地交付分期规划、可视化前端管理计划与架构功能报告归档于 `.docs/09-13-v3/docs/`；Phase 4 的部署形态收敛归档于 `.docs/09-16-v1/`。归档是带日期的历史快照，其中描述的容器编排形态以本文件与 `README.md` 为准；Phase 6 的检索能力扩展归档于 `.docs/09-17-v2/`
 
 ## 2. 环境与运行
 
@@ -68,8 +69,8 @@ capsa/
 ├── ids.py           # 标识符与令牌生成
 ├── auth.py          # 令牌校验器，接入 FastMCP 鉴权与管理级环境变量令牌
 ├── permissions.py   # 权限判定单一事实来源：permission_for 与管理级令牌常量
-├── retrieval.py     # 归一化、二字组分词、打分排序与复核时间规范化、标题近似查重
-├── formatters.py    # L1/L2/L3 与分组列表的纯文本契约
+├── retrieval.py     # 归一化、二字组分词、打分排序（含正文低权重兜底）与标题近似查重
+├── formatters.py    # 三级披露与分组列表的纯文本契约
 ├── mcp_service.py   # FastMCP 实例与 4 个只读工具、3 个写入工具
 ├── server.py        # Starlette 根应用工厂，装配 /healthz、/mcp、/api 与静态根路径
 ├── web_api.py       # REST API：统一信封、管理员网关守卫与 10 个端点
@@ -90,7 +91,7 @@ tests/
 ├── conftest.py             # 临时库、种子数据、HTTP MCP 会话与 web_headers 夹具
 ├── test_acceptance.py      # 六条 Phase 1 交付验收断言
 ├── test_e2e.py             # 只读链路、装配与"启动不写数据"断言
-├── test_units.py           # 存储基座、DAL 契约、标识符与分词单测
+├── test_units.py           # 存储基座、DAL 契约（含正文按需投影）、标识符、分词与打分单测
 ├── test_cli.py             # CLI 幂等、令牌长度、撤销与持久化
 ├── test_write.py           # 写入字段契约、查重提示、生命周期与权限分级
 ├── test_web_api.py         # 10 个端点、统一信封、错误码映射、管理员网关与分类生命周期
@@ -106,6 +107,8 @@ tests/
 - **读数据流**：Agent → Bearer 令牌 → FastMCP 校验器（`auth.py`）→ 工具层读取 claims 中的 `key_id` 与 `grants` → `dal.py` 三态判定 → `retrieval.py` 打分排序 → `formatters.py` 渲染纯文本
 - **写数据流**：适配层经 `permissions.permission_for(grants, group)` 判定 `rw` 与字段长度 → `retrieval.py` 规范化复核时间并计算标题近似度 → `dal.py` 写入并自行提交
 - **权限判定单一来源**：`permissions.permission_for` 是唯一的有效权限计算函数，DAL、MCP 工具层与 `/api` 处理器共用；任一 `*` 通配都覆盖全库（是否可见与读写级别正交），`permission_for` 再逐条决定该分组是 `r` 还是 `rw`
+- **检索范围与打分**：`memory_search` 默认只匹配标题（4 分）、摘要（1 分）与标签（2 分）；`include_body=True` 时经 `dal.list_active_memories_for_search(include_body=True)` 追加投影 `body` 列并并入命中判定，正文命中每词元 0.2 分、封顶 0.8 分，低于摘要单次命中的 1 分，因此同词下标题命中严格排在正文命中之前。空 `query` 是浏览而非检索，工具层以非空 query 收敛 `load_body`，此类请求一律不投影正文
+- **正文兜底的能力边界**：`include_body` 只属于 MCP 工具层。Web 管理台与人审 `capsa review` 共用 `dal`/`retrieval` 的默认元数据检索，不暴露该参数，也不加载正文
 - **Web 数据流**：浏览器 → `/api` 的 `BearerAuthGuard`（内部复用 `BearerAuthBackend(CapsaTokenVerifier())`）：未认证回 401 信封，凭据不含 `*:rw` 回 403 信封 → 处理器从 `request.user` 的 claims 读 `grants` → `dal.py` 三态判定 → JSON 统一信封（`{success, data, error}`）；分类经 `POST /api/groups` 与 `PUT /api/groups/{slug}` 维护，slug 创建后不可变；静态根路径由同一根应用条件挂载，注册在 `/api` 之后，不得劫持 API
 - **部署形态**：公网 → 宿主机反向代理（TLS 终止、响应不缓冲）→ 容器 `127.0.0.1:8000` → `capsa-data` 数据卷。应用层是唯一职责边界：容器自带 `/healthz` 健康检查与 1MB 请求体上限，宿主反代不重复配置上限，只须关闭响应缓冲以保证 MCP 流式下发
 - **模块依赖**：`server → mcp_service/web_api → dal/retrieval/formatters → db`；`dal` 是唯一执行 SQL 的模块，`retrieval` 与 `formatters` 为纯函数模块
@@ -117,6 +120,7 @@ tests/
 - **注释 / 文档语言**：代码注释与标识符用英文，用户可见的工具描述、错误消息与 CLI 输出用中文
 - **错误处理**：协议层问题走 HTTP 状态码（401 / 413），工具自身可给出可操作反馈的问题走工具级 `isError: true`；同一契约在 Web 侧映射为 HTTP 状态码与 `error.code`（401 `UNAUTHORIZED` / 403 `FORBIDDEN` / 404 `NOT_FOUND` / 422 `VALIDATION_ERROR` / 500 `INTERNAL_ERROR`），`error.message` 与 MCP 工具文本逐字相同；数据库不可用原样上报，不降级为业务错误
 - **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
+- **MCP 工具契约**：工具描述与参数注解只陈述可观察事实（返回什么、上限多少、需要何种权限），不写调用顺序训诫或负向告诫；三级披露边界由各工具描述中立陈述，字段级自解释注解用 `typing.Annotated` + `pydantic.Field` 声明
 - **管理级令牌规范**：`CAPSA_ADMIN_TOKEN` 每次请求读取环境变量，非空即启用，身份固定为 `id="admin"`、`grants={"*": "rw"}`；轮换方式为更新环境变量并重启服务
 - **时间约定**：所有时间以 ISO 8601 UTC 字符串存储与比较
 
@@ -143,6 +147,8 @@ tests/
 - E2E 的服务与令牌由 `web/tests/serve.sh` 现场生成（临时库 + 管理员与分组两把 Key，令牌写入被忽略的 `web/tests/keys.json`）——原因：硬编码假令牌只能验证前端形态，无法覆盖真实鉴权链路；管理台用例必须持通配管理员 Key，分组 Key 用于验证网关拦截
 - 分类标识 `slug` 创建后严格不可变，编辑只改名称与描述——原因：`memories(group_slug)` 依赖该唯一标识做外键参照，允许改名就要级联重写全部记忆
 - `add_group` 用 `INSERT OR IGNORE` 的 `rowcount` 表达插入结果，不先查后插——原因：先查后插在并发下会静默成功却未入库（TOCTOU），唯一约束在 SQL 内原子裁决
+- 正文字段按需投影，默认查询不选 `body` 列；含正文字段的命中判据与打分只在 MCP 兜底检索路径开启——原因：正文是库内体积最大的列，全库浏览或默认检索把它读进内存只增加 VPS 的峰值占用，而兜底召回只在元数据未命中时才有价值
+- 空 `query` 的浏览请求即使传入 `include_body=True` 也不投影正文——原因：此时没有关键词可供打分，正文加载不产生任何召回收益，只留下全库扫描正文的开销；守卫落在工具层一次收敛，不散到 DAL
 
 ## 8. 决策记录
 
@@ -175,10 +181,16 @@ tests/
 - 2026-09-17 管理级令牌走环境变量而非独立管理员表——理由：服务拥有者只有一人，键值与令牌的映射不构成需要维护的状态；环境变量每次请求读取，轮换只需改值重启，同时避免为单人场景引入用户表与密码管理
 - 2026-09-17 分类创建与编辑放入 Web 管理台，`POST /api/groups` 返回 422 表达 slug 冲突——理由：分类是记忆的组织维度，日常维护发生在管理界面；创建与编辑语义正交于 `GET /groups`，复用既有信封与错误码映射即可，无需新错误码
 
+- 2026-09-17 `memory_search` 的正文兜底检索采用"条件投影 + 非空 query 守卫"——理由：正文只在显式开启且 query 非空时进内存，默认检索与全库浏览的开销与改动前完全一致；守卫落在工具层一处，DAL 只负责按传入值决定字段投影，两侧职责不重叠
+- 2026-09-17 正文命中用非对称低权重（0.2/词元，封顶 0.8）而非与元数据等权——理由：正文是长文本，词频远高于标题与摘要，等权打分会让正文命中条目在排序上逆袭标题命中条目；把单次正文命中压到低于摘要命中的 1 分，可保证同词下元数据命中严格优先，同时仍能让只在正文出现的细节被召回
+- 2026-09-17 移除 MCP 工具层的全局 `USAGE` 微操文本，改为中立披露契约与字段级注解——理由：跨工具重复的"先 search 再 peek 最后 read"训诫在每次工具调用都占用上下文，且与工具自身的返回结构重复；披露边界由各工具描述中立陈述、参数含义由 `Field(description=...)` 自解释，Agent 的调用顺序交给模型自主规划
+- 2026-09-17 `include_body` 只暴露给 MCP 工具，Web 与 CLI 不提供——理由：正文兜底是为自主 Agent 在细节召回失败时的推理补偿；管理台面向人工浏览（有分页与详情视图），`review` 是确定性的元数据审阅，两者都不需要全库正文扫描，接口面扩大没有对应场景
+
 ## 9. 术语表
 
 - `scope` = Key 的分组到权限映射，形如 `{"proj": "rw", "study": "r"}`，是授权边界的唯一来源
 - 通配权限 = 含 `*` 键即覆盖全库，具体级别由 `permission_for` 决定：`{"*": "rw"}` 全库可写，`{"*": "r"}` 全库只读；显式分组键优先于通配。管理台登录条件即 `grants["*"] == "rw"`
 - `group_slug` = 分组标识（`proj` / `study` / `life` / `track`），既是分类也是授权边界，不对未授权方披露
 - 三态 = 单条记忆相对当前 Key 的三种判定：`authorized` / `forbidden` / `not_found`
-- L1 / L2 / L3 = 三级披露层级，分别对应标题层（`memory_search`）、摘要层（`memory_peek`）、正文层（`memory_read`）
+- 三级披露 = 检索（`memory_search`）返回标题与元数据、peek（`memory_peek`）返回摘要、read（`memory_read`）返回正文；边界由工具描述陈述，不作为调用顺序约束
+- 正文兜底检索 = `memory_search` 的 `include_body=True` 可选能力：把正文并入命中判定与打分，权重低于全部元数据字段
