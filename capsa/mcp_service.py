@@ -11,6 +11,7 @@ from mcp.types import ToolAnnotations
 
 from capsa import dal, db, formatters, retrieval
 from capsa.auth import CapsaTokenVerifier
+from capsa.permissions import permission_for
 
 SEARCH_LIMIT = 20
 PEEK_LIMIT = 10
@@ -60,7 +61,7 @@ def _locate_writable(conn, memory_id: str) -> dict:
     item = dal.get_memories_batch_for_access(conn, [memory_id], _grants())[0]
     if item["status"] != "authorized":
         raise ToolError(f"记忆 {memory_id} 不存在或无权访问")
-    if _grants().get(item["group_slug"]) != "rw":
+    if permission_for(_grants(), item["group_slug"]) != "rw":
         raise ToolError(f"对分组 {item['group_slug']} 只有只读权限，拒绝修改")
     return item
 
@@ -146,8 +147,7 @@ def memory_save(
     tags: list[str] | None = None,
     review_at: str | None = None,
 ) -> str:
-    grants = _grants()
-    if grants.get(group) != "rw":
+    if permission_for(_grants(), group) != "rw":
         raise ToolError(f"对分组 {group} 没有写权限，拒绝写入")
     require_text(title, TITLE_MAX, "标题")
     require_text(summary, SUMMARY_MAX, "摘要")

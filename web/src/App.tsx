@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { ApiError, api, clearKey, getKey, setUnauthorizedHandler } from "./api";
+import { GroupManager } from "./components/GroupManager";
 import { Header } from "./components/Header";
 import { Login } from "./components/Login";
 import { MemoryWorkspace } from "./components/MemoryList";
@@ -9,10 +10,11 @@ import { ReviewCenter } from "./components/ReviewCenter";
 import { Skeleton, UnauthorizedState } from "./components/States";
 import type { GroupInfo, KeyInfo } from "./types";
 
-type View = "workbench" | "review" | "recycle";
+type View = "workbench" | "groups" | "review" | "recycle";
 
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: "workbench", label: "记忆工作台" },
+  { id: "groups", label: "分类管理" },
   { id: "review", label: "时效复核" },
   { id: "recycle", label: "回收站" },
 ];
@@ -58,11 +60,15 @@ export default function App() {
     };
   }, []);
 
-  async function connect(_key: string, me: KeyInfo) {
+  async function refreshGroups() {
     const listed = await api.groups();
+    setGroups(listed.items);
+  }
+
+  async function connect(_key: string, me: KeyInfo) {
+    await refreshGroups();
     setExpired(false);
     setInfo(me);
-    setGroups(listed.items);
     setView("workbench");
   }
 
@@ -107,7 +113,10 @@ export default function App() {
         ))}
       </nav>
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {view === "workbench" && <MemoryWorkspace groups={groups} />}
+        {view === "workbench" && (
+          <MemoryWorkspace groups={groups} onManageGroups={() => setView("groups")} />
+        )}
+        {view === "groups" && <GroupManager groups={groups} onGroupsChange={refreshGroups} />}
         {view === "review" && <div className="min-h-0 flex-1 overflow-y-auto"><ReviewCenter /></div>}
         {view === "recycle" && <div className="min-h-0 flex-1 overflow-y-auto"><RecycleBin /></div>}
       </main>

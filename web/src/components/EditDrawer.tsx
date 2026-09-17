@@ -30,9 +30,8 @@ export function EditDrawer({
   onCreated: () => void;
   onSaved: (createdId: string | null) => void;
 }) {
-  const writable = groups.filter((group) => group.permission === "rw");
   const [form, setForm] = useState<FormState>({
-    group: memory?.group_slug ?? writable[0]?.slug ?? "",
+    group: memory?.group_slug ?? groups[0]?.slug ?? "",
     title: memory?.title ?? "",
     summary: memory?.summary ?? "",
     body: memory?.body ?? "",
@@ -146,7 +145,7 @@ export function EditDrawer({
                 onChange={(event) => update({ group: event.target.value })}
                 className="w-full rounded border border-zinc-300 px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
               >
-                {writable.map((group) => (
+                {groups.map((group) => (
                   <option key={group.slug} value={group.slug}>
                     {group.name}
                   </option>

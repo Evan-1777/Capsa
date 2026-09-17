@@ -1,4 +1,4 @@
-import { Pin, Plus, Search } from "lucide-react";
+import { Pin, Plus, Search, Settings2 } from "lucide-react";
 import { useState } from "react";
 
 import { api } from "../api";
@@ -8,7 +8,13 @@ import { EditDrawer } from "./EditDrawer";
 import { MemoryDetailPane } from "./MemoryDetail";
 import { EmptyState, ErrorBanner, Skeleton, UnauthorizedState } from "./States";
 
-export function MemoryWorkspace({ groups }: { groups: GroupInfo[] }) {
+export function MemoryWorkspace({
+  groups,
+  onManageGroups,
+}: {
+  groups: GroupInfo[];
+  onManageGroups: () => void;
+}) {
   const [group, setGroup] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [pinnedOnly, setPinnedOnly] = useState(false);
@@ -27,7 +33,6 @@ export function MemoryWorkspace({ groups }: { groups: GroupInfo[] }) {
 
   const refresh = () => setVersion((current) => current + 1);
   const items = (list.data?.items ?? []).filter((item) => !pinnedOnly || item.pinned);
-  const writable = (item: { permission: string }) => item.permission === "rw";
 
   return (
     <div className="grid flex-1 grid-cols-1 overflow-hidden md:grid-cols-[320px_1fr]">
@@ -65,9 +70,17 @@ export function MemoryWorkspace({ groups }: { groups: GroupInfo[] }) {
                 active={group === item.slug}
                 onClick={() => setGroup(item.slug)}
                 label={item.name}
-                permission={item.permission}
               />
             ))}
+            <button
+              type="button"
+              onClick={onManageGroups}
+              title="管理分类"
+              aria-label="管理分类"
+              className="rounded-full border border-zinc-300 px-2 py-0.5 text-zinc-500 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              <Settings2 className="h-3.5 w-3.5" aria-hidden />
+            </button>
           </div>
         </div>
 
@@ -82,15 +95,13 @@ export function MemoryWorkspace({ groups }: { groups: GroupInfo[] }) {
             <EmptyState
               message="暂无匹配记忆"
               action={
-                groups.some((item) => item.permission === "rw") ? (
-                  <button
-                    type="button"
-                    onClick={() => setEditing("new")}
-                    className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800"
-                  >
-                    新建记忆
-                  </button>
-                ) : undefined
+                <button
+                  type="button"
+                  onClick={() => setEditing("new")}
+                  className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800"
+                >
+                  新建记忆
+                </button>
               }
             />
           ) : (
@@ -113,7 +124,6 @@ export function MemoryWorkspace({ groups }: { groups: GroupInfo[] }) {
                       <span>·</span>
                       <span>{item.updated_at.slice(0, 10)}</span>
                       {item.is_overdue && <span className="text-amber-700">已过期</span>}
-                      {!writable(item) && <span className="text-zinc-400">只读</span>}
                       {item.tags.map((tag) => (
                         <span key={tag} className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-500">
                           {tag}
@@ -157,16 +167,14 @@ export function MemoryWorkspace({ groups }: { groups: GroupInfo[] }) {
         />
       )}
 
-      {groups.some((item) => item.permission === "rw") && (
-        <button
-          type="button"
-          onClick={() => setEditing("new")}
-          className="fixed bottom-20 right-5 z-20 flex items-center gap-1.5 rounded-full bg-zinc-900 px-4 py-2.5 text-xs font-medium text-white shadow-lg hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 md:bottom-6"
-        >
-          <Plus className="h-3.5 w-3.5" aria-hidden />
-          新建记忆
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => setEditing("new")}
+        className="fixed bottom-20 right-5 z-20 flex items-center gap-1.5 rounded-full bg-zinc-900 px-4 py-2.5 text-xs font-medium text-white shadow-lg hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 md:bottom-6"
+      >
+        <Plus className="h-3.5 w-3.5" aria-hidden />
+        新建记忆
+      </button>
     </div>
   );
 }
@@ -175,12 +183,10 @@ function GroupPill({
   active,
   onClick,
   label,
-  permission,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
-  permission?: string;
 }) {
   return (
     <button
@@ -190,7 +196,6 @@ function GroupPill({
       className={`rounded-full border px-2.5 py-0.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${active ? "border-zinc-900 bg-zinc-900 text-white" : "border-zinc-300 text-zinc-600 hover:bg-zinc-50"}`}
     >
       {label}
-      {permission === "r" && <span className="ml-1 text-[10px] opacity-70">只读</span>}
     </button>
   );
 }

@@ -46,20 +46,16 @@ export function ReviewCenter() {
               </p>
             </div>
             <div className="flex shrink-0 gap-1.5">
-              {item.permission === "rw" ? (
-                EXTENSIONS.map((days) => (
-                  <button
-                    key={days}
-                    type="button"
-                    onClick={() => postpone(item.id, days)}
-                    className="rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                  >
-                    延期 +{days} 天
-                  </button>
-                ))
-              ) : (
-                <span className="text-[11px] text-zinc-400">只读</span>
-              )}
+              {EXTENSIONS.map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => postpone(item.id, days)}
+                  className="rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                >
+                  延期 +{days} 天
+                </button>
+              ))}
             </div>
           </li>
         ))}

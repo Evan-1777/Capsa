@@ -11,6 +11,7 @@ import sqlite3
 
 from capsa.db import utcnow
 from capsa.ids import new_memory_id
+from capsa.permissions import ADMIN_GRANTS, ADMIN_KEY_ID, admin_token, permission_for
 
 _MEMORY_READ_FIELDS = (
     "id, group_slug, title, summary, body, tags, review_at, pinned, created_at, updated_at"
@@ -60,7 +61,7 @@ def get_memories_batch_for_access(
         row = rows.get(memory_id)
         if row is None:
             results.append({"status": "not_found", "id": memory_id})
-        elif row["group_slug"] in scopes:
+        elif permission_for(scopes, row["group_slug"]):
             results.append({"status": "authorized", **dict(row)})
         else:
             results.append({"status": "forbidden", "id": memory_id})
@@ -70,27 +71,42 @@ def get_memories_batch_for_access(
 def list_active_memories_for_search(
     conn: sqlite3.Connection, scopes: dict[str, str], group: str | None = None
 ) -> list[dict]:
-    """Active entries inside the authorized groups; never returns body."""
+    """Active entries inside the authorized groups; never returns body.
+
+    通配 rw 覆盖全库，此时不生成分组占位符，只保留可选的精确分组过滤。
+    """
+    wildcard = scopes.get("*") == "rw"
     slugs = sorted(scopes)
-    if not slugs:
+    if not wildcard and not slugs:
         return []
-    sql = (
-        f"SELECT {_MEMORY_SEARCH_FIELDS} FROM memories "
-        f"WHERE group_slug IN ({_placeholders(len(slugs))}) AND deleted_at IS NULL"
-    )
-    params: list[str] = list(slugs)
+    conditions, params = ["deleted_at IS NULL"], []
+    if not wildcard:
+        conditions.append(f"group_slug IN ({_placeholders(len(slugs))})")
+        params.extend(slugs)
     if group:
-        sql += " AND group_slug = ?"
+        conditions.append("group_slug = ?")
         params.append(group)
+    sql = f"SELECT {_MEMORY_SEARCH_FIELDS} FROM memories WHERE {' AND '.join(conditions)}"
     return [dict(row) for row in conn.execute(sql, params)]
 
 
-def add_group(conn: sqlite3.Connection, slug: str, name: str, description: str) -> None:
-    conn.execute(
+def add_group(conn: sqlite3.Connection, slug: str, name: str, description: str) -> bool:
+    """Insert a group; False 表示该 slug 已存在（唯一约束在 SQL 内原子裁决）。"""
+    cursor = conn.execute(
         "INSERT OR IGNORE INTO groups (slug, name, description, created_at) VALUES (?, ?, ?, ?)",
         (slug, name, description, utcnow()),
     )
     conn.commit()
+    return cursor.rowcount > 0
+
+
+def update_group(conn: sqlite3.Connection, slug: str, name: str, description: str) -> bool:
+    """Rename a group in place; slug 一经创建即不可变，记忆的外键因此始终有效。"""
+    cursor = conn.execute(
+        "UPDATE groups SET name = ?, description = ? WHERE slug = ?", (name, description, slug)
+    )
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def get_group(conn: sqlite3.Connection, slug: str) -> dict | None:
@@ -112,21 +128,28 @@ def list_groups(conn: sqlite3.Connection) -> list[dict]:
 def list_groups_with_counts(
     conn: sqlite3.Connection, scopes: dict[str, str]
 ) -> list[dict]:
+    wildcard = scopes.get("*") == "rw"
     slugs = sorted(scopes)
-    if not slugs:
+    if not wildcard and not slugs:
         return []
+    where, params = "", []
+    if not wildcard:
+        where = f"WHERE g.slug IN ({_placeholders(len(slugs))})"
+        params = slugs
     rows = conn.execute(
         f"""
         SELECT g.slug, g.name, g.description,
                (SELECT COUNT(*) FROM memories m
                  WHERE m.group_slug = g.slug AND m.deleted_at IS NULL) AS count
         FROM groups g
-        WHERE g.slug IN ({_placeholders(len(slugs))})
+        {where}
         ORDER BY g.slug
         """,
-        slugs,
+        params,
     )
-    return [{**dict(row), "permission": scopes[row["slug"]]} for row in rows]
+    return [
+        {**dict(row), "permission": permission_for(scopes, row["slug"])} for row in rows
+    ]
 
 
 def create_key(
@@ -282,8 +305,9 @@ def list_memories_for_web(
     Keyword matching is deliberately absent: hits and ordering belong to
     retrieval.rank_memories, so the SQL here never filters on a query.
     """
+    wildcard = scopes.get("*") == "rw"
     slugs = sorted(scopes)
-    if not slugs:
+    if not wildcard and not slugs:
         return [], 0
     if status == "active":
         condition, params = "deleted_at IS NULL", []
@@ -292,16 +316,20 @@ def list_memories_for_web(
     else:
         condition = "deleted_at IS NULL AND review_at IS NOT NULL AND review_at < ?"
         params = [utcnow()]
-    where = f"group_slug IN ({_placeholders(len(slugs))}) AND {condition}"
+    scoped = "" if wildcard else f"group_slug IN ({_placeholders(len(slugs))}) AND "
+    if not wildcard:
+        # 占位符顺序由 scoped 决定，分组 slug 必须排在状态条件之前。
+        params = [*slugs, *params]
+    where = f"{scoped}{condition}"
     if group:
         where += " AND group_slug = ?"
     total = conn.execute(
-        f"SELECT COUNT(*) FROM memories WHERE {where}", [*slugs, *params, *([group] if group else [])]
+        f"SELECT COUNT(*) FROM memories WHERE {where}", [*params, *([group] if group else [])]
     ).fetchone()[0]
     rows = conn.execute(
         f"SELECT {_WEB_LIST_COLUMNS} FROM memories WHERE {where} "
         "ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ? OFFSET ?",
-        [*slugs, *params, *([group] if group else []), limit, offset],
+        [*params, *([group] if group else []), limit, offset],
     )
     return [dict(row) for row in rows], total
 
@@ -315,6 +343,9 @@ def get_memory_for_web(conn: sqlite3.Connection, memory_id: str) -> dict | None:
 
 
 def get_key(conn: sqlite3.Connection, key_id: str) -> dict | None:
+    """环境变量配置了管理级令牌时，虚拟管理员身份不落库即成立。"""
+    if key_id == ADMIN_KEY_ID and admin_token():
+        return {"id": ADMIN_KEY_ID, "name": "Admin", "scopes": ADMIN_GRANTS}
     row = conn.execute(
         "SELECT id, name, scopes FROM keys WHERE id = ?", (key_id,)
     ).fetchone()

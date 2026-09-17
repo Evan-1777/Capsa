@@ -19,9 +19,9 @@
 
 ## 1. 概述
 
-- **一句话定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套权限对称的 Web 管理台。
-- **当前阶段**：Phase 4（单服务编排、宿主 TLS、CI 镜像交付）交付完成。
-- **非目标**：不引入向量检索与自动抽取写入，不做多租户；Key 签发/撤销、分组维护与回收站 CLI 仍为管理员通道，不 Web 化。完整边界见 `SCOPE.md`。
+- **一句话定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。
+- **当前阶段**：Phase 5（Web 单管理员面板与分类管理改造）交付完成。
+- **非目标**：不引入向量检索与自动抽取写入，不做多租户，不引入独立用户表、多角色 RBAC 与 Cookie/Session；Key 签发/撤销与回收站 CLI 仍为管理员通道，不 Web 化。完整边界见 `SCOPE.md`。
 - **设计与交付文档**：Phase 3 的设计方案、落地交付分期规划、可视化前端管理计划与架构功能报告归档于 `.docs/09-13-v3/docs/`；Phase 4 的部署形态收敛归档于 `.docs/09-16-v1/`。归档是带日期的历史快照，其中描述的容器编排形态以本文件与 `README.md` 为准
 
 ## 2. 环境与运行
@@ -49,6 +49,8 @@
   # 启动服务
   .venv/bin/uvicorn capsa.server:app --host 127.0.0.1 --port 8000
   ```
+  - 可选：设置 `CAPSA_ADMIN_TOKEN` 后，该字符串本身即是管理台管理员令牌，无需落库；未配置或仅含空白时不启用该通道
+  - ★ 易错：管理台（`/api`）只接受通配 `*:rw` 凭据，普通分组 Key 一律被网关拒绝为 403；Agent 侧的 `/mcp` 不受此限
   - ★ 易错：默认数据库路径 `/data/capsa.db` 在本机不存在，本地运行须先设置 `CAPSA_DB_PATH` 指向可写目录；未执行 `capsa init` 时 `/healthz` 返回 503 而非 200
 - **如何构建前端**：`cd web && npm ci && npm run build`，产物落在 `capsa/static/`（该目录不入版本库，由 `capsa/server.py` 条件挂载）
   - ★ 易错：npm 必须走 `web/.npmrc` 指定的 `.devtools/npm-cache`；本机默认缓存目录不可写，不设会直接失败
@@ -64,18 +66,20 @@ capsa/
 ├── db.py            # 连接辅助、幂等建表、健康检查
 ├── dal.py           # 三态授权数据访问层与记忆写读入口，唯一 SQL 出口
 ├── ids.py           # 标识符与令牌生成
-├── auth.py          # 令牌校验器，接入 FastMCP 鉴权
+├── auth.py          # 令牌校验器，接入 FastMCP 鉴权与管理级环境变量令牌
+├── permissions.py   # 权限判定单一事实来源：permission_for 与管理级令牌常量
 ├── retrieval.py     # 归一化、二字组分词、打分排序与复核时间规范化、标题近似查重
 ├── formatters.py    # L1/L2/L3 与分组列表的纯文本契约
 ├── mcp_service.py   # FastMCP 实例与 4 个只读工具、3 个写入工具
 ├── server.py        # Starlette 根应用工厂，装配 /healthz、/mcp、/api 与静态根路径
-├── web_api.py       # REST API：统一信封、Bearer 守卫与 8 个端点
+├── web_api.py       # REST API：统一信封、管理员网关守卫与 10 个端点
 ├── static/          # 前端构建产物（不入版本库，缺失时不挂载根路由）
 └── cli.py           # init / group / key / memory / review / backup / restore 子命令
 web/                     # Capsa Studio：Vite + React 18 + TypeScript + Tailwind
 ├── vite.config.ts       # build.outDir 由 CAPSA_STATIC_DIR 决定，默认 ../capsa/static
 ├── playwright.config.ts # channel: "chrome"，webServer 指向 web/tests/serve.sh
 ├── src/api.ts           # 凭据（sessionStorage）、统一信封解析与 401 拦截
+├── src/components/      # 工作台、分类管理、时效复核与回收站的视图组件
 ├── src/useAsync.ts      # 加载 / 空 / 错误 / 未授权四态的状态机
 └── tests/e2e.spec.ts    # 浏览器端到端套件
 README.md                # 定位、架构、部署、宿主反代接入与运维速查
@@ -89,7 +93,7 @@ tests/
 ├── test_units.py           # 存储基座、DAL 契约、标识符与分词单测
 ├── test_cli.py             # CLI 幂等、令牌长度、撤销与持久化
 ├── test_write.py           # 写入字段契约、查重提示、生命周期与权限分级
-├── test_web_api.py         # 8 个端点、统一信封、错误码映射与授权对称性
+├── test_web_api.py         # 10 个端点、统一信封、错误码映射、管理员网关与分类生命周期
 ├── test_phase3_assembly.py # 路由顺序、静态根路径的条件挂载
 ├── test_phase3_cli.py      # review 同源序、backup/restore 快照链路
 ├── test_deploy.py          # Dockerfile / compose / Cron 的静态校验
@@ -100,8 +104,9 @@ tests/
 
 - **核心模块**：`server.py` 是唯一 ASGI 入口（应用工厂 `create_app`），装配 starlette 内置 `RequestBodyLimitMiddleware`（1MB）后按 `/healthz → /mcp → /api → /` 顺序注册；`mcp_service.py` 与 `web_api.py` 是并列的两个传输适配层，两者内部都不出现 SQL，全部经 `dal.py` 访问数据
 - **读数据流**：Agent → Bearer 令牌 → FastMCP 校验器（`auth.py`）→ 工具层读取 claims 中的 `key_id` 与 `grants` → `dal.py` 三态判定 → `retrieval.py` 打分排序 → `formatters.py` 渲染纯文本
-- **写数据流**：适配层按 `grants` 校验 `rw` 权限与字段长度 → `retrieval.py` 规范化复核时间并计算标题近似度 → `dal.py` 写入并自行提交
-- **Web 数据流**：浏览器 → `/api` 的 `BearerAuthGuard`（内部复用 `BearerAuthBackend(CapsaTokenVerifier())`，未认证直接回 401 信封）→ 处理器从 `request.user` 的 claims 读 `grants` → `dal.py` 三态判定 → JSON 统一信封（`{success, data, error}`）；静态根路径由同一根应用条件挂载，注册在 `/api` 之后，不得劫持 API
+- **写数据流**：适配层经 `permissions.permission_for(grants, group)` 判定 `rw` 与字段长度 → `retrieval.py` 规范化复核时间并计算标题近似度 → `dal.py` 写入并自行提交
+- **权限判定单一来源**：`permissions.permission_for` 是唯一的有效权限计算函数，DAL、MCP 工具层与 `/api` 处理器共用；通配 `*:rw` 覆盖全库，通配 `*:r` 只兜底未被特指的分组
+- **Web 数据流**：浏览器 → `/api` 的 `BearerAuthGuard`（内部复用 `BearerAuthBackend(CapsaTokenVerifier())`）：未认证回 401 信封，凭据不含 `*:rw` 回 403 信封 → 处理器从 `request.user` 的 claims 读 `grants` → `dal.py` 三态判定 → JSON 统一信封（`{success, data, error}`）；分类经 `POST /api/groups` 与 `PUT /api/groups/{slug}` 维护，slug 创建后不可变；静态根路径由同一根应用条件挂载，注册在 `/api` 之后，不得劫持 API
 - **部署形态**：公网 → 宿主机反向代理（TLS 终止、响应不缓冲）→ 容器 `127.0.0.1:8000` → `capsa-data` 数据卷。应用层是唯一职责边界：容器自带 `/healthz` 健康检查与 1MB 请求体上限，宿主反代不重复配置上限，只须关闭响应缓冲以保证 MCP 流式下发
 - **模块依赖**：`server → mcp_service/web_api → dal/retrieval/formatters → db`；`dal` 是唯一执行 SQL 的模块，`retrieval` 与 `formatters` 为纯函数模块
   - ★ 易错：`dal` 与 `db` 禁止反向依赖工具层；授权范围由调用方（工具层 / API 层）从请求令牌注入，DAL 不接受全局状态
@@ -111,7 +116,8 @@ tests/
 - **命名约定**：模块与函数 snake_case；记忆 ID 为 `mem_` + 6 位随机串（总长 10），Key ID 为 8 位随机串，明文令牌为 `capsa_{key_id}_{32位随机串}`（总长 47）
 - **注释 / 文档语言**：代码注释与标识符用英文，用户可见的工具描述、错误消息与 CLI 输出用中文
 - **错误处理**：协议层问题走 HTTP 状态码（401 / 413），工具自身可给出可操作反馈的问题走工具级 `isError: true`；同一契约在 Web 侧映射为 HTTP 状态码与 `error.code`（401 `UNAUTHORIZED` / 403 `FORBIDDEN` / 404 `NOT_FOUND` / 422 `VALIDATION_ERROR` / 500 `INTERNAL_ERROR`），`error.message` 与 MCP 工具文本逐字相同；数据库不可用原样上报，不降级为业务错误
-- **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
+- **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
+- **管理级令牌规范**：`CAPSA_ADMIN_TOKEN` 每次请求读取环境变量，非空即启用，身份固定为 `id="admin"`、`grants={"*": "rw"}`；轮换方式为更新环境变量并重启服务
 - **时间约定**：所有时间以 ISO 8601 UTC 字符串存储与比较
 
 ## 6. 约束与已知坑
@@ -134,7 +140,9 @@ tests/
 - 私有 GHCR 包在 VPS 上拉取前必须 `docker login ghcr.io`——原因：仓库与包均为私有，未登录时 `docker compose pull` 直接返回 401
 - compose 端口默认写 `${CAPSA_BIND:-127.0.0.1}:8000:8000`——原因：固定 `0.0.0.0` 在防火墙未配好时等于明文公网暴露，固定回环又让容器化反代无法接入；容器化反代用该变量指向宿主网桥地址覆盖
 - 宿主反代必须关闭响应缓冲（Nginx 的 `proxy_buffering off`）——原因：MCP Streamable HTTP 逐块下发，缓冲会让连接成功但工具结果迟迟不返回；该职责原由 `Caddyfile` 的 `flush_interval -1` 承担，反代移出仓库后随之转移给宿主
-- E2E 的服务与令牌由 `web/tests/serve.sh` 现场生成（临时库 + 两把 Key，令牌写入被忽略的 `web/tests/keys.json`）——原因：硬编码假令牌只能验证前端形态，无法覆盖真实鉴权链路
+- E2E 的服务与令牌由 `web/tests/serve.sh` 现场生成（临时库 + 管理员与分组两把 Key，令牌写入被忽略的 `web/tests/keys.json`）——原因：硬编码假令牌只能验证前端形态，无法覆盖真实鉴权链路；管理台用例必须持通配管理员 Key，分组 Key 用于验证网关拦截
+- 分类标识 `slug` 创建后严格不可变，编辑只改名称与描述——原因：`memories(group_slug)` 依赖该唯一标识做外键参照，允许改名就要级联重写全部记忆
+- `add_group` 用 `INSERT OR IGNORE` 的 `rowcount` 表达插入结果，不先查后插——原因：先查后插在并发下会静默成功却未入库（TOCTOU），唯一约束在 SQL 内原子裁决
 
 ## 8. 决策记录
 
@@ -162,10 +170,15 @@ tests/
 - 2026-09-16 健康检查只保留 `Dockerfile` 的 `HEALTHCHECK`——理由：单服务后不再需要 `depends_on` 健康门控，compose 内重复声明会产生第二处间隔与超时定义
 - 2026-09-16 镜像构建只在 CI 手动触发，工作流用内置 `GITHUB_TOKEN` 登录 GHCR——理由：用户要求手动点击，避免每次推送消耗配额；无长期密钥入库，权限按 `packages: write` 最小授予
 - 2026-09-16 归档目录内的历史设计文档不回溯改写——理由：归档是带日期的历史快照，改写会让它与其时决策不符；事实变更记录在本文件与 `README.md`
+- 2026-09-17 Web 管理台收敛为单管理员面板，`/api` 网关强制核验 `*:rw` 并拒绝其他凭据——理由：单人场景下管理台是服务拥有者的全局控制台，而 `/mcp` 面向 Agent 保持分组隔离；只在前端拦截会留下绕过浏览器直接调用的缺口，边界必须落在唯一入口
+- 2026-09-17 权限判定提取为 `permissions.permission_for` 纯函数，位于 `auth`/`dal`/`mcp_service` 之下的独立模块——理由：同一规则原先散落在 DAL 与两处工具层，通配支持若逐点补齐必然漏改；单一函数让所有调用方一次性获得一致判定，且不引入循环导入
+- 2026-09-17 管理级令牌走环境变量而非独立管理员表——理由：服务拥有者只有一人，键值与令牌的映射不构成需要维护的状态；环境变量每次请求读取，轮换只需改值重启，同时避免为单人场景引入用户表与密码管理
+- 2026-09-17 分类创建与编辑放入 Web 管理台，`POST /api/groups` 返回 422 表达 slug 冲突——理由：分类是记忆的组织维度，日常维护发生在管理界面；创建与编辑语义正交于 `GET /groups`，复用既有信封与错误码映射即可，无需新错误码
 
 ## 9. 术语表
 
 - `scope` = Key 的分组到权限映射，形如 `{"proj": "rw", "study": "r"}`，是授权边界的唯一来源
+- 通配权限 = `{"*": "rw"}` 覆盖全库读写，`{"*": "r"}` 只对未被特指的分组提供只读兜底；管理台登录条件即 `grants["*"] == "rw"`
 - `group_slug` = 分组标识（`proj` / `study` / `life` / `track`），既是分类也是授权边界，不对未授权方披露
 - 三态 = 单条记忆相对当前 Key 的三种判定：`authorized` / `forbidden` / `not_found`
 - L1 / L2 / L3 = 三级披露层级，分别对应标题层（`memory_search`）、摘要层（`memory_peek`）、正文层（`memory_read`）

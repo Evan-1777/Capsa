@@ -12,6 +12,8 @@ from capsa import dal, db, retrieval
 from capsa.mcp_service import SUMMARY_MAX, TITLE_MAX
 from capsa.web_api import (
     FORBIDDEN,
+    GROUP_DESC_MAX,
+    GROUP_NAME_MAX,
     INTERNAL_ERROR,
     NOT_FOUND,
     UNAUTHORIZED,
@@ -64,33 +66,42 @@ def test_auth_me_rejects_an_invalid_token(client):
 
 
 def test_revoked_token_is_rejected_on_the_next_request(client, seeded):
-    headers = web_headers(seeded["proj"]["token"])
+    conn = db.connect()
+    try:
+        temporary = create_key(conn, "临时管理员", {"*": "rw"})
+    finally:
+        conn.close()
+    headers = web_headers(temporary["token"])
     assert client.get("/api/auth/me", headers=headers).status_code == 200
     conn = db.connect()
     try:
-        assert dal.revoke_key(conn, seeded["proj"]["id"]) is True
+        assert dal.revoke_key(conn, temporary["id"]) is True
     finally:
         conn.close()
     assert_failure(client.get("/api/auth/me", headers=headers), 401, UNAUTHORIZED)
 
 
 def test_auth_me_returns_the_issued_scopes(client, seeded):
-    response = client.get("/api/auth/me", headers=web_headers(seeded["proj"]["token"]))
+    response = client.get("/api/auth/me", headers=web_headers(seeded["admin"]["token"]))
     assert response.status_code == 200
     body = response.json()
     assert set(body) == ENVELOPE_KEYS
     assert body["error"] is None
-    assert body["data"] == {"key_id": seeded["proj"]["id"], "name": "proj-key", "scopes": {"proj": "rw"}}
+    assert body["data"] == {
+        "key_id": seeded["admin"]["id"],
+        "name": "admin-key",
+        "scopes": {"*": "rw"},
+    }
 
 
-def test_groups_lists_only_authorized_groups(client, seeded):
-    response = client.get("/api/groups", headers=web_headers(seeded["proj"]["token"]))
+def test_groups_lists_every_group_for_the_admin(client, seeded):
+    response = client.get("/api/groups", headers=web_headers(seeded["admin"]["token"]))
     assert response.status_code == 200
     data = response.json()["data"]
     assert set(data) == LIST_META_KEYS
-    assert data["total"] == 1
+    assert data["total"] == 2
     assert data["offset"] == 0
-    assert data["limit"] == 1
+    assert data["limit"] == 2
     assert data["items"] == [
         {
             "slug": "proj",
@@ -98,7 +109,14 @@ def test_groups_lists_only_authorized_groups(client, seeded):
             "description": "项目记忆",
             "count": 1,
             "permission": "rw",
-        }
+        },
+        {
+            "slug": "study",
+            "name": "学习",
+            "description": "学习笔记",
+            "count": 1,
+            "permission": "rw",
+        },
     ]
 
 
@@ -115,7 +133,7 @@ def test_unexpected_exception_returns_the_internal_envelope(conn, seeded, monkey
     monkeypatch.setattr(dal, "list_groups_with_counts", explode)
     with TestClient(app, raise_server_exceptions=False) as local:
         body = assert_failure(
-            local.get("/api/groups", headers=web_headers(seeded["proj"]["token"])), 500, INTERNAL_ERROR
+            local.get("/api/groups", headers=web_headers(seeded["admin"]["token"])), 500, INTERNAL_ERROR
         )
     assert body["error"]["message"] == "服务内部错误"
     assert "RuntimeError" not in json.dumps(body, ensure_ascii=False)
@@ -126,14 +144,14 @@ def test_unexpected_exception_returns_the_internal_envelope(conn, seeded, monkey
 
 
 def test_memories_list_envelope_and_item_contract(client, seeded):
-    response = client.get("/api/memories", headers=web_headers(seeded["proj"]["token"]))
+    response = client.get("/api/memories", headers=web_headers(seeded["admin"]["token"]))
     assert response.status_code == 200
     body = response.json()
     assert set(body) == ENVELOPE_KEYS
     assert body["error"] is None
     data = body["data"]
     assert set(data) == LIST_META_KEYS
-    assert (data["total"], data["offset"], data["limit"]) == (1, 0, 20)
+    assert (data["total"], data["offset"], data["limit"]) == (2, 0, 20)
     assert set(data["items"][0]) == item_keys() | {"is_overdue"}
     assert data["items"][0]["id"] == PROJ_MEMORY
     assert data["items"][0]["tags"] == []
@@ -146,7 +164,7 @@ def test_memories_list_envelope_and_item_contract(client, seeded):
 def test_memories_list_query_branch_shares_the_item_contract(client, seeded):
     response = client.get(
         "/api/memories",
-        headers=web_headers(seeded["proj"]["token"]),
+        headers=web_headers(seeded["admin"]["token"]),
         params={"query": "模型架构"},
     )
     assert response.status_code == 200
@@ -156,7 +174,7 @@ def test_memories_list_query_branch_shares_the_item_contract(client, seeded):
     conn.close()
     response = client.get(
         "/api/memories",
-        headers=web_headers(seeded["proj"]["token"]),
+        headers=web_headers(seeded["admin"]["token"]),
         params={"query": "模型架构"},
     )
     data = response.json()["data"]
@@ -172,10 +190,10 @@ def test_memories_list_pagination_is_stable(client, seeded):
         insert_memory(conn, "mem_page02", "proj", "第二条", updated_at="2026-04-01T08:00:00+00:00")
     finally:
         conn.close()
-    headers = web_headers(seeded["proj"]["token"])
+    headers = web_headers(seeded["admin"]["token"])
     page = client.get("/api/memories", headers=headers, params={"limit": 1, "offset": 1}).json()["data"]
     everything = client.get("/api/memories", headers=headers, params={"limit": 100}).json()["data"]
-    assert page["total"] == everything["total"] == 2
+    assert page["total"] == everything["total"] == 3
     assert page["items"][0]["id"] == everything["items"][1]["id"]
 
 
@@ -191,7 +209,7 @@ def test_memories_list_status_filters(client, seeded):
         conn.commit()
     finally:
         conn.close()
-    headers = web_headers(seeded["proj"]["token"])
+    headers = web_headers(seeded["admin"]["token"])
     overdue = client.get("/api/memories", headers=headers, params={"status": "overdue"}).json()["data"]
     assert [item["id"] for item in overdue["items"]] == ["mem_over"]
     deleted = client.get("/api/memories", headers=headers, params={"status": "deleted"}).json()["data"]
@@ -200,25 +218,12 @@ def test_memories_list_status_filters(client, seeded):
     assert deleted["items"][0]["is_overdue"] is False
 
 
-def test_readonly_key_never_sees_unauthorized_deleted_entries(client, seeded):
-    conn = db.connect()
-    try:
-        reader = create_key(conn, "proj-reader", {"proj": "r"})
-        conn.execute(
-            "UPDATE memories SET deleted_at = ?, deleted_reason = ? WHERE id = ?",
-            (db.utcnow(), "学习归档", STUDY_MEMORY),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    response = client.get(
-        "/api/memories", headers=web_headers(reader["token"]), params={"status": "deleted"}
-    )
-    data = response.json()["data"]
-    assert data["total"] == 0
-    assert data["items"] == []
-    assert "学习归档" not in response.text
-    assert STUDY_MEMORY not in response.text
+def test_non_admin_key_is_rejected_before_any_handler(client, seeded):
+    """绕过前端的直接调用同样被网关拦截：普通分组 Key 触达不到任何处理器。"""
+    headers = web_headers(seeded["proj"]["token"])
+    for path in ("/api/auth/me", "/api/groups", "/api/memories"):
+        body = assert_failure(client.get(path, headers=headers), 403, FORBIDDEN)
+        assert body["error"]["message"] == "Web 管理台仅支持管理员凭据访问"
 
 
 @pytest.mark.parametrize(
@@ -232,19 +237,19 @@ def test_readonly_key_never_sees_unauthorized_deleted_entries(client, seeded):
     ],
 )
 def test_memories_list_rejects_bad_parameters(client, seeded, params):
-    response = client.get("/api/memories", headers=web_headers(seeded["proj"]["token"]), params=params)
+    response = client.get("/api/memories", headers=web_headers(seeded["admin"]["token"]), params=params)
     assert_failure(response, 422, VALIDATION_ERROR)
 
 
 def test_api_prefix_is_never_hijacked_by_static_mount(client, seeded):
-    response = client.get("/api/memories", headers=web_headers(seeded["proj"]["token"]))
+    response = client.get("/api/memories", headers=web_headers(seeded["admin"]["token"]))
     assert response.headers["content-type"].startswith("application/json")
 
 
 def test_memory_detail_returns_the_full_body(client, seeded, conn):
     body = "甲" * 6000
     insert_memory(conn, "mem_long", "proj", "长文", body=body)
-    response = client.get("/api/memories/mem_long", headers=web_headers(seeded["proj"]["token"]))
+    response = client.get("/api/memories/mem_long", headers=web_headers(seeded["admin"]["token"]))
     assert response.status_code == 200
     data = response.json()["data"]
     assert set(data) == set(dal.WEB_ITEM_FIELDS) | ITEM_EXTRA
@@ -252,15 +257,19 @@ def test_memory_detail_returns_the_full_body(client, seeded, conn):
     assert data["is_overdue"] is False
 
 
-def test_detail_unauthorized_and_missing_ids_are_indistinguishable(client, seeded):
-    headers = web_headers(seeded["proj"]["token"])
-    unauthorized = client.get(f"/api/memories/{STUDY_MEMORY}", headers=headers)
+def test_detail_deleted_and_missing_ids_are_indistinguishable(client, seeded, conn):
+    headers = web_headers(seeded["admin"]["token"])
+    conn.execute(
+        "UPDATE memories SET deleted_at = ?, deleted_reason = ? WHERE id = ?",
+        (db.utcnow(), "归档", PROJ_MEMORY),
+    )
+    conn.commit()
+    deleted = client.get(f"/api/memories/{PROJ_MEMORY}", headers=headers)
     missing = client.get("/api/memories/mem_zzz999", headers=headers)
-    assert_failure(unauthorized, 404, NOT_FOUND)
-    assert unauthorized.json() == missing.json()
-    assert STUDY_MEMORY not in unauthorized.text
-    assert "OAuth 笔记" not in unauthorized.text
-    assert "正文中的授权细节" not in unauthorized.text
+    assert_failure(deleted, 404, NOT_FOUND)
+    assert deleted.json() == missing.json()
+    assert PROJ_MEMORY not in deleted.text
+    assert "项目密钥轮换方案" not in deleted.text
 
 
 def test_detail_hides_soft_deleted_entries(client, seeded, conn):
@@ -269,7 +278,7 @@ def test_detail_hides_soft_deleted_entries(client, seeded, conn):
         (db.utcnow(), "归档", PROJ_MEMORY),
     )
     conn.commit()
-    response = client.get(f"/api/memories/{PROJ_MEMORY}", headers=web_headers(seeded["proj"]["token"]))
+    response = client.get(f"/api/memories/{PROJ_MEMORY}", headers=web_headers(seeded["admin"]["token"]))
     assert_failure(response, 404, NOT_FOUND)
 
 
@@ -277,43 +286,38 @@ def test_detail_hides_soft_deleted_entries(client, seeded, conn):
 
 
 def test_create_returns_an_id_readable_through_detail(client, seeded):
-    response = create(client, seeded["proj"]["token"], title="可读回", tags=["a", "b"])
+    response = create(client, seeded["admin"]["token"], title="可读回", tags=["a", "b"])
     assert response.status_code == 200
     data = response.json()["data"]
     assert re.fullmatch(r"mem_[a-z0-9]{6}", data["id"])
     assert data["similar_items"] == []
-    detail = client.get(f"/api/memories/{data['id']}", headers=web_headers(seeded["proj"]["token"]))
+    detail = client.get(f"/api/memories/{data['id']}", headers=web_headers(seeded["admin"]["token"]))
     assert detail.json()["data"]["title"] == "可读回"
     assert detail.json()["data"]["tags"] == ["a", "b"]
 
 
-def test_create_forbidden_shares_one_message_for_both_cases(client, seeded, conn):
-    reader = create_key(conn, "proj-reader", {"proj": "r"})
+def test_create_into_a_missing_group_is_rejected(client, seeded, conn):
     before = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-    readonly = create(client, reader["token"], group="proj")
-    invisible = create(client, reader["token"], group="study")
-    assert_failure(readonly, 403, FORBIDDEN)
-    assert_failure(invisible, 403, FORBIDDEN)
-    # 两种拒绝共用一条模板，只回显调用方自己传入的分组名。
-    assert readonly.json()["error"]["message"] == "对分组 proj 没有写权限，拒绝写入"
-    assert invisible.json()["error"]["message"] == "对分组 study 没有写权限，拒绝写入"
+    response = create(client, seeded["admin"]["token"], group="ghost")
+    assert_failure(response, 422, VALIDATION_ERROR)
+    assert response.json()["error"]["message"] == "分组 ghost 不存在，拒绝写入"
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == before
 
 
 def test_create_over_limit_matches_the_mcp_message(client, seeded, open_session):
-    session = open_session(seeded["proj"]["token"])
+    session = open_session(seeded["admin"]["token"])
     mcp = session.call(
         "memory_save",
         {"group": "proj", "title": "标" * (TITLE_MAX + 1), "summary": "摘要", "body": "正文"},
     )
-    web = create(client, seeded["proj"]["token"], title="标" * (TITLE_MAX + 1))
+    web = create(client, seeded["admin"]["token"], title="标" * (TITLE_MAX + 1))
     assert_failure(web, 422, VALIDATION_ERROR)
     assert web.json()["error"]["message"] == mcp["content"][0]["text"]
 
 
 def test_create_reports_similar_items_but_still_stores(client, seeded, conn):
-    first = create(client, seeded["proj"]["token"], title="记忆分组表").json()["data"]["id"]
-    response = create(client, seeded["proj"]["token"], title="记忆分组")
+    first = create(client, seeded["admin"]["token"], title="记忆分组表").json()["data"]["id"]
+    response = create(client, seeded["admin"]["token"], title="记忆分组")
     assert response.status_code == 200
     similar = response.json()["data"]["similar_items"]
     assert [item["id"] for item in similar] == [first]
@@ -323,7 +327,7 @@ def test_create_reports_similar_items_but_still_stores(client, seeded, conn):
 
 
 def test_update_touches_only_the_given_fields(client, seeded):
-    headers = web_headers(seeded["proj"]["token"])
+    headers = web_headers(seeded["admin"]["token"])
     before = client.get(f"/api/memories/{PROJ_MEMORY}", headers=headers).json()["data"]
     response = client.put(f"/api/memories/{PROJ_MEMORY}", headers=headers, json={"title": "改名"})
     assert response.status_code == 200
@@ -335,7 +339,7 @@ def test_update_touches_only_the_given_fields(client, seeded):
 
 
 def test_update_clears_and_sets_review_at(client, seeded):
-    headers = web_headers(seeded["proj"]["token"])
+    headers = web_headers(seeded["admin"]["token"])
     assert client.put(
         f"/api/memories/{PROJ_MEMORY}", headers=headers, json={"review_at": PAST}
     ).status_code == 200
@@ -352,34 +356,27 @@ def test_update_clears_and_sets_review_at(client, seeded):
 )
 def test_update_rejects_empty_or_conflicting_payloads(client, seeded, payload):
     response = client.put(
-        f"/api/memories/{PROJ_MEMORY}", headers=web_headers(seeded["proj"]["token"]), json=payload
+        f"/api/memories/{PROJ_MEMORY}", headers=web_headers(seeded["admin"]["token"]), json=payload
     )
     assert_failure(response, 422, VALIDATION_ERROR)
 
 
-def test_put_on_readonly_or_foreign_or_missing_is_opaque(client, conn, seeded):
-    headers = web_headers(seeded["study"]["token"])
-    readonly = create_key(conn, "proj-reader", {"proj": "r"})
-    denied = client.put(
-        f"/api/memories/{PROJ_MEMORY}", headers=web_headers(readonly["token"]), json={"title": "x"}
-    )
-    assert_failure(denied, 403, FORBIDDEN)
-    assert "只读权限" in denied.json()["error"]["message"]
-    foreign = client.put(f"/api/memories/{PROJ_MEMORY}", headers=headers, json={"title": "x"})
+def test_put_on_a_missing_id_is_opaque(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
     missing = client.put("/api/memories/mem_zzz999", headers=headers, json={"title": "x"})
-    assert_failure(foreign, 404, NOT_FOUND)
-    assert foreign.json() == missing.json()
+    assert_failure(missing, 404, NOT_FOUND)
+    assert missing.json()["error"]["message"] == "记忆不存在或无权访问"
 
 
 def test_delete_moves_the_entry_to_the_recycle_bin(client, seeded):
-    headers = web_headers(seeded["proj"]["token"])
+    headers = web_headers(seeded["admin"]["token"])
     response = client.request(
         "DELETE", f"/api/memories/{PROJ_MEMORY}", headers=headers, json={"reason": "不再需要"}
     )
     assert response.status_code == 200
     assert response.json()["data"] == {"id": PROJ_MEMORY, "action": "deleted"}
     active = client.get("/api/memories", headers=headers).json()["data"]
-    assert active["items"] == []
+    assert [item["id"] for item in active["items"]] == [STUDY_MEMORY]
     deleted = client.get("/api/memories", headers=headers, params={"status": "deleted"}).json()["data"]
     assert [item["id"] for item in deleted["items"]] == [PROJ_MEMORY]
     assert deleted["items"][0]["deleted_reason"] == "不再需要"
@@ -389,7 +386,7 @@ def test_delete_moves_the_entry_to_the_recycle_bin(client, seeded):
 @pytest.mark.parametrize("reason", ["", "   "])
 def test_delete_requires_a_reason(client, seeded, conn, reason):
     response = client.request(
-        "DELETE", f"/api/memories/{PROJ_MEMORY}", headers=web_headers(seeded["proj"]["token"]), json={"reason": reason}
+        "DELETE", f"/api/memories/{PROJ_MEMORY}", headers=web_headers(seeded["admin"]["token"]), json={"reason": reason}
     )
     assert_failure(response, 422, VALIDATION_ERROR)
     assert response.json()["error"]["message"] == "删除原因不能为空"
@@ -397,35 +394,31 @@ def test_delete_requires_a_reason(client, seeded, conn, reason):
 
 
 def test_restore_returns_the_entry_to_the_workbench(client, seeded):
-    headers = web_headers(seeded["proj"]["token"])
+    headers = web_headers(seeded["admin"]["token"])
     client.request("DELETE", f"/api/memories/{PROJ_MEMORY}", headers=headers, json={"reason": "误删"})
     response = client.post(f"/api/memories/{PROJ_MEMORY}/restore", headers=headers)
     assert response.status_code == 200
     assert response.json()["data"] == {"id": PROJ_MEMORY, "action": "restored"}
     active = client.get("/api/memories", headers=headers).json()["data"]
-    assert [item["id"] for item in active["items"]] == [PROJ_MEMORY]
+    assert [item["id"] for item in active["items"]] == [PROJ_MEMORY, STUDY_MEMORY]
     deleted = client.get("/api/memories", headers=headers, params={"status": "deleted"}).json()["data"]
     assert deleted["items"] == []
 
 
-def test_restore_rejects_live_entries_and_readonly_keys(client, seeded, conn):
-    headers = web_headers(seeded["proj"]["token"])
+def test_restore_rejects_live_entries_and_non_admin_keys(client, seeded, conn):
+    headers = web_headers(seeded["admin"]["token"])
     assert_failure(client.post(f"/api/memories/{PROJ_MEMORY}/restore", headers=headers), 404, NOT_FOUND)
-    reader = create_key(conn, "proj-reader", {"proj": "r"})
-    conn.execute(
-        "UPDATE memories SET deleted_at = ?, deleted_reason = ? WHERE id = ?",
-        (db.utcnow(), "误删", PROJ_MEMORY),
+    denied = client.post(
+        f"/api/memories/{PROJ_MEMORY}/restore", headers=web_headers(seeded["proj"]["token"])
     )
-    conn.commit()
-    denied = client.post(f"/api/memories/{PROJ_MEMORY}/restore", headers=web_headers(reader["token"]))
     assert_failure(denied, 403, FORBIDDEN)
-    assert "只读权限" in denied.json()["error"]["message"]
+    assert denied.json()["error"]["message"] == "Web 管理台仅支持管理员凭据访问"
 
 
 def test_oversized_body_is_rejected_on_the_api_prefix(client, seeded):
     response = client.post(
         "/api/memories",
-        headers=web_headers(seeded["proj"]["token"]),
+        headers=web_headers(seeded["admin"]["token"]),
         content=b"x" * 1_100_000,
     )
     assert response.status_code == 413
@@ -490,3 +483,111 @@ def test_dal_never_filters_keywords_in_sql():
     source = inspect.getsource(dal)
     assert "LIKE" not in source
     assert "query" not in inspect.signature(dal.list_memories_for_web).parameters
+
+
+# --- TASK-001/002 单管理员凭据与通配管理员 ---
+
+
+def test_admin_token_lifecycle_and_blank_handling(bare_client, seeded, monkeypatch):
+    """管理级环境变量：空白视为未启用，改值即时生效，未配置时数据库校验照常。"""
+    monkeypatch.setenv("CAPSA_ADMIN_TOKEN", "   ")
+    assert_failure(bare_client.get("/api/auth/me", headers=web_headers("   ")), 401, UNAUTHORIZED)
+
+    monkeypatch.setenv("CAPSA_ADMIN_TOKEN", "vps-admin-secret")
+    response = bare_client.get("/api/auth/me", headers=web_headers("vps-admin-secret"))
+    assert response.status_code == 200
+    assert response.json()["data"] == {"key_id": "admin", "name": "Admin", "scopes": {"*": "rw"}}
+
+    monkeypatch.setenv("CAPSA_ADMIN_TOKEN", "rotated")
+    assert_failure(
+        bare_client.get("/api/auth/me", headers=web_headers("vps-admin-secret")), 401, UNAUTHORIZED
+    )
+    assert bare_client.get("/api/auth/me", headers=web_headers("rotated")).status_code == 200
+
+    monkeypatch.delenv("CAPSA_ADMIN_TOKEN")
+    stored = bare_client.get("/api/auth/me", headers=web_headers(seeded["admin"]["token"]))
+    assert stored.json()["data"]["scopes"] == {"*": "rw"}
+
+
+# --- TASK-004/005 分类生命周期 ---
+
+
+def test_create_group_atomic_and_reflected_in_list(client, seeded, conn):
+    headers = web_headers(seeded["admin"]["token"])
+    response = client.post(
+        "/api/groups", headers=headers, json={"slug": "lab", "name": "实验室", "description": "实验记录"}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "slug": "lab",
+        "name": "实验室",
+        "description": "实验记录",
+        "count": 0,
+        "permission": "rw",
+    }
+    listed = client.get("/api/groups", headers=headers).json()["data"]
+    assert [item["slug"] for item in listed["items"]] == ["lab", "proj", "study"]
+    assert conn.execute("SELECT COUNT(*) FROM groups WHERE slug = ?", ("lab",)).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("payload", [
+    {"slug": "proj", "name": "重复"},
+    {"slug": "-bad", "name": "非法"},
+    {"slug": "有 空格", "name": "非法"},
+    {"slug": "x" * 33, "name": "非法"},
+    {"slug": "", "name": "非法"},
+    {"slug": "中文", "name": "非法"},
+    {"slug": "lab", "name": "   "},
+    {"slug": "lab", "name": "名" * (GROUP_NAME_MAX + 1)},
+    {"slug": "lab", "name": "合法", "description": "描" * (GROUP_DESC_MAX + 1)},
+])
+def test_create_group_rejects_duplicate_or_invalid_fields(client, seeded, conn, payload):
+    before = conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0]
+    response = client.post(
+        "/api/groups", headers=web_headers(seeded["admin"]["token"]), json=payload
+    )
+    assert_failure(response, 422, VALIDATION_ERROR)
+    assert conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0] == before
+
+
+def test_update_group_name_and_description(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
+    response = client.put(
+        "/api/groups/proj", headers=headers, json={"name": "项目二部", "description": "新描述"}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "slug": "proj",
+        "name": "项目二部",
+        "description": "新描述",
+        "count": 1,
+        "permission": "rw",
+    }
+    partial = client.put("/api/groups/proj", headers=headers, json={"name": "项目三部"})
+    assert partial.json()["data"]["name"] == "项目三部"
+    assert partial.json()["data"]["description"] == "新描述"
+
+    missing = client.put("/api/groups/ghost", headers=headers, json={"name": "x"})
+    body = assert_failure(missing, 404, NOT_FOUND)
+    assert body["error"]["message"] == "分组 ghost 不存在"
+    assert_failure(client.put("/api/groups/proj", headers=headers, json={}), 422, VALIDATION_ERROR)
+
+
+def test_foreign_key_safety_when_group_updated(client, seeded, conn):
+    headers = web_headers(seeded["admin"]["token"])
+    assert client.put("/api/groups/proj", headers=headers, json={"name": "项目二部"}).status_code == 200
+    # slug 不可变，已有记忆的外键始终指向同一个分组。
+    assert conn.execute(
+        "SELECT group_slug FROM memories WHERE id = ?", (PROJ_MEMORY,)
+    ).fetchone()[0] == "proj"
+    detail = client.get(f"/api/memories/{PROJ_MEMORY}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["data"]["group_slug"] == "proj"
+
+
+def test_group_writes_stay_behind_the_admin_gate(client, seeded):
+    headers = web_headers(seeded["proj"]["token"])
+    created = client.post("/api/groups", headers=headers, json={"slug": "lab", "name": "实验室"})
+    updated = client.put("/api/groups/proj", headers=headers, json={"name": "改名"})
+    for response in (created, updated):
+        assert_failure(response, 403, FORBIDDEN)

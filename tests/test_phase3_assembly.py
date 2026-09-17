@@ -12,7 +12,7 @@ def test_healthz_api_and_missing_root(tmp_path, seeded):
     # 显式指向不存在的目录：本机是否已构建 capsa/static 不应改变这条断言。
     with TestClient(create_app(str(tmp_path / "absent"))) as local:
         assert local.get("/healthz").status_code == 200
-        response = local.get("/api/memories", headers=web_headers(seeded["proj"]["token"]))
+        response = local.get("/api/memories", headers=web_headers(seeded["admin"]["token"]))
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/json")
         assert response.json()["success"] is True
@@ -26,6 +26,6 @@ def test_static_mount_serves_html_without_hijacking_api(tmp_path, seeded):
         root = local.get("/")
         assert root.status_code == 200
         assert "capsa studio" in root.text
-        api = local.get("/api/memories", headers=web_headers(seeded["proj"]["token"]))
+        api = local.get("/api/memories", headers=web_headers(seeded["admin"]["token"]))
         assert api.headers["content-type"].startswith("application/json")
         assert api.json()["success"] is True

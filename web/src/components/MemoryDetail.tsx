@@ -5,7 +5,7 @@ import { api } from "../api";
 import type { MemoryDetail } from "../types";
 import type { AsyncState } from "../useAsync";
 import { Markdown } from "./Markdown";
-import { EmptyState, ErrorBanner, ReadonlyBadge, Skeleton, UnauthorizedState } from "./States";
+import { EmptyState, ErrorBanner, Skeleton, UnauthorizedState } from "./States";
 
 export function MemoryDetailPane({
   state,
@@ -37,7 +37,6 @@ export function MemoryDetailPane({
   );
 
   const memory = state.data;
-  const readonly = memory.permission !== "rw";
 
   async function remove() {
     if (!reason.trim()) return;
@@ -58,12 +57,10 @@ export function MemoryDetailPane({
         <div className="flex items-start justify-between gap-3">
           <h1 className="text-lg font-semibold leading-7 tracking-tight">{memory.title}</h1>
           <div className="flex shrink-0 items-center gap-2">
-            {readonly && <ReadonlyBadge />}
             <button
               type="button"
               onClick={() => onEdit(memory)}
-              disabled={readonly}
-              className="flex items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-white disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="flex items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             >
               <Pencil className="h-3.5 w-3.5" aria-hidden />
               编辑
@@ -71,8 +68,7 @@ export function MemoryDetailPane({
             <button
               type="button"
               onClick={() => setConfirming(true)}
-              disabled={readonly}
-              className="flex items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-white disabled:cursor-not-allowed disabled:border-zinc-200 disabled:text-zinc-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="flex items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             >
               <Trash2 className="h-3.5 w-3.5" aria-hidden />
               删除

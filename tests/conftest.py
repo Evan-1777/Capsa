@@ -144,6 +144,8 @@ def seeded(conn):
     return {
         "proj": create_key(conn, "proj-key", {"proj": "rw"}),
         "study": create_key(conn, "study-key", {"study": "rw"}),
+        # 通配管理员：Web 管理台的唯一合法身份。
+        "admin": create_key(conn, "admin-key", {"*": "rw"}),
     }
 
 

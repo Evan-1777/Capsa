@@ -29,7 +29,7 @@ def today_stamp() -> str:
 def test_review_sequence_matches_mcp_and_web(client, seeded, conn):
     insert_memory(conn, "mem_key002", "proj", "密钥轮换方案二稿", updated_at="2026-05-01T08:00:00+00:00")
     insert_memory(conn, "mem_key003", "proj", "密钥分发流程", updated_at="2026-06-01T08:00:00+00:00")
-    headers = web_headers(seeded["proj"]["token"])
+    headers = web_headers(seeded["admin"]["token"])
     web_ids = [
         item["id"]
         for item in client.get(

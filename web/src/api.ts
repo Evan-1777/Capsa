@@ -1,6 +1,7 @@
 import type {
   Envelope,
   GroupInfo,
+  GroupInput,
   KeyInfo,
   ListData,
   MemoryDetail,
@@ -63,6 +64,10 @@ export interface MemoryQuery {
 export const api = {
   me: () => request<KeyInfo>("/api/auth/me"),
   groups: () => request<ListData<GroupInfo>>("/api/groups"),
+  createGroup: (payload: GroupInput & { slug: string; name: string }) =>
+    request<GroupInfo>("/api/groups", { method: "POST", body: JSON.stringify(payload) }),
+  updateGroup: (slug: string, payload: GroupInput) =>
+    request<GroupInfo>(`/api/groups/${slug}`, { method: "PUT", body: JSON.stringify(payload) }),
   memories: (params: MemoryQuery = {}) => {
     const search = new URLSearchParams();
     for (const [name, value] of Object.entries(params)) {

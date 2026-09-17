@@ -1,6 +1,6 @@
 # Capsa
 
-部署在个人 VPS 上的私人记忆服务。以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套权限对称的 Web 管理台。
+部署在个人 VPS 上的私人记忆服务。以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。
 
 ## 能力与边界
 
@@ -9,8 +9,9 @@
 | 四个只读工具（分组、检索、摘要、正文）与三个写入工具（新建、更新、软删除） | 向量检索与自动抽取写入 |
 | 三级披露：标题层、摘要层、正文层 | 多租户 |
 | 三态授权：授权、不可见、不存在；未授权分组不披露存在性 | Key 签发与撤销的 Web 化（保留在 CLI） |
-| 时效复核、回收站软删除与恢复 | 分组维护的 Web 化（保留在 CLI） |
-| Web 管理台与 REST API，权限与 MCP 完全对称 | 回收站条目的物理清理 |
+| 时效复核、回收站软删除与恢复 | 分组标识（slug）创建后的修改 |
+| 全权限单管理员 Web 管理台：工作台、分类管理、时效复核、回收站 | 独立用户表、多角色 RBAC 与 Cookie/Session |
+| Web 端分类创建与就地编辑 | 回收站条目的物理清理 |
 | 在线热备与快照回灌 | 备份的异地对象存储同步 |
 
 ## 架构
@@ -90,8 +91,9 @@ cd /opt/capsa
 # 1. 初始化数据库与四个标准分组
 docker compose run --rm capsa capsa init
 
-# 2. 签发一把 Agent 用的 Key，作用域为 proj 读写、study 只读
+# 2. 签发一把 Agent 用的 Key（分组隔离）与一把管理台管理员 Key（通配全库）
 docker compose run --rm capsa capsa key create agent --scopes proj:rw,study:r
+docker compose run --rm capsa capsa key create admin --scopes "*:rw"
 
 # 3. 启动服务
 docker compose up -d
@@ -149,11 +151,23 @@ CAPSA_TAG=v0.1.0        # 部署具体版本，便于回滚
 }
 ```
 
-Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`memory_read` 为只读；`memory_save`、`memory_update`、`memory_forget` 为写入。作用域形如 `proj:rw,study:r`，`rw` 可读写，`r` 只读。
+Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`memory_read` 为只读；`memory_save`、`memory_update`、`memory_forget` 为写入。作用域形如 `proj:rw,study:r`，`rw` 可读写，`r` 只读；通配 `*:rw` 得到全库读写，`*:r` 提供只读兜底。
 
 ## Web 管理台
 
-浏览器打开 `https://<你的域名>/`，粘贴同一把令牌登录。凭据只存在 `sessionStorage`，关闭标签页即失效。管理台提供工作台、时效复核中心与回收站三个视图，权限与 MCP 完全对称：只读分组的写入按钮不可点击。
+浏览器打开 `https://<你的域名>/`，粘贴**管理员令牌**登录：要么是 `capsa key create admin --scopes "*:rw"` 签发的通配 Key，要么是服务端 `CAPSA_ADMIN_TOKEN` 的值。凭据只存在 `sessionStorage`，关闭标签页即失效。
+
+管理台是服务拥有者的全权限控制台，提供工作台、分类管理、时效复核与回收站四个视图：可浏览、检索、新建、编辑、软删除、延期复核并恢复全库所有分类下的记忆。分类管理支持新建分类与就地编辑名称、描述；分类标识（slug）创建后不可修改，以保证记忆外键始终有效。新增或编辑分类后，工作台的筛选胶囊与「新建记忆」抽屉的分组选项即时更新。
+
+`/api` 在网关层强制核验管理员权限，普通分组 Key 无论以何种方式发起请求一律返回 403，无法绕过页面直接调用。Agent 侧的 `/mcp` 不受此限：分组 Key 仍按作用域隔离，通配 `*:rw` Key 则拥有全库读写。
+
+```bash
+# 为管理台签发通配管理员 Key
+docker compose run --rm capsa capsa key create admin --scopes "*:rw"
+
+# 或用环境变量提供管理级令牌（写入 .env，重启生效）
+CAPSA_ADMIN_TOKEN=<你的密钥>
+```
 
 ## 备份与恢复
 
@@ -234,7 +248,8 @@ docker compose exec -T capsa capsa restore /backup/capsa-2026-09-16.db
 capsa/                 Python 服务
   server.py            根 ASGI 应用：/healthz、/mcp、/api、静态页面
   mcp_service.py       FastMCP 实例与七个工具
-  web_api.py           REST API：统一信封、Bearer 守卫、八个端点
+  permissions.py       权限判定单一来源：permission_for 与管理级令牌
+  web_api.py           REST API：统一信封、管理员网关守卫、十个端点
   dal.py               三态授权数据访问层，唯一 SQL 出口
   retrieval.py         分词、打分排序与近似查重
   formatters.py        三级披露的纯文本契约

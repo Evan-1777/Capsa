@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const keys = JSON.parse(readFileSync(join(here, "keys.json"), "utf-8")) as {
+  admin: string;
   rw: string;
-  readonly: string;
 };
 
 async function signIn(page: Page, key: string) {
@@ -16,19 +16,17 @@ async function signIn(page: Page, key: string) {
   await expect(page.getByRole("navigation", { name: "主视图" })).toBeVisible();
 }
 
-async function openDrawer(page: Page) {
+async function openDrawer(page: Page, group = "proj") {
   await page.getByRole("button", { name: "新建记忆" }).first().click();
   await expect(page.getByRole("heading", { name: "新建记忆" })).toBeVisible();
-  // 分组默认取第一个可写分组（按 slug 排序即 life）；用例统一落在 proj，
-  // 这样只读 Key（proj/study）也能看到探针条目。
-  await page.getByLabel("分组").selectOption("proj");
+  await page.getByLabel("分组").selectOption(group);
 }
 
 test("1. 凭据只存 sessionStorage，退出即清空", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("button", { name: "连接" })).toBeVisible();
-  await signIn(page, keys.rw);
-  expect(await page.evaluate(() => sessionStorage.getItem("capsa_key"))).toBe(keys.rw);
+  await signIn(page, keys.admin);
+  expect(await page.evaluate(() => sessionStorage.getItem("capsa_key"))).toBe(keys.admin);
 
   await page.getByRole("button", { name: "退出" }).click();
   await expect(page.getByRole("button", { name: "连接" })).toBeVisible();
@@ -36,21 +34,30 @@ test("1. 凭据只存 sessionStorage，退出即清空", async ({ page }) => {
 });
 
 test("2. 失效凭据在 401 后回到锁屏", async ({ page }) => {
-  await signIn(page, keys.rw);
+  await signIn(page, keys.admin);
   await page.evaluate(() => sessionStorage.setItem("capsa_key", "capsa_deadkey_000000000000000000000000000000"));
   await page.getByRole("button", { name: "时效复核" }).click();
   await expect(page.getByText("凭据无效或已被吊销")).toBeVisible();
   expect(await page.evaluate(() => sessionStorage.getItem("capsa_key"))).toBeNull();
 });
 
-test("3. 登录页不发起业务请求，无凭据时不进入三视图", async ({ page }) => {
+test("3. 登录页不发起业务请求，无凭据时不进入主视图", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("navigation", { name: "主视图" })).toHaveCount(0);
-  await expect(page.getByText("输入服务端签发的 API Key 以继续")).toBeVisible();
+  await expect(page.getByText("输入管理员 API Key 以继续")).toBeVisible();
 });
 
-test("4. Markdown 管道拦截脚本、事件属性与伪协议", async ({ page }) => {
-  await signIn(page, keys.rw);
+test("4. 非管理员凭据登录被拦截", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("API Key").fill(keys.rw);
+  await page.getByRole("button", { name: "连接" }).click();
+  await expect(page.getByText("管理台仅支持管理员凭据登录（需 *:rw 权限）")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "主视图" })).toHaveCount(0);
+  expect(await page.evaluate(() => sessionStorage.getItem("capsa_key"))).toBeNull();
+});
+
+test("5. Markdown 管道拦截脚本、事件属性与伪协议", async ({ page }) => {
+  await signIn(page, keys.admin);
   await page.getByLabel("检索记忆").fill("XSS 探针");
   await openDrawer(page);
 
@@ -75,8 +82,8 @@ test("4. Markdown 管道拦截脚本、事件属性与伪协议", async ({ page 
   await expect(page.locator('a[href^="data:"]')).toHaveCount(0);
 });
 
-test("5. Markdown 保留安全链接形态", async ({ page }) => {
-  await signIn(page, keys.rw);
+test("6. Markdown 保留安全链接形态", async ({ page }) => {
+  await signIn(page, keys.admin);
   await openDrawer(page);
   await page.getByLabel("标题").fill("链接形态探针");
   await page.getByLabel("摘要").fill("外链与邮件链接");
@@ -90,29 +97,8 @@ test("5. Markdown 保留安全链接形态", async ({ page }) => {
   await expect(page.locator('a[href="mailto:ops@example.com"]')).toHaveCount(1);
 });
 
-test("6. 只读 Key 下写操作不可用", async ({ page }) => {
-  const title = "只读探针";
-  await signIn(page, keys.rw);
-  await openDrawer(page);
-  await page.getByLabel("标题").fill(title);
-  await page.getByLabel("摘要").fill("权限验证");
-  await page.getByLabel("正文").fill("只读 Key 不应能修改这条");
-  await page.getByRole("button", { name: "创建" }).click();
-  await page.getByRole("button", { name: "退出" }).click();
-
-  await signIn(page, keys.readonly);
-  await expect(page.getByRole("button", { name: "新建记忆" })).toHaveCount(0);
-  // 分组胶囊的可见名也叫「项目」，这里必须锚定条目标题，否则点中的是筛选胶囊。
-  await page.getByLabel("检索记忆").fill(title);
-  await page.getByRole("button", { name: new RegExp(title) }).first().click();
-  await expect(page.getByRole("button", { name: "编辑" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "删除" })).toBeDisabled();
-  await page.getByRole("button", { name: "回收站", exact: true }).click();
-  await expect(page.getByText("回收站暂无条目")).toBeVisible();
-});
-
 test("7. 标题超限时标红并禁用提交", async ({ page }) => {
-  await signIn(page, keys.rw);
+  await signIn(page, keys.admin);
   await openDrawer(page);
   await page.getByLabel("标题").fill("长".repeat(61));
   await expect(page.getByText("61/60")).toHaveClass(/text-red-600/);
@@ -123,7 +109,7 @@ test("7. 标题超限时标红并禁用提交", async ({ page }) => {
 
 test("8. 全流程：新建、检索、编辑清空复核、软删除、恢复", async ({ page }) => {
   const title = `流程探针-${Date.now()}`;
-  await signIn(page, keys.rw);
+  await signIn(page, keys.admin);
   await openDrawer(page);
   await page.getByLabel("标题").fill(title);
   await page.getByLabel("摘要").fill("流程摘要");
@@ -156,16 +142,48 @@ test("8. 全流程：新建、检索、编辑清空复核、软删除、恢复",
   await page.getByRole("button", { name: "回收站", exact: true }).click();
   await expect(page.getByText(/流程验证/).first()).toBeVisible();
   await page.getByRole("button", { name: "恢复" }).first().click();
-  await expect(page.getByText("回收站暂无条目")).toBeVisible();
+  await expect(page.getByText("流程验证")).toHaveCount(0);
 
   await page.getByRole("button", { name: "记忆工作台" }).click();
   await page.getByLabel("检索记忆").fill(title);
   await expect(page.getByRole("button", { name: new RegExp(title) }).first()).toBeVisible();
 });
 
-test("9. 移动端 375px 单栏与抽屉全屏", async ({ page }) => {
+test("9. 分类管理的新建与编辑即时联动工作台", async ({ page }) => {
+  const slug = `lab${Date.now() % 100000}`;
+  await signIn(page, keys.admin);
+  await page.getByRole("button", { name: "分类管理" }).click();
+
+  await page.getByRole("button", { name: "新建分类" }).first().click();
+  await page.getByLabel("分类标识").fill(slug);
+  await page.getByLabel("分类名称").fill("实验室");
+  await page.getByLabel("分类描述").fill("实验记录");
+  await page.getByRole("button", { name: "创建" }).click();
+
+  const card = page.locator("li", { hasText: slug });
+  await expect(card).toContainText("实验室");
+  await card.getByRole("button", { name: "编辑" }).click();
+  await expect(page.getByLabel("分类标识")).toBeDisabled();
+  await page.getByLabel("分类名称").fill("实验室二部");
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect(card).toContainText("实验室二部");
+
+  await page.getByRole("button", { name: "记忆工作台" }).click();
+  await expect(page.getByRole("button", { name: "实验室二部" })).toBeVisible();
+  await openDrawer(page, slug);
+  await page.getByLabel("标题").fill("实验室条目");
+  await page.getByLabel("摘要").fill("联动验证");
+  await page.getByLabel("正文").fill("新分类下的记忆");
+  await page.getByRole("button", { name: "创建" }).click();
+
+  await page.getByLabel("检索记忆").fill("实验室条目");
+  await expect(page.getByRole("button", { name: /实验室条目/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "实验室二部" })).toBeVisible();
+});
+
+test("10. 移动端 375px 单栏与抽屉全屏", async ({ page }) => {
   const title = "移动端探针";
-  await signIn(page, keys.rw);
+  await signIn(page, keys.admin);
   await openDrawer(page);
   await page.getByLabel("标题").fill(title);
   await page.getByLabel("摘要").fill("响应式验证");

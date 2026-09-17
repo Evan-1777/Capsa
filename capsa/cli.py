@@ -54,10 +54,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_group_add(args: argparse.Namespace) -> int:
     conn = _connect()
     try:
-        if dal.get_group(conn, args.slug) is not None:
+        if not dal.add_group(conn, args.slug, args.name, args.desc):
             print(f"分组 {args.slug} 已存在，未修改", file=sys.stderr)
             return 1
-        dal.add_group(conn, args.slug, args.name, args.desc)
         group = dal.get_group(conn, args.slug)
     finally:
         conn.close()

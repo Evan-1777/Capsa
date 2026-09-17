@@ -128,7 +128,7 @@ def test_startup_creates_no_implicit_data(bare_client, initialize, conn):
 def test_full_handshake_adds_no_data(conn, seeded, open_session):
     assert open_session(seeded["proj"]["token"]).text("memory_groups")
     assert conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 2
-    assert conn.execute("SELECT COUNT(*) FROM keys").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM keys").fetchone()[0] == 3
 
 
 def test_revoked_key_loses_tool_access(client, initialize, open_session, seeded):

@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { ApiError, api, setKey } from "../api";
+import { ApiError, api, clearKey, setKey } from "../api";
 import type { KeyInfo } from "../types";
 
 export function Login({ onConnected }: { onConnected: (key: string, info: KeyInfo) => void }) {
@@ -17,7 +17,13 @@ export function Login({ onConnected }: { onConnected: (key: string, info: KeyInf
     try {
       onConnected(key, await api.me());
     } catch (failure) {
-      setError(failure instanceof ApiError ? failure.message : "无法连接到服务");
+      // 网关已判定凭据是否具备管理员权限，这里只把 403 换成人话并丢弃该凭据。
+      if (failure instanceof ApiError && failure.code === "FORBIDDEN") {
+        clearKey();
+        setError("管理台仅支持管理员凭据登录（需 *:rw 权限）");
+      } else {
+        setError(failure instanceof ApiError ? failure.message : "无法连接到服务");
+      }
     } finally {
       setBusy(false);
     }
@@ -31,7 +37,7 @@ export function Login({ onConnected }: { onConnected: (key: string, info: KeyInf
       >
         <div className="space-y-1">
           <h1 className="text-base font-semibold tracking-tight">Capsa Studio</h1>
-          <p className="text-xs text-zinc-500">输入服务端签发的 API Key 以继续</p>
+          <p className="text-xs text-zinc-500">输入管理员 API Key 以继续</p>
         </div>
         <label className="block space-y-1.5">
           <span className="text-xs font-medium text-zinc-600">API Key</span>

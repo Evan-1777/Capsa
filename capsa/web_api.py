@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 
 from fastmcp.exceptions import ToolError
@@ -21,6 +22,7 @@ from starlette.routing import Route
 from capsa import dal, db, retrieval
 from capsa.auth import CapsaTokenVerifier
 from capsa.mcp_service import BODY_MAX, SUMMARY_MAX, TITLE_MAX, require_text
+from capsa.permissions import permission_for
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,11 @@ INTERNAL_ERROR = "INTERNAL_ERROR"
 # 不含调用方传入的 id：条目不存在、已软删除、分组不可见三种情形的 404 响应体
 # 必须逐字相同，否则响应体就成了探测未授权分组的侧信道。
 _MISSING = "记忆不存在或无权访问"
+
+# 分类字段契约：slug 是记忆外键的落点，创建后不可变，因此首字符也禁止连字符。
+_SLUG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
+GROUP_NAME_MAX = 60
+GROUP_DESC_MAX = 200
 
 
 def _ok(data, status: int = 200) -> JSONResponse:
@@ -66,7 +73,12 @@ class BearerAuthGuard:
         if authenticated is None:
             response = _fail(UNAUTHORIZED, "缺少或无效的 Bearer 令牌", 401)
             return await response(scope, receive, send)
-        scope["auth"], scope["user"] = authenticated
+        auth, user = authenticated
+        # 管理台只有管理员一种身份：非通配凭据在网关处一律拒绝，处理器不再承担权限分流。
+        if user.access_token.claims.get("grants", {}).get("*") != "rw":
+            response = _fail(FORBIDDEN, "Web 管理台仅支持管理员凭据访问", 403)
+            return await response(scope, receive, send)
+        scope["auth"], scope["user"] = auth, user
         await self.app(scope, receive, send)
 
 
@@ -81,7 +93,7 @@ def _grants(request: Request) -> dict[str, str]:
 def _list_item(row: dict, grants: dict[str, str]) -> dict:
     item = {field: row.get(field) for field in dal.WEB_LIST_FIELDS}
     item["tags"] = json.loads(item["tags"] or "[]")
-    item["permission"] = grants.get(item["group_slug"])
+    item["permission"] = permission_for(grants, item["group_slug"])
     item["is_overdue"] = retrieval.is_expired(item["review_at"])
     return item
 
@@ -89,7 +101,7 @@ def _list_item(row: dict, grants: dict[str, str]) -> dict:
 def _detail_item(row: dict, grants: dict[str, str]) -> dict:
     item = {field: row[field] for field in dal.WEB_ITEM_FIELDS}
     item["tags"] = json.loads(item["tags"] or "[]")
-    item["permission"] = grants.get(item["group_slug"])
+    item["permission"] = permission_for(grants, item["group_slug"])
     item["is_overdue"] = retrieval.is_expired(item["review_at"])
     return item
 
@@ -158,6 +170,56 @@ async def list_groups(request: Request) -> JSONResponse:
     return _ok({"items": items, "total": len(items), "offset": 0, "limit": len(items)})
 
 
+def _group_description(value) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ToolError("分类描述必须是字符串")
+    if len(value) > GROUP_DESC_MAX:
+        raise ToolError(f"分类描述超长 (当前 {len(value)} 字符，上限 {GROUP_DESC_MAX} 字符)")
+    return value
+
+
+async def group_create(request: Request) -> JSONResponse:
+    payload = await _json_body(request)
+    slug = payload.get("slug")
+    if not isinstance(slug, str) or not _SLUG_PATTERN.fullmatch(slug):
+        raise ToolError("slug 只能使用字母、数字、下划线与连字符，长度 1~32 且首字符不能是连字符")
+    name = require_text(payload.get("name"), GROUP_NAME_MAX, "分类名称")
+    description = _group_description(payload.get("description"))
+    conn = db.connect()
+    try:
+        if not dal.add_group(conn, slug, name, description):
+            raise ToolError(f"分组 {slug} 已存在")
+        created = dal.list_groups_with_counts(conn, {slug: "rw"})[0]
+    finally:
+        conn.close()
+    return _ok(created)
+
+
+async def group_update(request: Request) -> JSONResponse:
+    slug = request.path_params["slug"]
+    payload = await _json_body(request)
+    name, description = payload.get("name"), payload.get("description")
+    if name is None and description is None:
+        raise ToolError("至少提供一个待更新字段")
+    conn = db.connect()
+    try:
+        group = dal.get_group(conn, slug)
+        if group is None:
+            return _fail(NOT_FOUND, f"分组 {slug} 不存在", 404)
+        if name is not None:
+            group["name"] = require_text(name, GROUP_NAME_MAX, "分类名称")
+        if description is not None:
+            group["description"] = _group_description(description)
+        dal.update_group(conn, slug, group["name"], group["description"])
+        # 响应与 GET /groups 的条目同形：编辑后的卡片直接以列表契约回填。
+        updated = dal.list_groups_with_counts(conn, {slug: "rw"})[0]
+    finally:
+        conn.close()
+    return _ok(updated)
+
+
 async def memories_list(request: Request) -> JSONResponse:
     status = request.query_params.get("status", "active")
     if status not in ("active", "overdue", "deleted"):
@@ -192,7 +254,7 @@ async def memory_detail(request: Request) -> JSONResponse:
         row = dal.get_memory_for_web(conn, memory_id)
     finally:
         conn.close()
-    if row is None or row["deleted_at"] is not None or row["group_slug"] not in grants:
+    if row is None or row["deleted_at"] is not None or not permission_for(grants, row["group_slug"]):
         return _fail(NOT_FOUND, _MISSING, 404)
     return _ok(_detail_item(row, grants))
 
@@ -202,7 +264,7 @@ async def memory_create(request: Request) -> JSONResponse:
     group = payload.get("group")
     if not isinstance(group, str) or not group:
         raise ToolError("group 不能为空")
-    if _grants(request).get(group) != "rw":
+    if permission_for(_grants(request), group) != "rw":
         return _fail(FORBIDDEN, f"对分组 {group} 没有写权限，拒绝写入", 403)
     title = require_text(payload.get("title"), TITLE_MAX, "标题")
     summary = require_text(payload.get("summary"), SUMMARY_MAX, "摘要")
@@ -243,7 +305,7 @@ def _locate_writable(conn: sqlite3.Connection, memory_id: str, grants: dict[str,
     item = dal.get_memories_batch_for_access(conn, [memory_id], grants)[0]
     if item["status"] != "authorized":
         return _fail(NOT_FOUND, _MISSING, 404)
-    if grants.get(item["group_slug"]) != "rw":
+    if permission_for(grants, item["group_slug"]) != "rw":
         return _fail(FORBIDDEN, f"对分组 {item['group_slug']} 只有只读权限，拒绝修改", 403)
     return None
 
@@ -308,9 +370,9 @@ async def memory_restore(request: Request) -> JSONResponse:
     conn = db.connect()
     try:
         row = dal.get_memory_for_web(conn, memory_id)
-        if row is None or row["group_slug"] not in grants:
+        if row is None or permission_for(grants, row["group_slug"]) is None:
             return _fail(NOT_FOUND, _MISSING, 404)
-        if grants.get(row["group_slug"]) != "rw":
+        if permission_for(grants, row["group_slug"]) != "rw":
             return _fail(FORBIDDEN, f"对分组 {row['group_slug']} 只有只读权限，拒绝修改", 403)
         if row["deleted_at"] is None:
             return _fail(NOT_FOUND, _MISSING, 404)
@@ -338,6 +400,8 @@ routes = [
     Route("/memories/{id}", endpoint=memory_update, methods=["PUT"]),
     Route("/memories/{id}", endpoint=memory_delete, methods=["DELETE"]),
     Route("/memories/{id}/restore", endpoint=memory_restore, methods=["POST"]),
+    Route("/groups", endpoint=group_create, methods=["POST"]),
+    Route("/groups/{slug}", endpoint=group_update, methods=["PUT"]),
 ]
 
 web_api_app = Starlette(

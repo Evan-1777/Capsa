@@ -43,17 +43,13 @@ export function RecycleBin() {
                 {item.group_slug} · 删除于 {item.deleted_at?.slice(0, 10)} · {item.deleted_reason}
               </p>
             </div>
-            {item.permission === "rw" ? (
-              <button
-                type="button"
-                onClick={() => restore(item.id)}
-                className="shrink-0 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              >
-                恢复
-              </button>
-            ) : (
-              <span className="shrink-0 text-[11px] text-zinc-400">只读</span>
-            )}
+            <button
+              type="button"
+              onClick={() => restore(item.id)}
+              className="shrink-0 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              恢复
+            </button>
           </li>
         ))}
       </ul>

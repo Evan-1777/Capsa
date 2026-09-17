@@ -450,3 +450,42 @@ def test_restored_entry_is_visible_again(open_session, seeded, conn):
     result = dal.get_memories_batch_for_access(conn, [PROJ_MEMORY], {"proj": "rw"})
     assert result[0]["status"] == "authorized"
     assert dal.restore_memory(conn, PROJ_MEMORY) is False
+
+
+# --- TASK-001/002 通配管理员凭据 ---
+
+
+def test_mcp_memory_save_with_wildcard_admin_key(open_session, seeded, conn):
+    session = open_session(seeded["admin"]["token"])
+    for group in ("proj", "study"):
+        response = session.call(
+            "memory_save",
+            {"group": group, "title": f"{group} 新条目", "summary": "摘要", "body": "正文"},
+        )
+        assert response.get("isError") is not True, response
+    assert row_count(conn) == 4
+    # 全库分组一并列出，权限一律 rw。
+    assert "study" in session.text("memory_groups")
+
+
+def test_mcp_memory_update_and_forget_with_wildcard_admin_key(open_session, seeded, conn):
+    session = open_session(seeded["admin"]["token"])
+    cross_group = session.call("memory_update", {"id": STUDY_MEMORY, "summary": "管理员改写"})
+    assert cross_group.get("isError") is not True, cross_group
+    assert conn.execute(
+        "SELECT summary FROM memories WHERE id = ?", (STUDY_MEMORY,)
+    ).fetchone()[0] == "管理员改写"
+    assert session.call("memory_forget", {"id": STUDY_MEMORY, "reason": "管理员归档"}).get(
+        "isError"
+    ) is not True
+    assert conn.execute(
+        "SELECT deleted_at FROM memories WHERE id = ?", (STUDY_MEMORY,)
+    ).fetchone()[0] is not None
+
+
+def test_wildcard_read_key_still_cannot_write(open_session, seeded, conn):
+    """通配 r 是只读兜底，不得被误判为可写。"""
+    key = create_key(conn, "旁观者", {"*": "r"})
+    response = save(open_session(key["token"]), group="study")
+    assert response["isError"] is True
+    assert "没有写权限" in response["content"][0]["text"]

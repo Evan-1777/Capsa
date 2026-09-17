@@ -43,14 +43,3 @@ export function UnauthorizedState({ message = "凭据无效或已被吊销" }: {
   );
 }
 
-export function OverdueBadge() {
-  return (
-    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800">
-      已过期
-    </span>
-  );
-}
-
-export function ReadonlyBadge() {
-  return <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] font-medium text-zinc-500">只读</span>;
-}

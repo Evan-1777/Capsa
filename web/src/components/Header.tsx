@@ -1,9 +1,8 @@
-import { Database, LogOut } from "lucide-react";
+import { Database, LogOut, ShieldCheck } from "lucide-react";
 
 import type { KeyInfo } from "../types";
 
 export function Header({ info, onSignOut }: { info: KeyInfo; onSignOut: () => void }) {
-  const groups = Object.entries(info.scopes);
   return (
     <header className="flex items-center justify-between gap-4 border-b border-zinc-200 bg-white px-4 py-3">
       <div className="flex min-w-0 items-center gap-2">
@@ -12,8 +11,9 @@ export function Header({ info, onSignOut }: { info: KeyInfo; onSignOut: () => vo
         <span className="hidden truncate text-xs text-zinc-400 sm:inline">{info.name}</span>
       </div>
       <div className="flex items-center gap-3">
-        <span className="hidden text-xs text-zinc-500 sm:inline">
-          {groups.map(([slug, permission]) => `${slug}:${permission}`).join(" · ")}
+        <span className="hidden items-center gap-1 text-xs text-zinc-500 sm:flex">
+          <ShieldCheck className="h-3.5 w-3.5 text-zinc-400" aria-hidden />
+          管理员
         </span>
         <button
           type="button"

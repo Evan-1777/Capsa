@@ -6,6 +6,7 @@ from fastmcp.server.auth import AccessToken, TokenVerifier
 
 from capsa import dal, db
 from capsa.ids import hash_token, new_key_id, new_secret
+from capsa.permissions import ADMIN_GRANTS, ADMIN_KEY_ID, admin_token
 
 
 def issue_key() -> tuple[str, str]:
@@ -18,6 +19,15 @@ class CapsaTokenVerifier(TokenVerifier):
     """Look the token hash up on every request so revocation takes effect immediately."""
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        # 管理级令牌先于数据库校验：未配置时此路径不存在，配置后无需落库。
+        admin = admin_token()
+        if admin and token == admin:
+            return AccessToken(
+                token=token,
+                client_id=ADMIN_KEY_ID,
+                scopes=["capsa"],
+                claims={"key_id": ADMIN_KEY_ID, "grants": ADMIN_GRANTS},
+            )
         conn = db.connect()
         try:
             key = dal.find_active_key_by_hash(conn, hash_token(token))
