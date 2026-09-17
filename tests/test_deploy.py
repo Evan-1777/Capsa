@@ -21,7 +21,10 @@ def test_compose_is_a_single_pull_only_service():
     assert "build" not in service
     assert service["image"] == "ghcr.io/evan-1777/capsa:${CAPSA_TAG:-latest}"
     assert service["restart"] == "unless-stopped"
-    assert service["environment"] == ["CAPSA_DB_PATH=/data/capsa.db"]
+    assert service["environment"] == [
+        "CAPSA_DB_PATH=/data/capsa.db",
+        "CAPSA_ADMIN_TOKEN=${CAPSA_ADMIN_TOKEN:-}",
+    ]
     assert service["volumes"] == ["capsa-data:/data", "capsa-backup:/backup"]
     assert set(compose["volumes"]) == {"capsa-data", "capsa-backup"}
 

@@ -10,6 +10,7 @@ import pytest
 
 from capsa import dal, db, retrieval
 from capsa.mcp_service import BODY_MAX, SUMMARY_MAX, TITLE_MAX
+from capsa.permissions import permission_for
 from tests.conftest import PROJ_MEMORY, STUDY_MEMORY, create_key, insert_memory
 from tests.test_cli import run_cli
 
@@ -489,3 +490,32 @@ def test_wildcard_read_key_still_cannot_write(open_session, seeded, conn):
     response = save(open_session(key["token"]), group="study")
     assert response["isError"] is True
     assert "没有写权限" in response["content"][0]["text"]
+
+# --- 通配只读：覆盖全库但不可写 ---
+
+
+def test_wildcard_read_only_covers_the_whole_library_without_writing(conn, seeded, open_session):
+    reader = create_key(conn, "全库只读", {"*": "r"})
+    scopes = {"*": "r"}
+    groups = {group["slug"]: group for group in dal.list_groups_with_counts(conn, scopes)}
+    assert set(groups) == {"proj", "study"}
+    assert {group["permission"] for group in groups.values()} == {"r"}
+
+    assert {row["id"] for row in dal.list_active_memories_for_search(conn, scopes)} == {
+        PROJ_MEMORY,
+        STUDY_MEMORY,
+    }
+    assert [row["id"] for row in dal.list_active_memories_for_search(conn, scopes, "study")] == [
+        STUDY_MEMORY
+    ]
+    rows, total = dal.list_memories_for_web(conn, scopes, "active")
+    assert total == 2 and {row["group_slug"] for row in rows} == {"proj", "study"}
+    assert dal.get_memories_batch_for_access(conn, [STUDY_MEMORY], scopes)[0]["status"] == "authorized"
+
+    # 只读仍是只读：写路径被 permission_for 拦下。
+    assert permission_for(scopes, "study") == "r"
+    session = open_session(reader["token"])
+    assert session.call("memory_update", {"id": STUDY_MEMORY, "summary": "s"})["isError"] is True
+    assert session.call(
+        "memory_save", {"group": "study", "title": "t", "summary": "s", "body": "b"}
+    )["isError"] is True

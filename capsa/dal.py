@@ -75,7 +75,8 @@ def list_active_memories_for_search(
 
     通配 rw 覆盖全库，此时不生成分组占位符，只保留可选的精确分组过滤。
     """
-    wildcard = scopes.get("*") == "rw"
+    # 通配覆盖全库与读写级别无关：*:r 同样全库可见，权限由 permission_for 逐条决定。
+    wildcard = "*" in scopes
     slugs = sorted(scopes)
     if not wildcard and not slugs:
         return []
@@ -128,7 +129,8 @@ def list_groups(conn: sqlite3.Connection) -> list[dict]:
 def list_groups_with_counts(
     conn: sqlite3.Connection, scopes: dict[str, str]
 ) -> list[dict]:
-    wildcard = scopes.get("*") == "rw"
+    # 通配覆盖全库与读写级别无关：*:r 同样全库可见，权限由 permission_for 逐条决定。
+    wildcard = "*" in scopes
     slugs = sorted(scopes)
     if not wildcard and not slugs:
         return []
@@ -305,7 +307,8 @@ def list_memories_for_web(
     Keyword matching is deliberately absent: hits and ordering belong to
     retrieval.rank_memories, so the SQL here never filters on a query.
     """
-    wildcard = scopes.get("*") == "rw"
+    # 通配覆盖全库与读写级别无关：*:r 同样全库可见，权限由 permission_for 逐条决定。
+    wildcard = "*" in scopes
     slugs = sorted(scopes)
     if not wildcard and not slugs:
         return [], 0

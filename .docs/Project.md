@@ -105,7 +105,7 @@ tests/
 - **核心模块**：`server.py` 是唯一 ASGI 入口（应用工厂 `create_app`），装配 starlette 内置 `RequestBodyLimitMiddleware`（1MB）后按 `/healthz → /mcp → /api → /` 顺序注册；`mcp_service.py` 与 `web_api.py` 是并列的两个传输适配层，两者内部都不出现 SQL，全部经 `dal.py` 访问数据
 - **读数据流**：Agent → Bearer 令牌 → FastMCP 校验器（`auth.py`）→ 工具层读取 claims 中的 `key_id` 与 `grants` → `dal.py` 三态判定 → `retrieval.py` 打分排序 → `formatters.py` 渲染纯文本
 - **写数据流**：适配层经 `permissions.permission_for(grants, group)` 判定 `rw` 与字段长度 → `retrieval.py` 规范化复核时间并计算标题近似度 → `dal.py` 写入并自行提交
-- **权限判定单一来源**：`permissions.permission_for` 是唯一的有效权限计算函数，DAL、MCP 工具层与 `/api` 处理器共用；通配 `*:rw` 覆盖全库，通配 `*:r` 只兜底未被特指的分组
+- **权限判定单一来源**：`permissions.permission_for` 是唯一的有效权限计算函数，DAL、MCP 工具层与 `/api` 处理器共用；任一 `*` 通配都覆盖全库（是否可见与读写级别正交），`permission_for` 再逐条决定该分组是 `r` 还是 `rw`
 - **Web 数据流**：浏览器 → `/api` 的 `BearerAuthGuard`（内部复用 `BearerAuthBackend(CapsaTokenVerifier())`）：未认证回 401 信封，凭据不含 `*:rw` 回 403 信封 → 处理器从 `request.user` 的 claims 读 `grants` → `dal.py` 三态判定 → JSON 统一信封（`{success, data, error}`）；分类经 `POST /api/groups` 与 `PUT /api/groups/{slug}` 维护，slug 创建后不可变；静态根路径由同一根应用条件挂载，注册在 `/api` 之后，不得劫持 API
 - **部署形态**：公网 → 宿主机反向代理（TLS 终止、响应不缓冲）→ 容器 `127.0.0.1:8000` → `capsa-data` 数据卷。应用层是唯一职责边界：容器自带 `/healthz` 健康检查与 1MB 请求体上限，宿主反代不重复配置上限，只须关闭响应缓冲以保证 MCP 流式下发
 - **模块依赖**：`server → mcp_service/web_api → dal/retrieval/formatters → db`；`dal` 是唯一执行 SQL 的模块，`retrieval` 与 `formatters` 为纯函数模块
@@ -178,7 +178,7 @@ tests/
 ## 9. 术语表
 
 - `scope` = Key 的分组到权限映射，形如 `{"proj": "rw", "study": "r"}`，是授权边界的唯一来源
-- 通配权限 = `{"*": "rw"}` 覆盖全库读写，`{"*": "r"}` 只对未被特指的分组提供只读兜底；管理台登录条件即 `grants["*"] == "rw"`
+- 通配权限 = 含 `*` 键即覆盖全库，具体级别由 `permission_for` 决定：`{"*": "rw"}` 全库可写，`{"*": "r"}` 全库只读；显式分组键优先于通配。管理台登录条件即 `grants["*"] == "rw"`
 - `group_slug` = 分组标识（`proj` / `study` / `life` / `track`），既是分类也是授权边界，不对未授权方披露
 - 三态 = 单条记忆相对当前 Key 的三种判定：`authorized` / `forbidden` / `not_found`
 - L1 / L2 / L3 = 三级披露层级，分别对应标题层（`memory_search`）、摘要层（`memory_peek`）、正文层（`memory_read`）

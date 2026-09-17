@@ -151,7 +151,7 @@ CAPSA_TAG=v0.1.0        # 部署具体版本，便于回滚
 }
 ```
 
-Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`memory_read` 为只读；`memory_save`、`memory_update`、`memory_forget` 为写入。作用域形如 `proj:rw,study:r`，`rw` 可读写，`r` 只读；通配 `*:rw` 得到全库读写，`*:r` 提供只读兜底。
+Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`memory_read` 为只读；`memory_save`、`memory_update`、`memory_forget` 为写入。作用域形如 `proj:rw,study:r`，`rw` 可读写，`r` 只读；通配 `*:rw` 得到全库读写，`*:r` 全库只读，显式分组键优先于通配。
 
 ## Web 管理台
 
@@ -165,7 +165,7 @@ Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`mem
 # 为管理台签发通配管理员 Key
 docker compose run --rm capsa capsa key create admin --scopes "*:rw"
 
-# 或用环境变量提供管理级令牌（写入 .env，重启生效）
+# 或用环境变量提供管理级令牌（写入与 docker-compose.yml 同目录的 .env，重启生效）
 CAPSA_ADMIN_TOKEN=<你的密钥>
 ```
 

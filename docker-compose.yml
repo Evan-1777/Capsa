@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     environment:
       - CAPSA_DB_PATH=/data/capsa.db
+      # 未在 .env 或 shell 中设置时为空串，permissions.admin_token() 视为未启用。
+      - CAPSA_ADMIN_TOKEN=${CAPSA_ADMIN_TOKEN:-}
     volumes:
       - capsa-data:/data
       - capsa-backup:/backup
