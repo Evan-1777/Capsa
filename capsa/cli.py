@@ -34,9 +34,14 @@ def _connect() -> sqlite3.Connection:
 def _parse_scopes(raw: str) -> dict[str, str]:
     scopes: dict[str, str] = {}
     for pair in raw.split(","):
-        slug, _, permission = pair.partition(":")
-        if slug.strip():
-            scopes[slug.strip()] = permission.strip() or "r"
+        pair = pair.strip()
+        if not pair:
+            continue
+        slug, sep, permission = pair.partition(":")
+        slug = slug.strip()
+        permission = permission.strip() if sep else "r"
+        if slug:
+            scopes[slug] = permission
     return scopes
 
 
@@ -92,11 +97,26 @@ def cmd_group_delete(args: argparse.Namespace) -> int:
 
 
 def cmd_key_create(args: argparse.Namespace) -> int:
+    name = args.name.strip()
+    if not name or len(name) > 60:
+        print("Key 名称不能为空且不超过 60 字符", file=sys.stderr)
+        return 1
     scopes = _parse_scopes(args.scopes)
-    key_id, plain = issue_key()
+    if not scopes:
+        print("scopes 不能为空", file=sys.stderr)
+        return 1
     conn = _connect()
     try:
-        dal.create_key(conn, key_id, args.name, hash_token(plain), scopes)
+        existing_groups = {g["slug"] for g in dal.list_groups(conn)}
+        for slug, perm in scopes.items():
+            if slug != "*" and slug not in existing_groups:
+                print(f"未找到分组：{slug}", file=sys.stderr)
+                return 1
+            if perm not in ("r", "rw"):
+                print(f"权限值必须是 r 或 rw，本次传入 {perm}", file=sys.stderr)
+                return 1
+        key_id, plain = issue_key()
+        dal.create_key(conn, key_id, name, hash_token(plain), scopes)
     finally:
         conn.close()
     print(f"Key ID: {key_id}")

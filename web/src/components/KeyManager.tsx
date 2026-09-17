@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, Copy, Key, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import type { CreatedKeyResult, GroupInfo, KeyRecord, Permission } from "../types";
@@ -38,6 +38,16 @@ export function KeyManager({
   useEffect(() => {
     loadKeys();
   }, []);
+
+  function formatTime(iso: string | null): string {
+    if (!iso) return "从未调用";
+    try {
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? iso : d.toLocaleString();
+    } catch {
+      return iso;
+    }
+  }
 
   function formatScopes(scopes: Record<string, Permission>): string {
     if (scopes["*"] === "rw") return "全库读写";
@@ -104,7 +114,7 @@ export function KeyManager({
                         )}
                         {isRevoked ? (
                           <span className="rounded bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500">
-                            已吊销 ({key.revoked_at})
+                            已吊销 ({formatTime(key.revoked_at)})
                           </span>
                         ) : (
                           <span className="rounded bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
@@ -145,10 +155,10 @@ export function KeyManager({
                     </div>
                     <div>
                       <span className="text-zinc-400">最后调用：</span>
-                      <span className="text-zinc-600">{key.last_used_at ?? "从未调用"}</span>
+                      <span className="text-zinc-600">{formatTime(key.last_used_at)}</span>
                     </div>
                     <div className="text-[11px] text-zinc-400">
-                      创建时间：{key.created_at}
+                      创建时间：{formatTime(key.created_at)}
                     </div>
                   </div>
                 </li>
@@ -429,14 +439,24 @@ function DisclosureDialog({
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const tokenRef = useRef<HTMLDivElement>(null);
 
   async function copyToken() {
     try {
       await navigator.clipboard.writeText(result.token);
       setCopied(true);
+      setCopyFailed(false);
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      // 剪贴板不可用时降级为选中文本
+      setCopyFailed(true);
+      if (tokenRef.current) {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(tokenRef.current);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
     }
   }
 
@@ -461,7 +481,10 @@ function DisclosureDialog({
         <div className="space-y-1.5">
           <span className="text-xs font-medium text-zinc-600">明文令牌 (Token)</span>
           <div className="relative">
-            <div className="rounded border border-zinc-200 bg-zinc-100 p-3 font-mono text-xs text-zinc-800 break-all select-all">
+            <div
+              ref={tokenRef}
+              className="rounded border border-zinc-200 bg-zinc-100 p-3 font-mono text-xs text-zinc-800 break-all select-all"
+            >
               {result.token}
             </div>
           </div>
@@ -477,6 +500,11 @@ function DisclosureDialog({
               <>
                 <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden />
                 已复制
+              </>
+            ) : copyFailed ? (
+              <>
+                <Copy className="h-3.5 w-3.5 text-amber-600" aria-hidden />
+                请手动复制
               </>
             ) : (
               <>

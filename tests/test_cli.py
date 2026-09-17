@@ -72,6 +72,29 @@ def test_key_revoke_reports_unknown_id(cli_db):
     assert run_cli(cli_db, "key", "revoke", "nope0000").returncode == 1
 
 
+def test_key_create_validates_scopes_and_names(cli_db):
+    run_cli(cli_db, "init")
+    # 1. 未知分组
+    res = run_cli(cli_db, "key", "create", "bad_grp", "--scopes", "ghost:rw")
+    assert res.returncode == 1
+    assert "未找到分组：ghost" in res.stderr
+
+    # 2. 非法权限值
+    res = run_cli(cli_db, "key", "create", "bad_perm", "--scopes", "proj:super")
+    assert res.returncode == 1
+    assert "权限值必须是 r 或 rw" in res.stderr
+
+    # 3. 空 scopes
+    res = run_cli(cli_db, "key", "create", "empty_scopes", "--scopes", ",")
+    assert res.returncode == 1
+    assert "scopes 不能为空" in res.stderr
+
+    # 4. 超长名称
+    res = run_cli(cli_db, "key", "create", "a" * 61, "--scopes", "proj:r")
+    assert res.returncode == 1
+    assert "不超过 60 字符" in res.stderr
+
+
 def test_group_add_and_list(cli_db):
     assert run_cli(cli_db, "group", "add", "lab", "实验室", "--desc", "实验记录").returncode == 0
     listing = run_cli(cli_db, "group", "list")

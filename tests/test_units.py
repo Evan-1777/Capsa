@@ -175,6 +175,32 @@ def test_delete_empty_group_atomic(conn, seeded):
     assert dal.get_group(conn, "empty_grp") is None
 
 
+def test_delete_empty_group_concurrency(tmp_path, monkeypatch):
+    db_file = str(tmp_path / "concurrent.db")
+    monkeypatch.setenv("CAPSA_DB_PATH", db_file)
+    conn1 = db.connect()
+    db.init_schema(conn1)
+    dal.add_group(conn1, "race_grp", "竞态测试", "描述")
+
+    conn2 = db.connect()
+    try:
+        # conn1 开启 IMMEDIATE 事务获取写锁后，conn2 无法在检查到删除期间并发写入记忆
+        conn1.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError):
+            conn2.execute(
+                "INSERT INTO memories (id, group_slug, title, summary, body, created_at, updated_at) "
+                "VALUES ('mem_race', 'race_grp', 't', 's', 'b', '2026-01-01', '2026-01-01')"
+            )
+        conn1.rollback()
+
+        # delete_empty_group 在 IMMEDIATE 事务内原子删除成功，conn2 即刻可见
+        assert dal.delete_empty_group(conn1, "race_grp") == "deleted"
+        assert dal.get_group(conn2, "race_grp") is None
+    finally:
+        conn1.close()
+        conn2.close()
+
+
 def test_delete_revoked_key_lifecycle(conn):
     key = create_key(conn, "生命周期测试", {"proj": "rw"})
     # 1. 有效 Key 拒绝物理删除

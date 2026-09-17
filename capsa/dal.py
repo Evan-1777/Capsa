@@ -118,18 +118,25 @@ def update_group(conn: sqlite3.Connection, slug: str, name: str, description: st
 
 
 def delete_empty_group(conn: sqlite3.Connection, slug: str) -> str:
-    """原子执行分类删除：检查存在性、记忆关联（含回收站），无记忆则删除并提交。"""
-    row = conn.execute("SELECT 1 FROM groups WHERE slug = ?", (slug,)).fetchone()
-    if row is None:
-        return "not_found"
-    count_row = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE group_slug = ?", (slug,)
-    ).fetchone()
-    if count_row and count_row[0] > 0:
-        return "has_memories"
-    conn.execute("DELETE FROM groups WHERE slug = ?", (slug,))
-    conn.commit()
-    return "deleted"
+    """原子执行分类删除：以 IMMEDIATE 事务获取写锁，检查存在性与关联记忆（含回收站），无记忆则删除并提交。"""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute("SELECT 1 FROM groups WHERE slug = ?", (slug,)).fetchone()
+        if row is None:
+            conn.rollback()
+            return "not_found"
+        count_row = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE group_slug = ?", (slug,)
+        ).fetchone()
+        if count_row and count_row[0] > 0:
+            conn.rollback()
+            return "has_memories"
+        conn.execute("DELETE FROM groups WHERE slug = ?", (slug,))
+        conn.commit()
+        return "deleted"
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def get_group(conn: sqlite3.Connection, slug: str) -> dict | None:
