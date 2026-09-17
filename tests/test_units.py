@@ -152,10 +152,40 @@ def test_group_counts_and_permission(conn, seeded):
 def test_revoked_key_is_not_found(conn):
     key = create_key(conn, "临时", {"proj": "rw"})
     assert dal.find_active_key_by_hash(conn, hash_token(key["token"]))["id"] == key["id"]
-    assert dal.revoke_key(conn, key["id"]) is True
+    assert dal.revoke_key(conn, key["id"]) == "revoked"
     assert dal.find_active_key_by_hash(conn, hash_token(key["token"])) is None
-    assert dal.revoke_key(conn, key["id"]) is False
-    assert dal.revoke_key(conn, "nope0000") is False
+    assert dal.revoke_key(conn, key["id"]) == "already_revoked"
+    assert dal.revoke_key(conn, "nope0000") == "not_found"
+
+
+def test_delete_empty_group_atomic(conn, seeded):
+    # 1. 不存在分组
+    assert dal.delete_empty_group(conn, "nonexistent") == "not_found"
+    # 2. 存在活跃记忆分组
+    assert dal.delete_empty_group(conn, "proj") == "has_memories"
+    assert dal.get_group(conn, "proj") is not None
+    # 3. 仅含软删除记忆分组
+    conn.execute("UPDATE memories SET deleted_at = ? WHERE group_slug = ?", (db.utcnow(), "proj"))
+    conn.commit()
+    assert dal.delete_empty_group(conn, "proj") == "has_memories"
+    assert dal.get_group(conn, "proj") is not None
+    # 4. 空分组删除成功
+    dal.add_group(conn, "empty_grp", "空分组", "暂无记忆")
+    assert dal.delete_empty_group(conn, "empty_grp") == "deleted"
+    assert dal.get_group(conn, "empty_grp") is None
+
+
+def test_delete_revoked_key_lifecycle(conn):
+    key = create_key(conn, "生命周期测试", {"proj": "rw"})
+    # 1. 有效 Key 拒绝物理删除
+    assert dal.delete_revoked_key(conn, key["id"]) == "still_active"
+    # 2. 吊销后再删除
+    assert dal.revoke_key(conn, key["id"]) == "revoked"
+    assert dal.delete_revoked_key(conn, key["id"]) == "deleted"
+    # 3. 彻底从库中移除
+    assert dal.get_key(conn, key["id"]) is None
+    # 4. 再次删除返回 not_found
+    assert dal.delete_revoked_key(conn, key["id"]) == "not_found"
 
 
 def test_key_scopes_round_trip_and_persist(conn):

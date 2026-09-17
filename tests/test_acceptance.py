@@ -70,7 +70,7 @@ def test_revoked_key_rejected(client, initialize, seeded):
     assert initialize(client, seeded["proj"]["token"]).status_code == 200
     connection = db.connect()
     try:
-        assert dal.revoke_key(connection, seeded["proj"]["id"]) is True
+        assert dal.revoke_key(connection, seeded["proj"]["id"]) == "revoked"
     finally:
         connection.close()
     assert initialize(client, seeded["proj"]["token"]).status_code == 401

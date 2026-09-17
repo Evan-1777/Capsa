@@ -75,6 +75,22 @@ def cmd_group_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_group_delete(args: argparse.Namespace) -> int:
+    conn = _connect()
+    try:
+        status = dal.delete_empty_group(conn, args.slug)
+    finally:
+        conn.close()
+    if status == "not_found":
+        print(f"未找到分组：{args.slug}", file=sys.stderr)
+        return 1
+    if status == "has_memories":
+        print(f"分组 {args.slug} 下仍有记忆（含回收站），无法删除", file=sys.stderr)
+        return 1
+    print(f"已删除分组：{args.slug}")
+    return 0
+
+
 def cmd_key_create(args: argparse.Namespace) -> int:
     scopes = _parse_scopes(args.scopes)
     key_id, plain = issue_key()
@@ -95,7 +111,7 @@ def cmd_key_revoke(args: argparse.Namespace) -> int:
         revoked = dal.revoke_key(conn, args.key_id)
     finally:
         conn.close()
-    if not revoked:
+    if revoked != "revoked":
         print(f"未找到可撤销的 Key：{args.key_id}", file=sys.stderr)
         return 1
     print(f"已撤销 Key：{args.key_id}")
@@ -224,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
     group_add.add_argument("--desc", default="")
     group_add.set_defaults(func=cmd_group_add)
     group_commands.add_parser("list", help="列出分组").set_defaults(func=cmd_group_list)
+    group_delete = group_commands.add_parser("delete", help="删除分组")
+    group_delete.add_argument("slug")
+    group_delete.set_defaults(func=cmd_group_delete)
 
     key = commands.add_parser("key", help="Key 签发与撤销")
     key_commands = key.add_subparsers(dest="key_command", required=True)

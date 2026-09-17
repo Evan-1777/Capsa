@@ -20,9 +20,10 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from capsa import dal, db, retrieval
-from capsa.auth import CapsaTokenVerifier
+from capsa.auth import CapsaTokenVerifier, issue_key
+from capsa.ids import hash_token
 from capsa.mcp_service import BODY_MAX, SUMMARY_MAX, TITLE_MAX, require_text
-from capsa.permissions import permission_for
+from capsa.permissions import ADMIN_KEY_ID, permission_for
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,20 @@ async def group_update(request: Request) -> JSONResponse:
     return _ok(updated)
 
 
+async def group_delete(request: Request) -> JSONResponse:
+    slug = request.path_params["slug"]
+    conn = db.connect()
+    try:
+        status = dal.delete_empty_group(conn, slug)
+    finally:
+        conn.close()
+    if status == "not_found":
+        return _fail(NOT_FOUND, f"分组 {slug} 不存在", 404)
+    if status == "has_memories":
+        raise ToolError(f"分类 {slug} 下仍有记忆（含回收站），禁止删除")
+    return _ok({"slug": slug, "action": "deleted"})
+
+
 async def memories_list(request: Request) -> JSONResponse:
     status = request.query_params.get("status", "active")
     if status not in ("active", "overdue", "deleted"):
@@ -382,6 +397,87 @@ async def memory_restore(request: Request) -> JSONResponse:
     return _ok({"id": memory_id, "action": "restored"})
 
 
+KEY_NAME_MAX = 60
+
+
+def _check_key_guard(request: Request, target_id: str) -> None:
+    current_key_id = request.user.access_token.claims.get("key_id")
+    if current_key_id == target_id:
+        raise ToolError("禁止对当前正在使用的管理凭据执行吊销或删除操作")
+    if target_id == ADMIN_KEY_ID:
+        raise ToolError("环境变量管理员凭据不受管理接口支持，请通过环境变量变更或重启服务完成轮换")
+
+
+async def key_list(request: Request) -> JSONResponse:
+    conn = db.connect()
+    try:
+        items = dal.list_keys(conn)
+    finally:
+        conn.close()
+    return _ok({"items": items, "total": len(items), "offset": 0, "limit": len(items)})
+
+
+async def key_create(request: Request) -> JSONResponse:
+    payload = await _json_body(request)
+    name = require_text(payload.get("name"), KEY_NAME_MAX, "Key 名称")
+    scopes = payload.get("scopes")
+    if not isinstance(scopes, dict) or not scopes:
+        raise ToolError("scopes 必须是非空字典")
+    conn = db.connect()
+    try:
+        existing_groups = {g["slug"] for g in dal.list_groups(conn)}
+        for slug, perm in scopes.items():
+            if not isinstance(slug, str) or (slug != "*" and slug not in existing_groups):
+                raise ToolError(f"分组 {slug} 不存在")
+            if perm not in ("r", "rw"):
+                raise ToolError(f"权限值必须是 r 或 rw，本次传入 {perm}")
+        key_id, plain_token = issue_key()
+        created_at = db.utcnow()
+        dal.create_key(conn, key_id, name, hash_token(plain_token), scopes)
+    finally:
+        conn.close()
+    return _ok(
+        {
+            "id": key_id,
+            "name": name,
+            "token": plain_token,
+            "scopes": scopes,
+            "created_at": created_at,
+        },
+        status=201,
+    )
+
+
+async def key_revoke(request: Request) -> JSONResponse:
+    target_id = request.path_params["id"]
+    _check_key_guard(request, target_id)
+    conn = db.connect()
+    try:
+        status = dal.revoke_key(conn, target_id)
+    finally:
+        conn.close()
+    if status == "not_found":
+        return _fail(NOT_FOUND, f"Key {target_id} 不存在", 404)
+    if status == "already_revoked":
+        raise ToolError(f"Key {target_id} 已经处于吊销状态")
+    return _ok({"id": target_id, "action": "revoked"})
+
+
+async def key_delete(request: Request) -> JSONResponse:
+    target_id = request.path_params["id"]
+    _check_key_guard(request, target_id)
+    conn = db.connect()
+    try:
+        status = dal.delete_revoked_key(conn, target_id)
+    finally:
+        conn.close()
+    if status == "not_found":
+        return _fail(NOT_FOUND, f"Key {target_id} 不存在", 404)
+    if status == "still_active":
+        raise ToolError(f"Key {target_id} 仍处于有效状态，请先吊销后再删除")
+    return _ok({"id": target_id, "action": "deleted"})
+
+
 async def tool_error_handler(request: Request, exc: ToolError) -> JSONResponse:
     return _fail(VALIDATION_ERROR, str(exc), 422)
 
@@ -402,6 +498,11 @@ routes = [
     Route("/memories/{id}/restore", endpoint=memory_restore, methods=["POST"]),
     Route("/groups", endpoint=group_create, methods=["POST"]),
     Route("/groups/{slug}", endpoint=group_update, methods=["PUT"]),
+    Route("/groups/{slug}", endpoint=group_delete, methods=["DELETE"]),
+    Route("/keys", endpoint=key_list, methods=["GET"]),
+    Route("/keys", endpoint=key_create, methods=["POST"]),
+    Route("/keys/{id}/revoke", endpoint=key_revoke, methods=["POST"]),
+    Route("/keys/{id}", endpoint=key_delete, methods=["DELETE"]),
 ]
 
 web_api_app = Starlette(

@@ -55,6 +55,28 @@ export interface KeyInfo {
   scopes: Record<string, Permission>;
 }
 
+export interface KeyRecord {
+  id: string;
+  name: string;
+  scopes: Record<string, Permission>;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface CreateKeyInput {
+  name: string;
+  scopes: Record<string, Permission>;
+}
+
+export interface CreatedKeyResult {
+  id: string;
+  name: string;
+  token: string;
+  scopes: Record<string, Permission>;
+  created_at: string;
+}
+
 export interface SimilarItem {
   id: string;
   title: string;

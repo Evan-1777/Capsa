@@ -1,8 +1,11 @@
 import type {
+  CreateKeyInput,
+  CreatedKeyResult,
   Envelope,
   GroupInfo,
   GroupInput,
   KeyInfo,
+  KeyRecord,
   ListData,
   MemoryDetail,
   MemoryInput,
@@ -68,6 +71,15 @@ export const api = {
     request<GroupInfo>("/api/groups", { method: "POST", body: JSON.stringify(payload) }),
   updateGroup: (slug: string, payload: GroupInput) =>
     request<GroupInfo>(`/api/groups/${slug}`, { method: "PUT", body: JSON.stringify(payload) }),
+  deleteGroup: (slug: string) =>
+    request<{ slug: string; action: string }>(`/api/groups/${slug}`, { method: "DELETE" }),
+  keys: () => request<ListData<KeyRecord>>("/api/keys"),
+  createKey: (payload: CreateKeyInput) =>
+    request<CreatedKeyResult>("/api/keys", { method: "POST", body: JSON.stringify(payload) }),
+  revokeKey: (id: string) =>
+    request<{ id: string; action: string }>(`/api/keys/${id}/revoke`, { method: "POST" }),
+  deleteKey: (id: string) =>
+    request<{ id: string; action: string }>(`/api/keys/${id}`, { method: "DELETE" }),
   memories: (params: MemoryQuery = {}) => {
     const search = new URLSearchParams();
     for (const [name, value] of Object.entries(params)) {

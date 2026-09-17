@@ -117,6 +117,21 @@ def update_group(conn: sqlite3.Connection, slug: str, name: str, description: st
     return cursor.rowcount > 0
 
 
+def delete_empty_group(conn: sqlite3.Connection, slug: str) -> str:
+    """原子执行分类删除：检查存在性、记忆关联（含回收站），无记忆则删除并提交。"""
+    row = conn.execute("SELECT 1 FROM groups WHERE slug = ?", (slug,)).fetchone()
+    if row is None:
+        return "not_found"
+    count_row = conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE group_slug = ?", (slug,)
+    ).fetchone()
+    if count_row and count_row[0] > 0:
+        return "has_memories"
+    conn.execute("DELETE FROM groups WHERE slug = ?", (slug,))
+    conn.commit()
+    return "deleted"
+
+
 def get_group(conn: sqlite3.Connection, slug: str) -> dict | None:
     row = conn.execute(
         "SELECT slug, name, description, created_at FROM groups WHERE slug = ?", (slug,)
@@ -185,13 +200,26 @@ def find_active_key_by_hash(conn: sqlite3.Connection, token_hash: str) -> dict |
     return {"id": row["id"], "name": row["name"], "scopes": json.loads(row["scopes"])}
 
 
-def revoke_key(conn: sqlite3.Connection, key_id: str) -> bool:
-    cursor = conn.execute(
-        "UPDATE keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-        (utcnow(), key_id),
-    )
+def revoke_key(conn: sqlite3.Connection, key_id: str) -> str:
+    row = conn.execute("SELECT revoked_at FROM keys WHERE id = ?", (key_id,)).fetchone()
+    if row is None:
+        return "not_found"
+    if row["revoked_at"] is not None:
+        return "already_revoked"
+    conn.execute("UPDATE keys SET revoked_at = ? WHERE id = ?", (utcnow(), key_id))
     conn.commit()
-    return cursor.rowcount > 0
+    return "revoked"
+
+
+def delete_revoked_key(conn: sqlite3.Connection, key_id: str) -> str:
+    row = conn.execute("SELECT revoked_at FROM keys WHERE id = ?", (key_id,)).fetchone()
+    if row is None:
+        return "not_found"
+    if row["revoked_at"] is None:
+        return "still_active"
+    conn.execute("DELETE FROM keys WHERE id = ?", (key_id,))
+    conn.commit()
+    return "deleted"
 
 
 def list_keys(conn: sqlite3.Connection) -> list[dict]:

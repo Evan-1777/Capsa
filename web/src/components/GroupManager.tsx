@@ -1,4 +1,4 @@
-import { Pencil, Plus } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { api } from "../api";
@@ -19,6 +19,7 @@ export function GroupManager({
   onGroupsChange: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [deletingGroup, setDeletingGroup] = useState<GroupInfo | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
   async function refresh() {
@@ -72,14 +73,24 @@ export function GroupManager({
                     <p className="truncate text-[13px] font-medium text-zinc-900">{group.name}</p>
                     <p className="truncate font-mono text-[11px] text-zinc-400">{group.slug}</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setEditing({ mode: "edit", group })}
-                    className="flex shrink-0 items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                  >
-                    <Pencil className="h-3 w-3" aria-hidden />
-                    编辑
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setEditing({ mode: "edit", group })}
+                      className="flex shrink-0 items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    >
+                      <Pencil className="h-3 w-3" aria-hidden />
+                      编辑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeletingGroup(group)}
+                      className="flex shrink-0 items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                    >
+                      <Trash2 className="h-3 w-3" aria-hidden />
+                      删除
+                    </button>
+                  </div>
                 </div>
                 <p className="line-clamp-2 text-xs leading-5 text-zinc-500">
                   {group.description || "暂无描述"}
@@ -98,6 +109,17 @@ export function GroupManager({
           onSaved={async () => {
             await refresh();
             setEditing(null);
+          }}
+        />
+      )}
+
+      {deletingGroup && (
+        <DeleteGroupDialog
+          group={deletingGroup}
+          onClose={() => setDeletingGroup(null)}
+          onDeleted={async () => {
+            await refresh();
+            setDeletingGroup(null);
           }}
         />
       )}
@@ -227,6 +249,73 @@ function GroupDialog({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function DeleteGroupDialog({
+  group,
+  onClose,
+  onDeleted,
+}: {
+  group: GroupInfo;
+  onClose: () => void;
+  onDeleted: () => Promise<void>;
+}) {
+  const [failure, setFailure] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleDelete() {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await api.deleteGroup(group.slug);
+      await onDeleted();
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "删除失败");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-30 grid place-items-center p-4">
+      <button
+        type="button"
+        aria-label="关闭确认弹窗"
+        onClick={onClose}
+        className="absolute inset-0 bg-zinc-900/20"
+      />
+      <div className="relative w-full max-w-sm space-y-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xl">
+        <h2 className="text-sm font-semibold text-zinc-900">删除分类</h2>
+        <p className="text-xs leading-5 text-zinc-600">
+          确认删除分类「{group.name}」({group.slug}) 吗？此操作不可撤销。
+        </p>
+
+        {failure && (
+          <p role="alert" className="text-xs text-red-600">
+            {failure}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={handleDelete}
+            className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+          >
+            {busy ? "正在删除..." : "确认删除"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

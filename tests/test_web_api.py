@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from capsa import dal, db, retrieval
+from capsa.ids import hash_token
 from capsa.mcp_service import SUMMARY_MAX, TITLE_MAX
 from capsa.web_api import (
     FORBIDDEN,
@@ -75,7 +76,7 @@ def test_revoked_token_is_rejected_on_the_next_request(client, seeded):
     assert client.get("/api/auth/me", headers=headers).status_code == 200
     conn = db.connect()
     try:
-        assert dal.revoke_key(conn, temporary["id"]) is True
+        assert dal.revoke_key(conn, temporary["id"]) == "revoked"
     finally:
         conn.close()
     assert_failure(client.get("/api/auth/me", headers=headers), 401, UNAUTHORIZED)
@@ -591,3 +592,211 @@ def test_group_writes_stay_behind_the_admin_gate(client, seeded):
     updated = client.put("/api/groups/proj", headers=headers, json={"name": "改名"})
     for response in (created, updated):
         assert_failure(response, 403, FORBIDDEN)
+
+# --- TASK-012 分类删除与 Key 生命周期全量测试 ---
+
+
+def test_delete_empty_group_succeeds(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
+    client.post("/api/groups", headers=headers, json={"slug": "temp_empty", "name": "临时空分组"})
+    response = client.delete("/api/groups/temp_empty", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["data"] == {"slug": "temp_empty", "action": "deleted"}
+    listed = client.get("/api/groups", headers=headers).json()["data"]["items"]
+    assert "temp_empty" not in [g["slug"] for g in listed]
+
+
+def test_delete_missing_group_returns_404(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
+    response = client.delete("/api/groups/ghost_group", headers=headers)
+    assert_failure(response, 404, NOT_FOUND)
+    assert response.json()["error"]["message"] == "分组 ghost_group 不存在"
+
+
+def test_delete_group_with_active_memories_returns_422(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
+    response = client.delete("/api/groups/proj", headers=headers)
+    assert_failure(response, 422, VALIDATION_ERROR)
+    assert "分类 proj 下仍有记忆（含回收站），禁止删除" in response.json()["error"]["message"]
+
+
+def test_delete_group_with_soft_deleted_memories_returns_422(client, seeded, conn):
+    headers = web_headers(seeded["admin"]["token"])
+    client.post("/api/groups", headers=headers, json={"slug": "temp_soft", "name": "软删除分组"})
+    insert_memory(conn, "mem_soft_del", "temp_soft", "将要软删除")
+    conn.execute(
+        "UPDATE memories SET deleted_at = ?, deleted_reason = ? WHERE id = ?",
+        (db.utcnow(), "测试软删除", "mem_soft_del"),
+    )
+    conn.commit()
+
+    response = client.delete("/api/groups/temp_soft", headers=headers)
+    assert_failure(response, 422, VALIDATION_ERROR)
+    assert "分类 temp_soft 下仍有记忆（含回收站），禁止删除" in response.json()["error"]["message"]
+
+
+def test_key_create_and_list_lifecycle(client, seeded, conn, monkeypatch):
+    monkeypatch.setenv("CAPSA_ADMIN_TOKEN", "vps-virtual-admin")
+    headers = web_headers(seeded["admin"]["token"])
+    create_resp = client.post(
+        "/api/keys",
+        headers=headers,
+        json={"name": "新测试Key", "scopes": {"proj": "rw"}},
+    )
+    assert create_resp.status_code == 201
+    data = create_resp.json()["data"]
+    key_id = data["id"]
+    token = data["token"]
+    assert data["name"] == "新测试Key"
+    assert data["scopes"] == {"proj": "rw"}
+    assert len(token) == 47 and token.startswith(f"capsa_{key_id}_")
+
+    # 校验哈希落库
+    row = conn.execute("SELECT token_hash FROM keys WHERE id = ?", (key_id,)).fetchone()
+    assert row[0] == hash_token(token)
+
+    # 校验列表查询且不混入虚拟环境变量管理员
+    list_resp = client.get("/api/keys", headers=headers)
+    assert list_resp.status_code == 200
+    items = list_resp.json()["data"]["items"]
+    ids = [item["id"] for item in items]
+    assert key_id in ids
+    assert "admin" not in ids
+
+
+def test_key_create_rejects_empty_or_invalid_scopes(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
+    assert_failure(
+        client.post("/api/keys", headers=headers, json={"name": "空scope", "scopes": {}}),
+        422,
+        VALIDATION_ERROR,
+    )
+    assert_failure(
+        client.post("/api/keys", headers=headers, json={"name": "非法group", "scopes": {"ghost": "rw"}}),
+        422,
+        VALIDATION_ERROR,
+    )
+    assert_failure(
+        client.post("/api/keys", headers=headers, json={"name": "非法perm", "scopes": {"proj": "super"}}),
+        422,
+        VALIDATION_ERROR,
+    )
+    assert_failure(
+        client.post("/api/keys", headers=headers, json={"name": "   ", "scopes": {"proj": "rw"}}),
+        422,
+        VALIDATION_ERROR,
+    )
+
+
+def test_key_revoke_and_delete_lifecycle(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
+    created = client.post(
+        "/api/keys",
+        headers=headers,
+        json={"name": "待吊销", "scopes": {"proj": "r"}},
+    ).json()["data"]
+    k_id, k_token = created["id"], created["token"]
+
+    # 1. 吊销
+    revoke_resp = client.post(f"/api/keys/{k_id}/revoke", headers=headers)
+    assert revoke_resp.status_code == 200
+    assert revoke_resp.json()["data"] == {"id": k_id, "action": "revoked"}
+
+    # 2. 重复吊销报 422
+    assert_failure(client.post(f"/api/keys/{k_id}/revoke", headers=headers), 422, VALIDATION_ERROR)
+
+    # 3. 使用已吊销令牌发起请求报 401
+    assert client.get("/api/auth/me", headers=web_headers(k_token)).status_code == 401
+
+    # 4. 物理删除已吊销 Key
+    del_resp = client.delete(f"/api/keys/{k_id}", headers=headers)
+    assert del_resp.status_code == 200
+    assert del_resp.json()["data"] == {"id": k_id, "action": "deleted"}
+
+    # 5. 再次删除报 404
+    assert_failure(client.delete(f"/api/keys/{k_id}", headers=headers), 404, NOT_FOUND)
+
+
+def test_key_delete_requires_prior_revocation(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
+    created = client.post(
+        "/api/keys",
+        headers=headers,
+        json={"name": "活跃未吊销", "scopes": {"proj": "r"}},
+    ).json()["data"]
+    k_id = created["id"]
+
+    # 未吊销直接删除报 422
+    resp = client.delete(f"/api/keys/{k_id}", headers=headers)
+    assert_failure(resp, 422, VALIDATION_ERROR)
+    assert "仍处于有效状态，请先吊销后再删除" in resp.json()["error"]["message"]
+
+
+def test_key_operations_prevent_self_lock_and_virtual_admin(client, seeded):
+    headers = web_headers(seeded["admin"]["token"])
+    admin_id = seeded["admin"]["id"]
+
+    # 试图自吊销
+    self_rev = client.post(f"/api/keys/{admin_id}/revoke", headers=headers)
+    assert_failure(self_rev, 422, VALIDATION_ERROR)
+    assert "禁止对当前正在使用的管理凭据执行吊销或删除操作" in self_rev.json()["error"]["message"]
+
+    # 试图自删除
+    self_del = client.delete(f"/api/keys/{admin_id}", headers=headers)
+    assert_failure(self_del, 422, VALIDATION_ERROR)
+    assert "禁止对当前正在使用的管理凭据执行吊销或删除操作" in self_del.json()["error"]["message"]
+
+    # 试图吊销或删除 admin 虚拟凭据
+    adm_rev = client.post("/api/keys/admin/revoke", headers=headers)
+    assert_failure(adm_rev, 422, VALIDATION_ERROR)
+    assert "环境变量管理员凭据不受管理接口支持" in adm_rev.json()["error"]["message"]
+
+    adm_del = client.delete("/api/keys/admin", headers=headers)
+    assert_failure(adm_del, 422, VALIDATION_ERROR)
+    assert "环境变量管理员凭据不受管理接口支持" in adm_del.json()["error"]["message"]
+
+
+def test_orphaned_scope_behavior_on_group_delete(client, seeded, conn):
+    headers = web_headers(seeded["admin"]["token"])
+    # 1. 创建空分类
+    client.post("/api/groups", headers=headers, json={"slug": "orphaned_test", "name": "悬空测试"})
+    # 2. 签发该分类权限 Key
+    created = client.post(
+        "/api/keys",
+        headers=headers,
+        json={"name": "悬空Key", "scopes": {"orphaned_test": "rw"}},
+    ).json()["data"]
+    key_id = created["id"]
+
+    # 3. 删除分类
+    del_grp = client.delete("/api/groups/orphaned_test", headers=headers)
+    assert del_grp.status_code == 200
+
+    # 4. 验证 Key 中的 scopes 保持原样
+    key_row = dal.get_key(conn, key_id)
+    assert key_row["scopes"] == {"orphaned_test": "rw"}
+
+    # 5. 重建同名分类
+    client.post("/api/groups", headers=headers, json={"slug": "orphaned_test", "name": "重建分组"})
+
+    # 6. 该 Key 重新获得有效权限
+    reopened = db.connect()
+    try:
+        grps = dal.list_groups_with_counts(reopened, key_row["scopes"])
+        assert any(g["slug"] == "orphaned_test" and g["permission"] == "rw" for g in grps)
+    finally:
+        reopened.close()
+
+
+def test_non_admin_token_rejected_on_all_new_endpoints(client, seeded):
+    headers = web_headers(seeded["proj"]["token"])
+    assert_failure(client.delete("/api/groups/proj", headers=headers), 403, FORBIDDEN)
+    assert_failure(client.get("/api/keys", headers=headers), 403, FORBIDDEN)
+    assert_failure(
+        client.post("/api/keys", headers=headers, json={"name": "x", "scopes": {"proj": "r"}}),
+        403,
+        FORBIDDEN,
+    )
+    assert_failure(client.post("/api/keys/some_id/revoke", headers=headers), 403, FORBIDDEN)
+    assert_failure(client.delete("/api/keys/some_id", headers=headers), 403, FORBIDDEN)
+

@@ -204,3 +204,97 @@ test("10. 移动端 375px 单栏与抽屉全屏", async ({ page }) => {
   const box = await drawer.boundingBox();
   expect(Math.round(box?.width ?? 0)).toBe(375);
 });
+
+test("11. 分类管理：新建空分类成功删除，含记忆分类删除阻断", async ({ page }) => {
+  const emptySlug = `empty${Date.now() % 100000}`;
+  const memSlug = `memgrp${Date.now() % 100000}`;
+  await signIn(page, keys.admin);
+  await page.getByRole("button", { name: "分类管理" }).click();
+
+  // 1. 新建空分类并删除
+  await page.getByRole("button", { name: "新建分类" }).first().click();
+  await page.getByLabel("分类标识").fill(emptySlug);
+  await page.getByLabel("分类名称").fill("待删空分类");
+  await page.getByRole("button", { name: "创建" }).click();
+
+  const emptyCard = page.locator("li", { hasText: emptySlug });
+  await expect(emptyCard).toBeVisible();
+  await emptyCard.getByRole("button", { name: "删除" }).click();
+  await expect(page.getByRole("heading", { name: "删除分类" })).toBeVisible();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(emptyCard).toHaveCount(0);
+
+  // 2. 新建含记忆分类，阻断删除
+  await page.getByRole("button", { name: "新建分类" }).first().click();
+  await page.getByLabel("分类标识").fill(memSlug);
+  await page.getByLabel("分类名称").fill("含记忆分类");
+  await page.getByRole("button", { name: "创建" }).click();
+
+  // 往该分类写入记忆
+  await page.getByRole("button", { name: "记忆工作台" }).click();
+  await openDrawer(page, memSlug);
+  await page.getByLabel("标题").fill("不可删分类条目");
+  await page.getByLabel("摘要").fill("阻断验证");
+  await page.getByLabel("正文").fill("测试正文");
+  await page.getByRole("button", { name: "创建" }).click();
+
+  // 返回分类管理尝试删除
+  await page.getByRole("button", { name: "分类管理" }).click();
+  const memCard = page.locator("li", { hasText: memSlug });
+  await expect(memCard).toBeVisible();
+  await memCard.getByRole("button", { name: "删除" }).click();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByRole("alert")).toContainText("仍有记忆（含回收站），禁止删除");
+  await page.getByRole("button", { name: "取消" }).click();
+  await expect(memCard).toBeVisible();
+});
+
+test("12. 凭据管理：签发分组 Key、查看权限明细、单次明文披露、吊销与物理删除", async ({ page }) => {
+  const keyName = `AgentKey-${Date.now() % 100000}`;
+  await signIn(page, keys.admin);
+  await page.getByRole("button", { name: "凭据管理" }).click();
+  await expect(page.getByRole("heading", { name: "凭据管理" })).toBeVisible();
+
+  // 1. 打开签发弹层
+  await page.getByRole("button", { name: "签发 Key" }).first().click();
+  await expect(page.getByRole("heading", { name: "签发新 Key" })).toBeVisible();
+
+  // 2. 自定义权限空选项阻断校验
+  await page.locator("label", { hasText: "自定义分组权限" }).click();
+  await expect(page.getByText("请至少为一个分组授予权限")).toBeVisible();
+  await expect(page.getByRole("button", { name: "签发", exact: true })).toBeDisabled();
+
+  // 3. 填写名称并配置有效权限
+  await page.getByLabel("Key 名称").fill(keyName);
+  await page.locator("label", { hasText: "只读" }).first().click();
+  await expect(page.getByText("请至少为一个分组授予权限")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "签发", exact: true })).toBeEnabled();
+
+  // 4. 提交并验证单次明文安全披露
+  await page.getByRole("button", { name: "签发", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Key 签发成功" })).toBeVisible();
+  await expect(page.getByText("明文令牌仅在本次创建后展示一次")).toBeVisible();
+  await expect(page.getByRole("button", { name: "复制令牌" })).toBeVisible();
+
+  // 5. 点击“我已保存并关闭”
+  await page.getByRole("button", { name: "我已保存并关闭" }).click();
+  await expect(page.getByRole("heading", { name: "Key 签发成功" })).toHaveCount(0);
+
+  // 6. 核对列表中该 Key 存在且为“有效”
+  const keyCard = page.locator("li", { hasText: keyName });
+  await expect(keyCard).toBeVisible();
+  await expect(keyCard.getByText("有效")).toBeVisible();
+
+  // 7. 吊销
+  await keyCard.getByRole("button", { name: "吊销" }).click();
+  await expect(page.getByRole("heading", { name: "吊销 Key" })).toBeVisible();
+  await page.getByRole("button", { name: "确认吊销" }).click();
+  await expect(keyCard.getByText(/已吊销/)).toBeVisible();
+
+  // 8. 物理删除
+  await keyCard.getByRole("button", { name: "删除" }).click();
+  await expect(page.getByRole("heading", { name: "删除 Key" })).toBeVisible();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(keyCard).toHaveCount(0);
+});
+

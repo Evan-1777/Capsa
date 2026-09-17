@@ -21,8 +21,8 @@
 ## 1. 概述
 
 - **一句话定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。
-- **当前阶段**：Phase 6（按需正文检索与 MCP 提示词信噪比重构）交付完成。
-- **非目标**：不引入向量检索与自动抽取写入，不做多租户，不引入独立用户表、多角色 RBAC 与 Cookie/Session；Key 签发/撤销与回收站 CLI 仍为管理员通道，不 Web 化。完整边界见 `SCOPE.md`。
+- **当前阶段**：Phase 7（分类删除与 Key 深度管理及签发）交付完成。
+- **非目标**：不引入向量检索与自动抽取写入，不做多租户，不引入独立用户表、多角色 RBAC 与 Cookie/Session；回收站 CLI 仍为管理员通道。分类删除与 Key 签发/吊销/删除已纳入 Web 管理台。完整边界见 `SCOPE.md`。
 - **设计与交付文档**：Phase 3 的设计方案、落地交付分期规划、可视化前端管理计划与架构功能报告归档于 `.docs/09-13-v3/docs/`；Phase 4 的部署形态收敛归档于 `.docs/09-16-v1/`。归档是带日期的历史快照，其中描述的容器编排形态以本文件与 `README.md` 为准；Phase 6 的检索能力扩展归档于 `.docs/09-17-v2/`
 
 ## 2. 环境与运行
@@ -73,14 +73,14 @@ capsa/
 ├── formatters.py    # 三级披露与分组列表的纯文本契约
 ├── mcp_service.py   # FastMCP 实例与 4 个只读工具、3 个写入工具
 ├── server.py        # Starlette 根应用工厂，装配 /healthz、/mcp、/api 与静态根路径
-├── web_api.py       # REST API：统一信封、管理员网关守卫与 10 个端点
+├── web_api.py       # REST API：统一信封、管理员网关守卫与 14 个端点
 ├── static/          # 前端构建产物（不入版本库，缺失时不挂载根路由）
 └── cli.py           # init / group / key / memory / review / backup / restore 子命令
 web/                     # Capsa Studio：Vite + React 18 + TypeScript + Tailwind
 ├── vite.config.ts       # build.outDir 由 CAPSA_STATIC_DIR 决定，默认 ../capsa/static
 ├── playwright.config.ts # channel: "chrome"，webServer 指向 web/tests/serve.sh
 ├── src/api.ts           # 凭据（sessionStorage）、统一信封解析与 401 拦截
-├── src/components/      # 工作台、分类管理、时效复核与回收站的视图组件
+├── src/components/      # 工作台、分类管理、凭据管理、时效复核与回收站的视图组件（含 KeyManager.tsx）
 ├── src/useAsync.ts      # 加载 / 空 / 错误 / 未授权四态的状态机
 └── tests/e2e.spec.ts    # 浏览器端到端套件
 README.md                # 定位、架构、部署、宿主反代接入与运维速查
@@ -109,7 +109,7 @@ tests/
 - **权限判定单一来源**：`permissions.permission_for` 是唯一的有效权限计算函数，DAL、MCP 工具层与 `/api` 处理器共用；任一 `*` 通配都覆盖全库（是否可见与读写级别正交），`permission_for` 再逐条决定该分组是 `r` 还是 `rw`
 - **检索范围与打分**：`memory_search` 默认只匹配标题（4 分）、摘要（1 分）与标签（2 分）；`include_body=True` 时经 `dal.list_active_memories_for_search(include_body=True)` 追加投影 `body` 列并并入命中判定，正文命中每词元 0.2 分、封顶 0.8 分，低于摘要单次命中的 1 分，因此同词下标题命中严格排在正文命中之前。空 `query` 是浏览而非检索，工具层以非空 query 收敛 `load_body`，此类请求一律不投影正文
 - **正文兜底的能力边界**：`include_body` 只属于 MCP 工具层。Web 管理台与人审 `capsa review` 共用 `dal`/`retrieval` 的默认元数据检索，不暴露该参数，也不加载正文
-- **Web 数据流**：浏览器 → `/api` 的 `BearerAuthGuard`（内部复用 `BearerAuthBackend(CapsaTokenVerifier())`）：未认证回 401 信封，凭据不含 `*:rw` 回 403 信封 → 处理器从 `request.user` 的 claims 读 `grants` → `dal.py` 三态判定 → JSON 统一信封（`{success, data, error}`）；分类经 `POST /api/groups` 与 `PUT /api/groups/{slug}` 维护，slug 创建后不可变；静态根路径由同一根应用条件挂载，注册在 `/api` 之后，不得劫持 API
+- **Web 数据流**：浏览器 → `/api` 的 `BearerAuthGuard`（内部复用 `BearerAuthBackend(CapsaTokenVerifier())`）：未认证回 401 信封，凭据不含 `*:rw` 回 403 信封 → 处理器从 `request.user` 的 claims 读 `grants` → `dal.py` 三态判定 → JSON 统一信封（`{success, data, error}`）；分类经 `POST /api/groups`、`PUT /api/groups/{slug}` 与 `DELETE /api/groups/{slug}` 维护（仅空分类可删，存储层原子校验）；凭据经 `GET/POST /api/keys`、`POST /api/keys/{id}/revoke` 与 `DELETE /api/keys/{id}` 深度管理（仅已吊销可删，防管理员自锁与虚拟凭据拦截）；静态根路径由同一根应用条件挂载，注册在 `/api` 之后，不得劫持 API
 - **部署形态**：公网 → 宿主机反向代理（TLS 终止、响应不缓冲）→ 容器 `127.0.0.1:8000` → `capsa-data` 数据卷。应用层是唯一职责边界：容器自带 `/healthz` 健康检查与 1MB 请求体上限，宿主反代不重复配置上限，只须关闭响应缓冲以保证 MCP 流式下发
 - **模块依赖**：`server → mcp_service/web_api → dal/retrieval/formatters → db`；`dal` 是唯一执行 SQL 的模块，`retrieval` 与 `formatters` 为纯函数模块
   - ★ 易错：`dal` 与 `db` 禁止反向依赖工具层；授权范围由调用方（工具层 / API 层）从请求令牌注入，DAL 不接受全局状态
@@ -185,6 +185,11 @@ tests/
 - 2026-09-17 正文命中用非对称低权重（0.2/词元，封顶 0.8）而非与元数据等权——理由：正文是长文本，词频远高于标题与摘要，等权打分会让正文命中条目在排序上逆袭标题命中条目；把单次正文命中压到低于摘要命中的 1 分，可保证同词下元数据命中严格优先，同时仍能让只在正文出现的细节被召回
 - 2026-09-17 移除 MCP 工具层的全局 `USAGE` 微操文本，改为中立披露契约与字段级注解——理由：跨工具重复的"先 search 再 peek 最后 read"训诫在每次工具调用都占用上下文，且与工具自身的返回结构重复；披露边界由各工具描述中立陈述、参数含义由 `Field(description=...)` 自解释，Agent 的调用顺序交给模型自主规划
 - 2026-09-17 `include_body` 只暴露给 MCP 工具，Web 与 CLI 不提供——理由：正文兜底是为自主 Agent 在细节召回失败时的推理补偿；管理台面向人工浏览（有分页与详情视图），`review` 是确定性的元数据审阅，两者都不需要全库正文扫描，接口面扩大没有对应场景
+- 2026-09-17 分类删除原子化契约——理由：DAL 在单一事务内原子执行"存在性检查+记忆关联（含回收站）检查+删除"，消除 Web 业务层先查后删的 TOCTOU 竞态，外键冲突不逃逸为 500 异常
+- 2026-09-17 delete_revoked_key 状态约束下沉 DAL——理由：物理删除前原子校验 revoked_at 非空，拒绝直接删除活跃 Key，保持 get_key 契约不变且防止并发竞态
+- 2026-09-17 环境变量管理员虚拟凭据边界——理由：CAPSA_ADMIN_TOKEN 每次从环境读取，服务无状态管理，不落库、不进 Key 列表、不可作为管理接口操作目标，防自锁统一拦截
+- 2026-09-17 分类删除后的悬空 Key Scope 语义——理由：仅允许删除无记忆空分类，保留历史 Key 中的已配置 Scope；记忆库无记忆即无越权风险，若重建同名分类则权限自然衔接，避免级联重写 JSON 产生数据副作用
+- 2026-09-17 凭据单次明文披露交互轻量克制——理由：创建后弹层安全展示明文并提供一键复制，关闭后内存立即销毁，不搞 beforeunload 页面拦截或剪贴板监控，符合个人 VPS 工具定位
 
 ## 9. 术语表
 

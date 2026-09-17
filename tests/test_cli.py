@@ -86,6 +86,38 @@ def test_group_add_conflict_reports_and_keeps_first(cli_db):
     assert "lab | 实验室 | 实验记录" in run_cli(cli_db, "group", "list").stdout
 
 
+def test_group_delete_cli(cli_db):
+    run_cli(cli_db, "init")
+    # 1. 删除不存在分组
+    res = run_cli(cli_db, "group", "delete", "nonexistent")
+    assert res.returncode == 1
+    assert "未找到分组：nonexistent" in res.stderr
+
+    # 2. 删除含记忆分组（在 proj 添加一条记忆）
+    conn = db.connect()
+    try:
+        dal.insert_memory(
+            conn,
+            group_slug="proj",
+            title="测试记忆",
+            summary="摘要",
+            body="正文",
+            tags=[],
+            review_at=None,
+        )
+    finally:
+        conn.close()
+    res = run_cli(cli_db, "group", "delete", "proj")
+    assert res.returncode == 1
+    assert "分组 proj 下仍有记忆（含回收站），无法删除" in res.stderr
+
+    # 3. 删除空分组
+    run_cli(cli_db, "group", "add", "temp_empty", "临时", "--desc", "临时空分组")
+    res = run_cli(cli_db, "group", "delete", "temp_empty")
+    assert res.returncode == 0
+    assert "已删除分组：temp_empty" in res.stdout
+
+
 def test_data_survives_process_restart(cli_db):
     run_cli(cli_db, "init")
     run_cli(cli_db, "key", "create", "持久", "--scopes", "proj:r")

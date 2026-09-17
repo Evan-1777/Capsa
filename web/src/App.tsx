@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api, clearKey, getKey, setUnauthorizedHandler } from "./api";
 import { GroupManager } from "./components/GroupManager";
 import { Header } from "./components/Header";
+import { KeyManager } from "./components/KeyManager";
 import { Login } from "./components/Login";
 import { MemoryWorkspace } from "./components/MemoryList";
 import { RecycleBin } from "./components/RecycleBin";
@@ -10,11 +11,12 @@ import { ReviewCenter } from "./components/ReviewCenter";
 import { Skeleton, UnauthorizedState } from "./components/States";
 import type { GroupInfo, KeyInfo } from "./types";
 
-type View = "workbench" | "groups" | "review" | "recycle";
+type View = "workbench" | "groups" | "keys" | "review" | "recycle";
 
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: "workbench", label: "记忆工作台" },
   { id: "groups", label: "分类管理" },
+  { id: "keys", label: "凭据管理" },
   { id: "review", label: "时效复核" },
   { id: "recycle", label: "回收站" },
 ];
@@ -117,6 +119,7 @@ export default function App() {
           <MemoryWorkspace groups={groups} onManageGroups={() => setView("groups")} />
         )}
         {view === "groups" && <GroupManager groups={groups} onGroupsChange={refreshGroups} />}
+        {view === "keys" && <KeyManager groups={groups} currentKeyId={info.key_id} />}
         {view === "review" && <div className="min-h-0 flex-1 overflow-y-auto"><ReviewCenter /></div>}
         {view === "recycle" && <div className="min-h-0 flex-1 overflow-y-auto"><RecycleBin /></div>}
       </main>
