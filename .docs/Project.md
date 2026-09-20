@@ -27,7 +27,7 @@
 
 ## 2. 环境与运行
 
-- **运行平台**：Linux x86_64；本机开发，生产为 `docker compose` 部署到个人 VPS
+- **运行平台**：Linux x86_64；本机开发，生产为 `docker compose` 部署到个人 VPS（1Panel 实战部署指南见 `docs/1panel-deployment-guide.md`）
   - 镜像由 GitHub Actions 手动触发构建并推送到 GHCR，`docker-compose.yml` 只拉取不构建；TLS 由宿主机反向代理终止，容器只发布回环端口
 - **Shell**：bash
 - **版本管理**：git，主干分支 `master`
@@ -62,6 +62,8 @@
 ## 3. 目录结构与模块职责
 
 ```
+docs/
+└── 1panel-deployment-guide.md # 1Panel 现代化运维面板部署 Capsa 实战指南
 capsa/
 ├── __init__.py      # 包声明
 ├── db.py            # 连接辅助、幂等建表、健康检查
@@ -122,7 +124,7 @@ tests/
 - **命名约定**：模块与函数 snake_case；记忆 ID 为 `mem_` + 6 位随机串（总长 10），Key ID 为 8 位随机串，明文令牌为 `capsa_{key_id}_{32位随机串}`（总长 47）
 - **注释 / 文档语言**：代码注释与标识符用英文，用户可见的工具描述、错误消息与 CLI 输出用中文
 - **错误处理**：协议层问题走 HTTP 状态码（401 / 413），工具自身可给出可操作反馈的问题走工具级 `isError: true`；同一契约在 Web 侧映射为 HTTP 状态码与 `error.code`（401 `UNAUTHORIZED` / 403 `FORBIDDEN` / 404 `NOT_FOUND` / 422 `VALIDATION_ERROR` / 500 `INTERNAL_ERROR`），`error.message` 与 MCP 工具文本逐字相同；数据库不可用原样上报，不降级为业务错误
-- **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；界面采用 Fluent 2 体系，以 CSS 变量承载语义令牌并通过根节点 `data-theme` 切换（持久化于 `localStorage` 键 `capsa_theme`，首帧防闪烁），分为 Layer 0–3 物理层级（Mica 画布、Acrylic 导航与顶栏、Depth 4/8 卡片、Depth 16 弹层）；弹层统一走原生 `<dialog>` 与 `showModal()`；组件统一基于 `ui/` 原语构建；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
+- **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；界面采用 Fluent 2 体系，以 CSS 变量承载语义令牌并通过根节点 `data-theme` 切换（持久化于 `localStorage` 键 `capsa_theme`，`index.html` 首帧内联脚本即时挂载防闪烁），分为 Layer 0–3 物理层级（Mica 画布、Acrylic 导航与顶栏、Depth 4 卡片、Depth 16 弹层）；正文与排版收敛为 `text-body`（13px/20px）与 `text-caption`（12px/16px）；实心按钮采用 `--color-fill-foreground` 确保深色高对比（WCAG AAA 8:1~13:1）；弹层走原生 `<dialog>` 与 `showModal()`；组件统一基于克制规范的 `ui/` 原语构建；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
 - **MCP 工具契约**：工具描述与参数注解只陈述可观察事实（返回什么、上限多少、需要何种权限），不写调用顺序训诫或负向告诫；三级披露边界由各工具描述中立陈述，字段级自解释注解用 `typing.Annotated` + `pydantic.Field` 声明
 - **管理级令牌规范**：`CAPSA_ADMIN_TOKEN` 每次请求读取环境变量，非空即启用，身份固定为 `id="admin"`、`grants={"*": "rw"}`；轮换方式为更新环境变量并重启服务
 - **时间约定**：所有时间以 ISO 8601 UTC 字符串存储与比较
@@ -196,6 +198,7 @@ tests/
 - 2026-09-17 凭据单次明文披露交互轻量克制——理由：创建后弹层安全展示明文并提供一键复制，关闭后内存立即销毁，不搞 beforeunload 页面拦截或剪贴板监控，符合个人 VPS 工具定位
 - 2026-09-20 Web 管理台完全重写采用自建 Fluent 2 语义令牌与原语层，而非引入 Fluent UI React v9 或第三方组件库——理由：个人 VPS 工具优先轻量与零新增依赖，既有 Tailwind + CSS 变量即可表达完整 Fluent 2 令牌、Layer 0–3 材质层级与深度阴影；引入外部大组件库产物膨胀数倍且带来双样式体系维护负担
 - 2026-09-20 弹层统一采用原生 <dialog> 与 showModal() 表达 Layer 3 表面——理由：焦点约束、Esc 关闭与背景 inert 由浏览器平台原生提供，无需手写焦点循环或外置 focus-trap 依赖；全屏透明重置 UA 边距后既可承载居中 Modal，亦可承载右侧滑出抽屉
+- 2026-09-20 UI 原语与令牌层规范收敛与死代码剔除——理由：严格按 Ponytail 原则淘汰未使用的过度设计分支（Card 的 clickable/selected、Dialog 的 drawer、Button 的 subtle 及零引用阴影/排版令牌）；全库正文字号统一收敛至 text-body 语义类；在 index.html 首帧内联执行主题同步解决刷新闪白；为填充按钮配置深色高对比 fill-foreground 令牌确保 WCAG 合规；Card 支持 as="ul" 修复复核与回收站 HTML 列表语义合法性
 
 ## 9. 术语表
 

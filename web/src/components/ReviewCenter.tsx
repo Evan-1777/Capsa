@@ -43,11 +43,11 @@ export function ReviewCenter() {
         <p className="text-xs text-muted">{items.length} 条记忆已过复核时间</p>
       </div>
 
-      <Card className="divide-y divide-stroke overflow-hidden">
+      <Card as="ul" role="list" className="divide-y divide-stroke overflow-hidden">
         {items.map((item) => (
-          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 list-none">
+          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
             <div className="min-w-0 space-y-1">
-              <p className="truncate text-[13px] font-medium text-foreground">{item.title}</p>
+              <p className="truncate text-body font-medium text-foreground">{item.title}</p>
               <p className="flex items-center gap-1.5 text-caption text-warning font-medium">
                 <CalendarClock className="h-3 w-3 shrink-0" aria-hidden />
                 <span>复核时间 {item.review_at?.slice(0, 10)}</span>

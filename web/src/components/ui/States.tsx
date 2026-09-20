@@ -14,7 +14,7 @@ export function Skeleton({ rows = 4 }: { rows?: number }) {
 export function EmptyState({ message, action }: { message: string; action?: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center gap-3 px-4 py-14 text-center">
-      <p className="text-[13px] text-muted">{message}</p>
+      <p className="text-body text-muted">{message}</p>
       {action}
     </div>
   );
@@ -26,7 +26,7 @@ export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: (
       role="alert"
       className="flex items-center justify-between gap-3 border-b border-danger/30 bg-danger/10 px-4 py-2"
     >
-      <span className="text-[13px] text-danger">{message}</span>
+      <span className="text-body text-danger">{message}</span>
       {onRetry && (
         <Button
           variant="secondary"
@@ -44,7 +44,7 @@ export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: (
 export function UnauthorizedState({ message = "凭据无效或已被吊销" }: { message?: string }) {
   return (
     <div className="flex flex-col items-center gap-2 px-4 py-14 text-center">
-      <p className="text-[13px] text-foreground font-medium">{message}</p>
+      <p className="text-body text-foreground font-medium">{message}</p>
       <p className="text-xs text-muted">请退出后使用有效 Key 重新连接</p>
     </div>
   );

@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Copy, Key, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, Copy, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
@@ -121,7 +121,7 @@ export function KeyManager({
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-[13px] font-semibold text-foreground">
+                        <span className="truncate text-body font-semibold text-foreground">
                           {key.name}
                         </span>
                         <span className="font-mono text-caption text-muted">{key.id}</span>

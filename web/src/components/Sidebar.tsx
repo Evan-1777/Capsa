@@ -89,7 +89,7 @@ export function Sidebar({
                   onCloseMobile();
                 }}
                 aria-current={active ? "page" : undefined}
-                className={`relative flex w-full items-center gap-2.5 rounded px-3 py-2 text-[13px] font-medium transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+                className={`relative flex w-full items-center gap-2.5 rounded px-3 py-2 text-body font-medium transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
                   active
                     ? "bg-surface text-brand shadow-card"
                     : "text-foreground hover:bg-surface/60 hover:text-foreground"

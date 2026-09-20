@@ -8,7 +8,7 @@ import rehypeSanitize from "rehype-sanitize";
  */
 export function Markdown({ children }: { children: string }) {
   return (
-    <div className="space-y-3 text-[13px] leading-6 text-foreground">
+    <div className="space-y-3 text-body leading-6 text-foreground">
       <ReactMarkdown
         skipHtml
         rehypePlugins={[rehypeSanitize]}
@@ -16,9 +16,9 @@ export function Markdown({ children }: { children: string }) {
           h1: (props) => <h1 className="mt-5 text-lg font-semibold text-foreground" {...props} />,
           h2: (props) => <h2 className="mt-5 text-base font-semibold text-foreground" {...props} />,
           h3: (props) => <h3 className="mt-4 text-sm font-semibold text-foreground" {...props} />,
-          p: (props) => <p className="text-[13px] leading-6 text-foreground" {...props} />,
-          ul: (props) => <ul className="list-disc space-y-1 pl-5 text-[13px] text-foreground" {...props} />,
-          ol: (props) => <ol className="list-decimal space-y-1 pl-5 text-[13px] text-foreground" {...props} />,
+          p: (props) => <p className="text-body leading-6 text-foreground" {...props} />,
+          ul: (props) => <ul className="list-disc space-y-1 pl-5 text-body text-foreground" {...props} />,
+          ol: (props) => <ol className="list-decimal space-y-1 pl-5 text-body text-foreground" {...props} />,
           blockquote: (props) => (
             <blockquote className="border-l-2 border-brand/60 pl-3 text-muted" {...props} />
           ),

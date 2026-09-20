@@ -81,7 +81,7 @@ export function GroupManager({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 space-y-0.5">
-                    <p className="truncate text-[13px] font-semibold text-foreground">
+                    <p className="truncate text-body font-semibold text-foreground">
                       {group.name}
                     </p>
                     <p className="truncate font-mono text-caption text-muted">{group.slug}</p>

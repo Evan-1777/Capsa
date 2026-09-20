@@ -6,7 +6,6 @@ export interface DialogProps {
   children: React.ReactNode;
   className?: string;
   panelClassName?: string;
-  drawer?: boolean;
   "aria-labelledby"?: string;
   "aria-describedby"?: string;
 }
@@ -17,7 +16,6 @@ export function Dialog({
   children,
   className = "",
   panelClassName = "",
-  drawer = false,
   "aria-labelledby": ariaLabelledBy,
   "aria-describedby": ariaDescribedBy,
 }: DialogProps) {
@@ -61,17 +59,11 @@ export function Dialog({
       onClick={handleBackdropClick}
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
-      className={`fixed inset-0 m-0 h-screen w-screen max-h-none max-w-none border-0 p-0 bg-black/40 backdrop-blur-sm z-50 ${
-        drawer ? "flex justify-end" : "flex items-center justify-center p-4"
-      } ${className}`}
+      className={`fixed inset-0 m-0 flex h-screen w-screen max-h-none max-w-none items-center justify-center border-0 bg-black/40 p-4 backdrop-blur-sm z-50 ${className}`}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`${
-          drawer
-            ? "relative ml-auto flex h-full w-full flex-col bg-surface shadow-dialog md:w-[560px]"
-            : "w-full max-w-md rounded-lg border border-stroke bg-surface p-5 shadow-dialog"
-        } ${panelClassName}`}
+        className={`w-full max-w-md rounded-lg border border-stroke bg-surface p-5 shadow-dialog ${panelClassName}`}
       >
         {children}
       </div>

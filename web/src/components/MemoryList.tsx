@@ -134,7 +134,7 @@ export function MemoryWorkspace({
                       <span className="absolute bottom-0 left-0 top-0 w-1 bg-brand" />
                     )}
                     <div className="flex items-start justify-between gap-2">
-                      <span className="text-[13px] font-semibold leading-5 text-foreground">
+                      <span className="text-body font-semibold leading-5 text-foreground">
                         {item.title}
                       </span>
                       {item.pinned ? (

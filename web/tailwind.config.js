@@ -7,11 +7,9 @@ export default {
         background: "var(--color-background)",
         surface: "var(--color-surface)",
         acrylic: "var(--color-acrylic)",
-        stroke: {
-          DEFAULT: "var(--color-stroke)",
-          strong: "var(--color-stroke-strong)",
-        },
+        stroke: "var(--color-stroke)",
         foreground: "var(--color-foreground)",
+        "fill-foreground": "var(--color-fill-foreground)",
         muted: "var(--color-muted)",
         subtle: "var(--color-subtle)",
         brand: {
@@ -39,11 +37,9 @@ export default {
       },
       boxShadow: {
         card: "var(--shadow-card)",
-        flyout: "var(--shadow-flyout)",
         dialog: "var(--shadow-dialog)",
       },
       transitionDuration: {
-        fast: "150ms",
         normal: "250ms",
       },
       transitionTimingFunction: {

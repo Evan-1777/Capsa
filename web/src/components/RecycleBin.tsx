@@ -44,11 +44,11 @@ export function RecycleBin() {
         )}
       </div>
 
-      <Card className="divide-y divide-stroke overflow-hidden">
+      <Card as="ul" role="list" className="divide-y divide-stroke overflow-hidden">
         {items.map((item) => (
-          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 list-none">
+          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
             <div className="min-w-0 space-y-1">
-              <p className="truncate text-[13px] font-medium text-foreground">{item.title}</p>
+              <p className="truncate text-body font-medium text-foreground">{item.title}</p>
               <p className="truncate text-caption text-muted">
                 {item.group_slug} · 删除于 {item.deleted_at?.slice(0, 10)} · {item.deleted_reason}
               </p>

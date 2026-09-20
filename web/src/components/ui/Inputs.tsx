@@ -10,7 +10,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       <input
         ref={ref}
         aria-invalid={invalid || undefined}
-        className={`w-full rounded border bg-surface text-foreground text-[13px] px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
+        className={`w-full rounded border bg-surface text-foreground text-body px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
           invalid ? "border-danger focus:border-danger focus-visible:ring-danger" : "border-stroke"
         } ${className}`}
         {...props}
@@ -30,7 +30,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
       <textarea
         ref={ref}
         aria-invalid={invalid || undefined}
-        className={`w-full rounded border bg-surface text-foreground text-[13px] px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
+        className={`w-full rounded border bg-surface text-foreground text-body px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
           invalid ? "border-danger focus:border-danger focus-visible:ring-danger" : "border-stroke"
         } ${className}`}
         {...props}
@@ -50,7 +50,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
       <select
         ref={ref}
         aria-invalid={invalid || undefined}
-        className={`w-full rounded border bg-surface text-foreground text-[13px] px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
+        className={`w-full rounded border bg-surface text-foreground text-body px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
           invalid ? "border-danger focus:border-danger focus-visible:ring-danger" : "border-stroke"
         } ${className}`}
         {...props}

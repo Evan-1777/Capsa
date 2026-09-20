@@ -103,7 +103,7 @@ export function MemoryDetailPane({
           )}
         </dl>
 
-        <p className="text-[13px] leading-6 text-muted">{memory.summary}</p>
+        <p className="text-body leading-6 text-muted">{memory.summary}</p>
       </header>
 
       <Markdown>{memory.body}</Markdown>

@@ -1,7 +1,7 @@
 import React from "react";
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: "primary" | "secondary" | "subtle" | "danger" | "warning";
+  variant?: "primary" | "secondary" | "danger" | "warning";
   size?: "sm" | "md";
   busy?: boolean;
   busyText?: string;
@@ -30,11 +30,10 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     };
 
     const variants = {
-      primary: "bg-brand text-white hover:bg-brand-hover active:bg-brand-pressed border border-transparent",
+      primary: "bg-brand text-fill-foreground hover:bg-brand-hover active:bg-brand-pressed border border-transparent",
       secondary: "bg-surface text-foreground border border-stroke hover:bg-background active:bg-surface",
-      subtle: "bg-transparent text-foreground hover:bg-surface/80 active:bg-surface border border-transparent",
-      danger: "bg-danger text-white hover:bg-danger-hover active:bg-danger-pressed border border-transparent",
-      warning: "bg-warning text-white hover:opacity-90 active:opacity-80 border border-transparent",
+      danger: "bg-danger text-fill-foreground hover:bg-danger-hover active:bg-danger-pressed border border-transparent",
+      warning: "bg-warning text-fill-foreground hover:opacity-90 active:opacity-80 border border-transparent",
     };
 
     return (
