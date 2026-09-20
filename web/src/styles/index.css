@@ -2,6 +2,91 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-background: #F5F5F5;
+  --color-surface: #FFFFFF;
+  --color-acrylic: rgba(255, 255, 255, 0.7);
+  --color-stroke: #E1DFDD;
+  --color-stroke-strong: rgba(255, 255, 255, 0.7);
+  --color-foreground: #242424;
+  --color-muted: #616161;
+  --color-subtle: #8A8886;
+
+  --color-brand: #0078D4;
+  --color-brand-hover: #106EBE;
+  --color-brand-pressed: #005A9E;
+
+  --color-danger: #D13438;
+  --color-danger-hover: #A4262C;
+  --color-danger-pressed: #750B1C;
+
+  --color-warning: #B74700;
+  --color-success: #107C41;
+
+  --shadow-card: 0 1.6px 3.6px 0 rgba(0, 0, 0, 0.13), 0 0.3px 0.9px 0 rgba(0, 0, 0, 0.11);
+  --shadow-flyout: 0 3.2px 7.2px 0 rgba(0, 0, 0, 0.13), 0 0.6px 1.8px 0 rgba(0, 0, 0, 0.11);
+  --shadow-dialog: 0 6.4px 14.4px 0 rgba(0, 0, 0, 0.13), 0 1.2px 3.6px 0 rgba(0, 0, 0, 0.11);
+}
+
+[data-theme="dark"] {
+  --color-background: #1F1F1F;
+  --color-surface: #292929;
+  --color-acrylic: rgba(41, 41, 41, 0.7);
+  --color-stroke: #383838;
+  --color-stroke-strong: rgba(255, 255, 255, 0.08);
+  --color-foreground: #F3F2F1;
+  --color-muted: #ADADAD;
+  --color-subtle: #797775;
+
+  --color-brand: #479EF5;
+  --color-brand-hover: #62ABF5;
+  --color-brand-pressed: #2886DE;
+
+  --color-danger: #FF99A4;
+  --color-danger-hover: #FF808F;
+  --color-danger-pressed: #D13438;
+
+  --color-warning: #F8D22A;
+  --color-success: #54B054;
+
+  --shadow-card: 0 1.6px 3.6px 0 rgba(0, 0, 0, 0.4), 0 0.3px 0.9px 0 rgba(0, 0, 0, 0.3);
+  --shadow-flyout: 0 3.2px 7.2px 0 rgba(0, 0, 0, 0.45), 0 0.6px 1.8px 0 rgba(0, 0, 0, 0.35);
+  --shadow-dialog: 0 6.4px 14.4px 0 rgba(0, 0, 0, 0.5), 0 1.2px 3.6px 0 rgba(0, 0, 0, 0.4);
+}
+
+@layer utilities {
+  .text-caption {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .text-body {
+    font-size: 14px;
+    line-height: 20px;
+  }
+  .text-subtitle {
+    font-size: 16px;
+    line-height: 22px;
+    font-weight: 600;
+  }
+  .text-title {
+    font-size: 20px;
+    line-height: 26px;
+    font-weight: 600;
+  }
+}
+
 body {
-  @apply bg-zinc-100 text-zinc-900 antialiased;
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

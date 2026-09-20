@@ -3,7 +3,17 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import type { CreatedKeyResult, GroupInfo, KeyRecord, Permission } from "../types";
-import { EmptyState, ErrorBanner, Skeleton } from "./States";
+import {
+  Badge,
+  Button,
+  Card,
+  Dialog,
+  EmptyState,
+  ErrorBanner,
+  FormField,
+  Input,
+  Skeleton,
+} from "./ui";
 
 const NAME_MAX = 60;
 
@@ -52,26 +62,31 @@ export function KeyManager({
   function formatScopes(scopes: Record<string, Permission>): string {
     if (scopes["*"] === "rw") return "全库读写";
     if (scopes["*"] === "r") return "全库只读";
-    const parts = Object.entries(scopes).map(([slug, perm]) => `${slug}: ${perm === "rw" ? "读写" : "只读"}`);
+    const parts = Object.entries(scopes).map(
+      ([slug, perm]) => `${slug}: ${perm === "rw" ? "读写" : "只读"}`,
+    );
     return parts.length > 0 ? parts.join(", ") : "无权限";
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto bg-background">
       <div className="mx-auto max-w-3xl space-y-4 px-5 py-6">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-sm font-semibold tracking-tight">凭据管理</h1>
-            <p className="text-xs text-zinc-500">管理 Agent 访问凭据，签发分组权限 Key 与吊销废弃 Key</p>
+            <h1 className="text-sm font-semibold tracking-tight text-foreground">凭据管理</h1>
+            <p className="text-xs text-muted">
+              管理 Agent 访问凭据，签发分组权限 Key 与吊销废弃 Key
+            </p>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => setIssuing(true)}
-            className="flex items-center gap-1.5 rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="gap-1.5"
           >
             <Plus className="h-3.5 w-3.5" aria-hidden />
-            签发 Key
-          </button>
+            <span>签发 Key</span>
+          </Button>
         </div>
 
         {failure && <ErrorBanner message={failure} onRetry={loadKeys} />}
@@ -82,13 +97,13 @@ export function KeyManager({
           <EmptyState
             message="暂无凭据"
             action={
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => setIssuing(true)}
-                className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800"
               >
                 签发 Key
-              </button>
+              </Button>
             }
           />
         ) : (
@@ -98,70 +113,67 @@ export function KeyManager({
               const isRevoked = Boolean(key.revoked_at);
 
               return (
-                <li
+                <Card
+                  as="li"
                   key={key.id}
-                  className="space-y-3 border border-zinc-200 bg-white p-4"
+                  className="space-y-3 p-4"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-[13px] font-medium text-zinc-900">{key.name}</span>
-                        <span className="font-mono text-[11px] text-zinc-400">{key.id}</span>
-                        {isCurrent && (
-                          <span className="rounded bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
-                            当前凭据
-                          </span>
-                        )}
+                        <span className="truncate text-[13px] font-semibold text-foreground">
+                          {key.name}
+                        </span>
+                        <span className="font-mono text-caption text-muted">{key.id}</span>
+                        {isCurrent && <Badge variant="brand">当前凭据</Badge>}
                         {isRevoked ? (
-                          <span className="rounded bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500">
-                            已吊销 ({formatTime(key.revoked_at)})
-                          </span>
+                          <Badge variant="neutral">已吊销 ({formatTime(key.revoked_at)})</Badge>
                         ) : (
-                          <span className="rounded bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
-                            有效
-                          </span>
+                          <Badge variant="success">有效</Badge>
                         )}
                       </div>
                     </div>
 
                     <div className="flex shrink-0 items-center gap-2">
                       {isCurrent ? (
-                        <span className="text-xs text-zinc-400">当前会话不可操作</span>
+                        <span className="text-xs text-muted">当前会话不可操作</span>
                       ) : !isRevoked ? (
-                        <button
-                          type="button"
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           onClick={() => setRevokingKey(key)}
-                          className="flex items-center gap-1 rounded border border-amber-300 px-2.5 py-1 text-xs text-amber-700 hover:bg-amber-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                          className="border-warning/30 text-warning hover:bg-warning/10"
                         >
                           吊销
-                        </button>
+                        </Button>
                       ) : (
-                        <button
-                          type="button"
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           onClick={() => setDeletingKey(key)}
-                          className="flex items-center gap-1 rounded border border-zinc-300 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                          className="gap-1 border-danger/30 text-danger hover:bg-danger/10"
                         >
                           <Trash2 className="h-3 w-3" aria-hidden />
-                          删除
-                        </button>
+                          <span>删除</span>
+                        </Button>
                       )}
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-1 text-xs text-zinc-500 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-1.5 text-xs text-muted sm:grid-cols-2">
                     <div>
-                      <span className="text-zinc-400">授权权限：</span>
-                      <span className="font-medium text-zinc-700">{formatScopes(key.scopes)}</span>
+                      <span className="text-subtle">授权权限：</span>
+                      <span className="font-medium text-foreground">{formatScopes(key.scopes)}</span>
                     </div>
                     <div>
-                      <span className="text-zinc-400">最后调用：</span>
-                      <span className="text-zinc-600">{formatTime(key.last_used_at)}</span>
+                      <span className="text-subtle">最后调用：</span>
+                      <span className="text-foreground">{formatTime(key.last_used_at)}</span>
                     </div>
-                    <div className="text-[11px] text-zinc-400">
+                    <div className="text-caption text-subtle">
                       创建时间：{formatTime(key.created_at)}
                     </div>
                   </div>
-                </li>
+                </Card>
               );
             })}
           </ul>
@@ -235,7 +247,6 @@ function IssueKeyDialog({
 
   const nameInvalid = !name.trim() || name.length > NAME_MAX;
 
-  // 自定义模式下空权限校验
   let customEmpty = false;
   if (mode === "custom") {
     const activeCount = Object.values(customScopes).filter((v) => v !== "none").length;
@@ -274,67 +285,61 @@ function IssueKeyDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-30 grid place-items-center p-4">
-      <button
-        type="button"
-        aria-label="关闭签发弹窗"
-        onClick={onClose}
-        className="absolute inset-0 bg-zinc-900/20"
-      />
-      <form
-        onSubmit={submit}
-        className="relative w-full max-w-lg space-y-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xl max-h-[90vh] overflow-y-auto"
-      >
-        <h2 className="text-sm font-semibold text-zinc-900">签发新 Key</h2>
+    <Dialog open={true} onClose={onClose} panelClassName="max-w-lg max-h-[90vh] overflow-y-auto">
+      <form onSubmit={submit} className="space-y-4">
+        <h2 className="text-sm font-semibold text-foreground">签发新 Key</h2>
 
-        <label className="block space-y-1.5">
-          <span className="flex items-center justify-between text-xs font-medium text-zinc-600">
-            <span>Key 名称</span>
-            <span className={name.length > NAME_MAX ? "text-red-600" : "text-zinc-400"}>
-              {name.length}/{NAME_MAX}
-            </span>
-          </span>
-          <input
+        <FormField
+          label="Key 名称"
+          id="key-name-input"
+          counter={{
+            current: name.length,
+            max: NAME_MAX,
+            over: name.length > NAME_MAX,
+          }}
+        >
+          <Input
+            id="key-name-input"
             value={name}
             aria-label="Key 名称"
             placeholder="例如：Claude Desktop, Cursor 等"
+            invalid={name.length > NAME_MAX}
             onChange={(e) => setName(e.target.value)}
-            className="w-full rounded border border-zinc-300 px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
           />
-        </label>
+        </FormField>
 
         <div className="space-y-2">
-          <span className="block text-xs font-medium text-zinc-600">权限范围</span>
+          <span className="block text-xs font-medium text-foreground">权限范围</span>
           <div className="space-y-2">
-            <label className="flex items-center gap-2 text-xs text-zinc-800 cursor-pointer">
+            <label className="flex items-center gap-2 text-xs text-foreground cursor-pointer">
               <input
                 type="radio"
                 name="perm_mode"
                 checked={mode === "all_rw"}
                 onChange={() => setMode("all_rw")}
-                className="text-zinc-900 focus:ring-blue-500"
+                className="accent-brand"
               />
               <span>全库读写（具备全部现有及未来分组的读写权限）</span>
             </label>
 
-            <label className="flex items-center gap-2 text-xs text-zinc-800 cursor-pointer">
+            <label className="flex items-center gap-2 text-xs text-foreground cursor-pointer">
               <input
                 type="radio"
                 name="perm_mode"
                 checked={mode === "all_r"}
                 onChange={() => setMode("all_r")}
-                className="text-zinc-900 focus:ring-blue-500"
+                className="accent-brand"
               />
               <span>全库只读（具备全部现有及未来分组的只读权限）</span>
             </label>
 
-            <label className="flex items-center gap-2 text-xs text-zinc-800 cursor-pointer">
+            <label className="flex items-center gap-2 text-xs text-foreground cursor-pointer">
               <input
                 type="radio"
                 name="perm_mode"
                 checked={mode === "custom"}
                 onChange={() => setMode("custom")}
-                className="text-zinc-900 focus:ring-blue-500"
+                className="accent-brand"
               />
               <span>自定义分组权限</span>
             </label>
@@ -342,25 +347,25 @@ function IssueKeyDialog({
         </div>
 
         {mode === "custom" && (
-          <div className="space-y-2 border-t border-zinc-100 pt-3">
-            <span className="block text-xs font-medium text-zinc-600">分组权限分配</span>
+          <div className="space-y-2 border-t border-stroke pt-3">
+            <span className="block text-xs font-medium text-foreground">分组权限分配</span>
             {customEmpty && (
-              <p role="alert" className="text-xs text-red-600">
+              <p role="alert" className="text-xs text-danger">
                 请至少为一个分组授予权限
               </p>
             )}
             {groups.length === 0 ? (
-              <p className="text-xs text-zinc-400">库中暂无分组</p>
+              <p className="text-xs text-muted">库中暂无分组</p>
             ) : (
-              <div className="divide-y divide-zinc-100 rounded border border-zinc-200">
+              <div className="divide-y divide-stroke rounded border border-stroke">
                 {groups.map((group) => (
                   <div
                     key={group.slug}
                     className="flex items-center justify-between gap-3 px-3 py-2 text-xs"
                   >
                     <div>
-                      <span className="font-medium text-zinc-800">{group.name}</span>
-                      <span className="ml-1.5 font-mono text-[11px] text-zinc-400">{group.slug}</span>
+                      <span className="font-medium text-foreground">{group.name}</span>
+                      <span className="ml-1.5 font-mono text-caption text-muted">{group.slug}</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="flex items-center gap-1 cursor-pointer">
@@ -371,8 +376,9 @@ function IssueKeyDialog({
                           onChange={() =>
                             setCustomScopes((prev) => ({ ...prev, [group.slug]: "none" }))
                           }
+                          className="accent-brand"
                         />
-                        <span className="text-zinc-500">无权限</span>
+                        <span className="text-muted">无权限</span>
                       </label>
                       <label className="flex items-center gap-1 cursor-pointer">
                         <input
@@ -382,8 +388,9 @@ function IssueKeyDialog({
                           onChange={() =>
                             setCustomScopes((prev) => ({ ...prev, [group.slug]: "r" }))
                           }
+                          className="accent-brand"
                         />
-                        <span className="text-zinc-700">只读</span>
+                        <span className="text-foreground">只读</span>
                       </label>
                       <label className="flex items-center gap-1 cursor-pointer">
                         <input
@@ -393,8 +400,9 @@ function IssueKeyDialog({
                           onChange={() =>
                             setCustomScopes((prev) => ({ ...prev, [group.slug]: "rw" }))
                           }
+                          className="accent-brand"
                         />
-                        <span className="text-zinc-700">读写</span>
+                        <span className="text-foreground">读写</span>
                       </label>
                     </div>
                   </div>
@@ -405,29 +413,28 @@ function IssueKeyDialog({
         )}
 
         {failure && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger">
             {failure}
           </p>
         )}
 
         <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50"
-          >
+          <Button variant="secondary" size="sm" type="button" onClick={onClose}>
             取消
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             type="submit"
             disabled={invalid || busy}
-            className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            busy={busy}
+            busyText="正在签发..."
           >
-            {busy ? "正在签发..." : "签发"}
-          </button>
+            签发
+          </Button>
         </div>
       </form>
-    </div>
+    </Dialog>
   );
 }
 
@@ -461,69 +468,62 @@ function DisclosureDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-30 grid place-items-center p-4">
-      <button
-        type="button"
-        aria-label="关闭提示弹窗"
-        onClick={onClose}
-        className="absolute inset-0 bg-zinc-900/20"
-      />
-      <div className="relative w-full max-w-md space-y-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xl">
-        <h2 className="text-sm font-semibold text-zinc-900">Key 签发成功</h2>
+    <Dialog open={true} onClose={onClose} panelClassName="max-w-md">
+      <div className="space-y-4">
+        <h2 className="text-sm font-semibold text-foreground">Key 签发成功</h2>
 
-        <div className="flex items-start gap-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" aria-hidden />
+        <div className="flex items-start gap-2.5 rounded border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
           <p className="leading-5">
             明文令牌仅在本次创建后展示一次，服务端仅保存哈希，关闭后无法找回，请立即复制保存。
           </p>
         </div>
 
         <div className="space-y-1.5">
-          <span className="text-xs font-medium text-zinc-600">明文令牌 (Token)</span>
-          <div className="relative">
-            <div
-              ref={tokenRef}
-              className="rounded border border-zinc-200 bg-zinc-100 p-3 font-mono text-xs text-zinc-800 break-all select-all"
-            >
-              {result.token}
-            </div>
+          <span className="text-xs font-medium text-foreground">明文令牌 (Token)</span>
+          <div
+            ref={tokenRef}
+            className="rounded border border-stroke bg-background p-3 font-mono text-xs text-foreground break-all select-all"
+          >
+            {result.token}
           </div>
         </div>
 
         <div className="flex justify-between items-center gap-2 pt-2">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={copyToken}
-            className="flex items-center gap-1.5 rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="gap-1.5"
           >
             {copied ? (
               <>
-                <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden />
-                已复制
+                <Check className="h-3.5 w-3.5 text-success" aria-hidden />
+                <span>已复制</span>
               </>
             ) : copyFailed ? (
               <>
-                <Copy className="h-3.5 w-3.5 text-amber-600" aria-hidden />
-                请手动复制
+                <Copy className="h-3.5 w-3.5 text-warning" aria-hidden />
+                <span>请手动复制</span>
               </>
             ) : (
               <>
-                <Copy className="h-3.5 w-3.5 text-zinc-500" aria-hidden />
-                复制令牌
+                <Copy className="h-3.5 w-3.5 text-muted" aria-hidden />
+                <span>复制令牌</span>
               </>
             )}
-          </button>
+          </Button>
 
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="sm"
             onClick={onClose}
-            className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           >
             我已保存并关闭
-          </button>
+          </Button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -552,45 +552,36 @@ function RevokeKeyDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-30 grid place-items-center p-4">
-      <button
-        type="button"
-        aria-label="关闭确认弹窗"
-        onClick={onClose}
-        className="absolute inset-0 bg-zinc-900/20"
-      />
-      <div className="relative w-full max-w-sm space-y-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xl">
-        <h2 className="text-sm font-semibold text-zinc-900">吊销 Key</h2>
-        <p className="text-xs leading-5 text-zinc-600">
+    <Dialog open={true} onClose={onClose} panelClassName="max-w-sm">
+      <div className="space-y-4">
+        <h2 className="text-sm font-semibold text-foreground">吊销 Key</h2>
+        <p className="text-xs leading-5 text-muted">
           确认吊销 Key「{keyRecord.name}」({keyRecord.id}) 吗？吊销后使用该 Key 的 Agent 将无法继续访问。
         </p>
 
         {failure && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger">
             {failure}
           </p>
         )}
 
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
-          >
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" size="sm" onClick={onClose}>
             取消
-          </button>
-          <button
-            type="button"
-            disabled={busy}
+          </Button>
+          <Button
+            variant="warning"
+            size="sm"
             onClick={handleRevoke}
-            className="rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+            disabled={busy}
+            busy={busy}
+            busyText="正在吊销..."
           >
-            {busy ? "正在吊销..." : "确认吊销"}
-          </button>
+            确认吊销
+          </Button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -619,44 +610,35 @@ function DeleteKeyDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-30 grid place-items-center p-4">
-      <button
-        type="button"
-        aria-label="关闭确认弹窗"
-        onClick={onClose}
-        className="absolute inset-0 bg-zinc-900/20"
-      />
-      <div className="relative w-full max-w-sm space-y-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xl">
-        <h2 className="text-sm font-semibold text-zinc-900">删除 Key</h2>
-        <p className="text-xs leading-5 text-zinc-600">
-          确认永久删除 Key「{keyRecord.name}」({keyRecord.id}) 吗？此操作不可撤销。
+    <Dialog open={true} onClose={onClose} panelClassName="max-w-sm">
+      <div className="space-y-4">
+        <h2 className="text-sm font-semibold text-foreground">删除 Key</h2>
+        <p className="text-xs leading-5 text-muted">
+          确认永久物理删除 Key「{keyRecord.name}」({keyRecord.id}) 吗？此操作不可逆。
         </p>
 
         {failure && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger">
             {failure}
           </p>
         )}
 
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
-          >
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" size="sm" onClick={onClose}>
             取消
-          </button>
-          <button
-            type="button"
-            disabled={busy}
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
             onClick={handleDelete}
-            className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+            disabled={busy}
+            busy={busy}
+            busyText="正在删除..."
           >
-            {busy ? "正在删除..." : "确认删除"}
-          </button>
+            确认删除
+          </Button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }

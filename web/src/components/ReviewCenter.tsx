@@ -2,9 +2,15 @@ import { CalendarClock } from "lucide-react";
 import { useState } from "react";
 
 import { api } from "../api";
-import type { MemoryListItem } from "../types";
 import { useAsync } from "../useAsync";
-import { EmptyState, ErrorBanner, Skeleton, UnauthorizedState } from "./States";
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  Skeleton,
+  UnauthorizedState,
+} from "./ui";
 
 const EXTENSIONS = [30, 90];
 
@@ -31,35 +37,39 @@ export function ReviewCenter() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-2 px-5 py-6">
-      <h1 className="text-sm font-semibold tracking-tight">时效复核</h1>
-      <p className="text-xs text-zinc-500">{items.length} 条记忆已过复核时间</p>
-      <ul className="divide-y divide-zinc-200 border-y border-zinc-200 bg-white">
+    <div className="mx-auto max-w-3xl space-y-3 px-5 py-6">
+      <div className="space-y-1">
+        <h1 className="text-sm font-semibold tracking-tight text-foreground">时效复核</h1>
+        <p className="text-xs text-muted">{items.length} 条记忆已过复核时间</p>
+      </div>
+
+      <Card className="divide-y divide-stroke overflow-hidden">
         {items.map((item) => (
-          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
+          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 list-none">
             <div className="min-w-0 space-y-1">
-              <p className="truncate text-[13px] font-medium">{item.title}</p>
-              <p className="flex items-center gap-1.5 text-[11px] text-amber-700">
-                <CalendarClock className="h-3 w-3" aria-hidden />
-                复核时间 {item.review_at?.slice(0, 10)}
-                <span className="text-zinc-400">· {item.group_slug}</span>
+              <p className="truncate text-[13px] font-medium text-foreground">{item.title}</p>
+              <p className="flex items-center gap-1.5 text-caption text-warning font-medium">
+                <CalendarClock className="h-3 w-3 shrink-0" aria-hidden />
+                <span>复核时间 {item.review_at?.slice(0, 10)}</span>
+                <span className="text-muted font-normal">· {item.group_slug}</span>
               </p>
             </div>
             <div className="flex shrink-0 gap-1.5">
               {EXTENSIONS.map((days) => (
-                <button
+                <Button
                   key={days}
+                  variant="secondary"
+                  size="sm"
                   type="button"
                   onClick={() => postpone(item.id, days)}
-                  className="rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 >
                   延期 +{days} 天
-                </button>
+                </Button>
               ))}
             </div>
           </li>
         ))}
-      </ul>
+      </Card>
     </div>
   );
 }

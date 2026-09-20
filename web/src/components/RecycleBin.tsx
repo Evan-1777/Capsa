@@ -2,7 +2,14 @@ import { useState } from "react";
 
 import { api } from "../api";
 import { useAsync } from "../useAsync";
-import { EmptyState, ErrorBanner, Skeleton, UnauthorizedState } from "./States";
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  Skeleton,
+  UnauthorizedState,
+} from "./ui";
 
 export function RecycleBin() {
   const [version, setVersion] = useState(0);
@@ -27,32 +34,37 @@ export function RecycleBin() {
   if (items.length === 0) return <EmptyState message="回收站暂无条目" />;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-2 px-5 py-6">
-      <h1 className="text-sm font-semibold tracking-tight">回收站</h1>
-      {failure && (
-        <p role="alert" className="text-xs text-red-600">
-          {failure}
-        </p>
-      )}
-      <ul className="divide-y divide-zinc-200 border-y border-zinc-200 bg-white">
+    <div className="mx-auto max-w-3xl space-y-3 px-5 py-6">
+      <div className="space-y-1">
+        <h1 className="text-sm font-semibold tracking-tight text-foreground">回收站</h1>
+        {failure && (
+          <p role="alert" className="text-xs text-danger">
+            {failure}
+          </p>
+        )}
+      </div>
+
+      <Card className="divide-y divide-stroke overflow-hidden">
         {items.map((item) => (
-          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
+          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 list-none">
             <div className="min-w-0 space-y-1">
-              <p className="truncate text-[13px] font-medium">{item.title}</p>
-              <p className="truncate text-[11px] text-zinc-500">
+              <p className="truncate text-[13px] font-medium text-foreground">{item.title}</p>
+              <p className="truncate text-caption text-muted">
                 {item.group_slug} · 删除于 {item.deleted_at?.slice(0, 10)} · {item.deleted_reason}
               </p>
             </div>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               type="button"
               onClick={() => restore(item.id)}
-              className="shrink-0 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="shrink-0"
             >
               恢复
-            </button>
+            </Button>
           </li>
         ))}
-      </ul>
+      </Card>
     </div>
   );
 }

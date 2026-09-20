@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import type { GroupInfo, MemoryDetail, SimilarItem } from "../types";
+import { Button, FormField, Input, Select, Textarea } from "./ui";
 
 const TITLE_MAX = 60;
 const SUMMARY_MAX = 200;
@@ -26,10 +27,10 @@ export function EditDrawer({
   groups: GroupInfo[];
   memory: MemoryDetail | null;
   onClose: () => void;
-  // 新建成功即通知列表刷新；onSaved 另行决定是否关闭抽屉。
   onCreated: () => void;
   onSaved: (createdId: string | null) => void;
 }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<FormState>({
     group: memory?.group_slug ?? groups[0]?.slug ?? "",
     title: memory?.title ?? "",
@@ -42,6 +43,17 @@ export function EditDrawer({
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) {
+      dialog.showModal();
+    }
+    return () => {
+      if (dialog.open) dialog.close();
+    };
+  }, []);
 
   useEffect(() => {
     if (!dirty) return;
@@ -97,7 +109,6 @@ export function EditDrawer({
         setSimilar(result.similar_items);
         setDirty(false);
         onCreated();
-        // 有相似条目时保留抽屉展示提示，条目已落库；否则直接进入新建的详情。
         if (result.similar_items.length === 0) onSaved(result.id);
       }
     } catch (error) {
@@ -113,45 +124,48 @@ export function EditDrawer({
   }
 
   return (
-    <div className="fixed inset-0 z-30 flex justify-end">
-      <button
-        type="button"
-        aria-label="关闭编辑抽屉"
-        onClick={requestClose}
-        className="absolute inset-0 bg-zinc-900/20"
-      />
+    <dialog
+      ref={dialogRef}
+      onCancel={(e) => {
+        e.preventDefault();
+        requestClose();
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          requestClose();
+        }
+      }}
+      className="fixed inset-0 m-0 flex h-screen w-screen max-h-none max-w-none justify-end border-0 bg-black/40 p-0 backdrop-blur-sm z-50"
+    >
       <form
         onSubmit={submit}
-        className="relative flex h-full w-full flex-col bg-white shadow-xl md:w-[560px]"
+        className="relative flex h-full w-full flex-col bg-surface shadow-dialog md:w-[560px]"
       >
-        <header className="flex items-center justify-between border-b border-zinc-200 px-5 py-3">
-          <h2 className="text-sm font-semibold">{memory ? "编辑记忆" : "新建记忆"}</h2>
-          <button
-            type="button"
-            onClick={requestClose}
-            className="rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50"
-          >
+        <header className="flex items-center justify-between border-b border-stroke px-5 py-3">
+          <h2 className="text-sm font-semibold text-foreground">
+            {memory ? "编辑记忆" : "新建记忆"}
+          </h2>
+          <Button variant="secondary" size="sm" type="button" onClick={requestClose}>
             关闭
-          </button>
+          </Button>
         </header>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
           {!memory && (
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-zinc-600">分组</span>
-              <select
-                value={form.group}
+            <FormField label="分组" id="edit-group-select">
+              <Select
+                id="edit-group-select"
                 aria-label="分组"
+                value={form.group}
                 onChange={(event) => update({ group: event.target.value })}
-                className="w-full rounded border border-zinc-300 px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
               >
                 {groups.map((group) => (
                   <option key={group.slug} value={group.slug}>
                     {group.name}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </FormField>
           )}
 
           <Field
@@ -179,75 +193,76 @@ export function EditDrawer({
             rows={12}
             markdown
           />
+
           {memory && (
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-zinc-600">复核时间</span>
-              <span className="flex items-center gap-2">
-                <input
+            <FormField label="复核时间" id="edit-review-date">
+              <div className="flex items-center gap-2">
+                <Input
+                  id="edit-review-date"
                   type="date"
                   aria-label="复核时间"
                   value={form.reviewDate}
                   onChange={(event) => update({ reviewDate: event.target.value })}
-                  className="rounded border border-zinc-300 px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
                 />
-                <button
+                <Button
+                  variant="secondary"
+                  size="sm"
                   type="button"
                   onClick={() => update({ reviewDate: "" })}
-                  className="rounded border border-zinc-300 px-2 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50"
                 >
                   清除
-                </button>
-              </span>
-            </label>
+                </Button>
+              </div>
+            </FormField>
           )}
-          <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-zinc-600">标签</span>
-            <input
+
+          <FormField label="标签" id="edit-tags-input">
+            <Input
+              id="edit-tags-input"
               value={form.tags}
               aria-label="标签"
               onChange={(event) => update({ tags: event.target.value })}
               placeholder="逗号分隔"
-              className="w-full rounded border border-zinc-300 px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none"
             />
-          </label>
+          </FormField>
 
           {similar.length > 0 && (
-            <div className="space-y-1 rounded border border-amber-200 bg-amber-50 p-3">
-              <p className="text-xs font-medium text-amber-900">已创建，检测到相似标题</p>
+            <div className="space-y-1.5 rounded border border-warning/30 bg-warning/10 p-3">
+              <p className="text-xs font-medium text-warning">已创建，检测到相似标题</p>
               <ul className="space-y-1">
                 {similar.map((item) => (
-                  <li key={item.id} className="text-xs text-amber-800">
+                  <li key={item.id} className="text-xs text-foreground">
                     {item.id} · {item.title} · 相似度 {item.similarity}
                   </li>
                 ))}
               </ul>
             </div>
           )}
+
           {failure && (
-            <p role="alert" className="text-xs text-red-600">
+            <p role="alert" className="text-xs text-danger">
               {failure}
             </p>
           )}
         </div>
 
-        <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-3">
-          <button
-            type="button"
-            onClick={requestClose}
-            className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50"
-          >
+        <footer className="flex justify-end gap-2 border-t border-stroke px-5 py-3">
+          <Button variant="secondary" size="sm" type="button" onClick={requestClose}>
             取消
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             type="submit"
             disabled={invalid || busy}
-            className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            busy={busy}
+            busyText={memory ? "正在保存..." : "正在创建..."}
           >
             {memory ? "保存" : "创建"}
-          </button>
+          </Button>
         </footer>
       </form>
-    </div>
+    </dialog>
   );
 }
 
@@ -270,34 +285,36 @@ function Field({
   rows?: number;
   markdown?: boolean;
 }) {
-  const shared = `w-full rounded border px-3 py-1.5 text-[13px] focus:outline-none ${over ? "border-red-400 focus:border-red-500" : "border-zinc-300 focus:border-blue-500"}`;
   return (
-    <label className="block space-y-1.5">
-      <span className="flex items-center justify-between text-xs font-medium text-zinc-600">
+    <FormField
+      label={
         <span>
           {label}
-          {markdown && <span className="ml-1 font-normal text-zinc-400">Markdown</span>}
+          {markdown && <span className="ml-1 text-caption font-normal text-muted">Markdown</span>}
         </span>
-        <span className={over ? "text-red-600" : "text-zinc-400"}>
-          {value.length}/{limit}
-        </span>
-      </span>
+      }
+      counter={{
+        current: value.length,
+        max: limit,
+        over,
+      }}
+    >
       {multiline ? (
-        <textarea
+        <Textarea
           value={value}
-          rows={rows}
           aria-label={label}
+          rows={rows}
+          invalid={over}
           onChange={(event) => onChange(event.target.value)}
-          className={shared}
         />
       ) : (
-        <input
+        <Input
           value={value}
           aria-label={label}
+          invalid={over}
           onChange={(event) => onChange(event.target.value)}
-          className={shared}
         />
       )}
-    </label>
+    </FormField>
   );
 }

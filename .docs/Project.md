@@ -21,7 +21,7 @@
 ## 1. 概述
 
 - **一句话定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。
-- **当前阶段**：Phase 7（分类删除与 Key 深度管理及签发）交付完成。
+- **当前阶段**：Phase 8（Web 管理台 Fluent 2 完全重写）交付完成。
 - **非目标**：不引入向量检索与自动抽取写入，不做多租户，不引入独立用户表、多角色 RBAC 与 Cookie/Session；回收站 CLI 仍为管理员通道。分类删除与 Key 签发/吊销/删除已纳入 Web 管理台。完整边界见 `SCOPE.md`。
 - **设计与交付文档**：Phase 3 的设计方案、落地交付分期规划、可视化前端管理计划与架构功能报告归档于 `.docs/09-13-v3/docs/`；Phase 4 的部署形态收敛归档于 `.docs/09-16-v1/`。归档是带日期的历史快照，其中描述的容器编排形态以本文件与 `README.md` 为准；Phase 6 的检索能力扩展归档于 `.docs/09-17-v2/`
 
@@ -76,13 +76,16 @@ capsa/
 ├── web_api.py       # REST API：统一信封、管理员网关守卫与多个 REST 端点
 ├── static/          # 前端构建产物（不入版本库，缺失时不挂载根路由）
 └── cli.py           # init / group / key / memory / review / backup / restore 子命令
-web/                     # Capsa Studio：Vite + React 18 + TypeScript + Tailwind
+web/                     # Capsa Studio：Fluent 2 + React 18 + TypeScript + Tailwind
 ├── vite.config.ts       # build.outDir 由 CAPSA_STATIC_DIR 决定，默认 ../capsa/static
 ├── playwright.config.ts # channel: "chrome"，webServer 指向 web/tests/serve.sh
+├── src/styles/index.css # Fluent 2 语义令牌层（CSS 变量）与排版工具类
+├── tailwind.config.js   # 映射 Fluent 2 颜色、圆角与深度阴影
 ├── src/api.ts           # 凭据（sessionStorage）、统一信封解析与 401 拦截
-├── src/components/      # 工作台、分类管理、凭据管理、时效复核与回收站的视图组件（含 KeyManager.tsx）
+├── src/components/ui/   # Fluent 2 原语层（Button, FormField, Inputs, Card, Badge, Dialog, States）
+├── src/components/      # 视图与 App Shell（Sidebar.tsx, TopBar.tsx, Login.tsx, MemoryList.tsx, MemoryDetail.tsx, Markdown.tsx, EditDrawer.tsx, GroupManager.tsx, KeyManager.tsx, ReviewCenter.tsx, RecycleBin.tsx）
 ├── src/useAsync.ts      # 加载 / 空 / 错误 / 未授权四态的状态机
-└── tests/e2e.spec.ts    # 浏览器端到端套件
+└── tests/e2e.spec.ts    # 浏览器端到端套件（12 条用例）
 README.md                # 定位、架构、部署、宿主反代接入与运维速查
 Dockerfile               # 两阶段构建：Node 产出静态产物，Python 打包运行时
 docker-compose.yml       # 单服务编排，只拉取 GHCR 镜像
@@ -119,7 +122,7 @@ tests/
 - **命名约定**：模块与函数 snake_case；记忆 ID 为 `mem_` + 6 位随机串（总长 10），Key ID 为 8 位随机串，明文令牌为 `capsa_{key_id}_{32位随机串}`（总长 47）
 - **注释 / 文档语言**：代码注释与标识符用英文，用户可见的工具描述、错误消息与 CLI 输出用中文
 - **错误处理**：协议层问题走 HTTP 状态码（401 / 413），工具自身可给出可操作反馈的问题走工具级 `isError: true`；同一契约在 Web 侧映射为 HTTP 状态码与 `error.code`（401 `UNAUTHORIZED` / 403 `FORBIDDEN` / 404 `NOT_FOUND` / 422 `VALIDATION_ERROR` / 500 `INTERNAL_ERROR`），`error.message` 与 MCP 工具文本逐字相同；数据库不可用原样上报，不降级为业务错误
-- **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
+- **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；界面采用 Fluent 2 体系，以 CSS 变量承载语义令牌并通过根节点 `data-theme` 切换（持久化于 `localStorage` 键 `capsa_theme`，首帧防闪烁），分为 Layer 0–3 物理层级（Mica 画布、Acrylic 导航与顶栏、Depth 4/8 卡片、Depth 16 弹层）；弹层统一走原生 `<dialog>` 与 `showModal()`；组件统一基于 `ui/` 原语构建；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
 - **MCP 工具契约**：工具描述与参数注解只陈述可观察事实（返回什么、上限多少、需要何种权限），不写调用顺序训诫或负向告诫；三级披露边界由各工具描述中立陈述，字段级自解释注解用 `typing.Annotated` + `pydantic.Field` 声明
 - **管理级令牌规范**：`CAPSA_ADMIN_TOKEN` 每次请求读取环境变量，非空即启用，身份固定为 `id="admin"`、`grants={"*": "rw"}`；轮换方式为更新环境变量并重启服务
 - **时间约定**：所有时间以 ISO 8601 UTC 字符串存储与比较
@@ -191,6 +194,8 @@ tests/
 - 2026-09-17 环境变量管理员虚拟凭据边界——理由：CAPSA_ADMIN_TOKEN 每次从环境读取，服务无状态管理，不落库、不进 Key 列表、不可作为管理接口操作目标，防自锁统一拦截
 - 2026-09-17 分类删除后的悬空 Key Scope 语义——理由：仅允许删除无记忆空分类，保留历史 Key 中的已配置 Scope；记忆库无记忆即无越权风险，若重建同名分类则权限自然衔接，避免级联重写 JSON 产生数据副作用
 - 2026-09-17 凭据单次明文披露交互轻量克制——理由：创建后弹层安全展示明文并提供一键复制，关闭后内存立即销毁，不搞 beforeunload 页面拦截或剪贴板监控，符合个人 VPS 工具定位
+- 2026-09-20 Web 管理台完全重写采用自建 Fluent 2 语义令牌与原语层，而非引入 Fluent UI React v9 或第三方组件库——理由：个人 VPS 工具优先轻量与零新增依赖，既有 Tailwind + CSS 变量即可表达完整 Fluent 2 令牌、Layer 0–3 材质层级与深度阴影；引入外部大组件库产物膨胀数倍且带来双样式体系维护负担
+- 2026-09-20 弹层统一采用原生 <dialog> 与 showModal() 表达 Layer 3 表面——理由：焦点约束、Esc 关闭与背景 inert 由浏览器平台原生提供，无需手写焦点循环或外置 focus-trap 依赖；全屏透明重置 UA 边距后既可承载居中 Modal，亦可承载右侧滑出抽屉
 
 ## 9. 术语表
 

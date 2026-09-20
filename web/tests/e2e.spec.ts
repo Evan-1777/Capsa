@@ -101,7 +101,7 @@ test("7. 标题超限时标红并禁用提交", async ({ page }) => {
   await signIn(page, keys.admin);
   await openDrawer(page);
   await page.getByLabel("标题").fill("长".repeat(61));
-  await expect(page.getByText("61/60")).toHaveClass(/text-red-600/);
+  await expect(page.getByText("61/60")).toHaveAttribute("aria-invalid", "true");
   await expect(page.getByRole("button", { name: "创建" })).toBeDisabled();
   await page.getByLabel("标题").fill("六十字标题");
   await expect(page.getByRole("button", { name: "创建" })).toBeEnabled();

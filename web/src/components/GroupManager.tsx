@@ -3,7 +3,16 @@ import { useState } from "react";
 
 import { api } from "../api";
 import type { GroupInfo } from "../types";
-import { EmptyState, ErrorBanner } from "./States";
+import {
+  Button,
+  Card,
+  Dialog,
+  EmptyState,
+  ErrorBanner,
+  FormField,
+  Input,
+  Textarea,
+} from "./ui";
 
 const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 const NAME_MAX = 60;
@@ -32,18 +41,19 @@ export function GroupManager({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto bg-background">
       <div className="mx-auto max-w-3xl space-y-4 px-5 py-6">
         <div className="flex items-center justify-between gap-4">
-          <h1 className="text-sm font-semibold tracking-tight">分类管理</h1>
-          <button
-            type="button"
+          <h1 className="text-sm font-semibold tracking-tight text-foreground">分类管理</h1>
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => setEditing({ mode: "create" })}
-            className="flex items-center gap-1.5 rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="gap-1.5"
           >
             <Plus className="h-3.5 w-3.5" aria-hidden />
-            新建分类
-          </button>
+            <span>新建分类</span>
+          </Button>
         </div>
 
         {failure && <ErrorBanner message={failure} onRetry={refresh} />}
@@ -52,51 +62,56 @@ export function GroupManager({
           <EmptyState
             message="暂无分类"
             action={
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => setEditing({ mode: "create" })}
-                className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800"
               >
                 新建分类
-              </button>
+              </Button>
             }
           />
         ) : (
           <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {groups.map((group) => (
-              <li
+              <Card
+                as="li"
                 key={group.slug}
-                className="space-y-2 border border-zinc-200 bg-white p-4"
+                className="space-y-2 p-4"
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 space-y-1">
-                    <p className="truncate text-[13px] font-medium text-zinc-900">{group.name}</p>
-                    <p className="truncate font-mono text-[11px] text-zinc-400">{group.slug}</p>
+                  <div className="min-w-0 space-y-0.5">
+                    <p className="truncate text-[13px] font-semibold text-foreground">
+                      {group.name}
+                    </p>
+                    <p className="truncate font-mono text-caption text-muted">{group.slug}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => setEditing({ mode: "edit", group })}
-                      className="flex shrink-0 items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      className="gap-1"
                     >
                       <Pencil className="h-3 w-3" aria-hidden />
-                      编辑
-                    </button>
-                    <button
-                      type="button"
+                      <span>编辑</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => setDeletingGroup(group)}
-                      className="flex shrink-0 items-center gap-1.5 rounded border border-zinc-300 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                      className="gap-1 border-danger/30 text-danger hover:bg-danger/10"
                     >
                       <Trash2 className="h-3 w-3" aria-hidden />
-                      删除
-                    </button>
+                      <span>删除</span>
+                    </Button>
                   </div>
                 </div>
-                <p className="line-clamp-2 text-xs leading-5 text-zinc-500">
+                <p className="line-clamp-2 text-xs leading-5 text-muted">
                   {group.description || "暂无描述"}
                 </p>
-                <p className="text-[11px] text-zinc-400">{group.count} 条记忆</p>
-              </li>
+                <p className="text-caption text-subtle">{group.count} 条记忆</p>
+              </Card>
             ))}
           </ul>
         )}
@@ -145,7 +160,8 @@ function GroupDialog({
 
   const slugInvalid = !existing && !SLUG_PATTERN.test(slug);
   const nameInvalid = !name.trim() || name.length > NAME_MAX;
-  const invalid = slugInvalid || nameInvalid || description.length > DESC_MAX;
+  const descInvalid = description.length > DESC_MAX;
+  const invalid = slugInvalid || nameInvalid || descInvalid;
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -164,92 +180,89 @@ function GroupDialog({
     }
   }
 
-  const shared = "w-full rounded border border-zinc-300 px-3 py-1.5 text-[13px] focus:border-blue-500 focus:outline-none disabled:bg-zinc-100 disabled:text-zinc-500";
-
   return (
-    <div className="fixed inset-0 z-30 grid place-items-center p-4">
-      <button
-        type="button"
-        aria-label="关闭分类编辑"
-        onClick={onClose}
-        className="absolute inset-0 bg-zinc-900/20"
-      />
-      <form
-        onSubmit={submit}
-        className="relative w-full max-w-md space-y-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xl"
-      >
-        <h2 className="text-sm font-semibold">{existing ? "编辑分类" : "新建分类"}</h2>
+    <Dialog open={true} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <h2 className="text-sm font-semibold text-foreground">
+          {existing ? "编辑分类" : "新建分类"}
+        </h2>
 
-        <label className="block space-y-1.5">
-          <span className="text-xs font-medium text-zinc-600">分类标识</span>
-          <input
+        <FormField
+          label="分类标识"
+          id="group-slug"
+          hint={existing ? "标识不可修改" : "字母、数字、下划线或连字符，创建后不可修改"}
+        >
+          <Input
+            id="group-slug"
             value={slug}
             aria-label="分类标识"
             disabled={Boolean(existing)}
             onChange={(event) => setSlug(event.target.value)}
             placeholder="research"
-            className={shared + " font-mono"}
+            className="font-mono"
           />
-          <span className="block text-[11px] text-zinc-400">
-            {existing ? "标识不可修改" : "字母、数字、下划线或连字符，创建后不可修改"}
-          </span>
-        </label>
+        </FormField>
 
-        <label className="block space-y-1.5">
-          <span className="flex items-center justify-between text-xs font-medium text-zinc-600">
-            <span>分类名称</span>
-            <span className={name.length > NAME_MAX ? "text-red-600" : "text-zinc-400"}>
-              {name.length}/{NAME_MAX}
-            </span>
-          </span>
-          <input
+        <FormField
+          label="分类名称"
+          id="group-name"
+          counter={{
+            current: name.length,
+            max: NAME_MAX,
+            over: name.length > NAME_MAX,
+          }}
+        >
+          <Input
+            id="group-name"
             value={name}
             aria-label="分类名称"
+            invalid={name.length > NAME_MAX}
             onChange={(event) => setName(event.target.value)}
-            className={shared}
           />
-        </label>
+        </FormField>
 
-        <label className="block space-y-1.5">
-          <span className="flex items-center justify-between text-xs font-medium text-zinc-600">
-            <span>分类描述</span>
-            <span className={description.length > DESC_MAX ? "text-red-600" : "text-zinc-400"}>
-              {description.length}/{DESC_MAX}
-            </span>
-          </span>
-          <textarea
+        <FormField
+          label="分类描述"
+          id="group-desc"
+          counter={{
+            current: description.length,
+            max: DESC_MAX,
+            over: description.length > DESC_MAX,
+          }}
+        >
+          <Textarea
+            id="group-desc"
             value={description}
             aria-label="分类描述"
             rows={3}
+            invalid={description.length > DESC_MAX}
             onChange={(event) => setDescription(event.target.value)}
-            className={shared}
           />
-        </label>
+        </FormField>
 
         {failure && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger">
             {failure}
           </p>
         )}
 
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50"
-          >
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" size="sm" type="button" onClick={onClose}>
             取消
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             type="submit"
             disabled={invalid || busy}
-            className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            busy={busy}
+            busyText={existing ? "正在保存..." : "正在创建..."}
           >
             {existing ? "保存" : "创建"}
-          </button>
+          </Button>
         </div>
       </form>
-    </div>
+    </Dialog>
   );
 }
 
@@ -278,44 +291,36 @@ function DeleteGroupDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-30 grid place-items-center p-4">
-      <button
-        type="button"
-        aria-label="关闭确认弹窗"
-        onClick={onClose}
-        className="absolute inset-0 bg-zinc-900/20"
-      />
-      <div className="relative w-full max-w-sm space-y-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xl">
-        <h2 className="text-sm font-semibold text-zinc-900">删除分类</h2>
-        <p className="text-xs leading-5 text-zinc-600">
+    <Dialog open={true} onClose={onClose} panelClassName="max-w-sm">
+      <div className="space-y-4">
+        <h2 className="text-sm font-semibold text-foreground">删除分类</h2>
+        <p className="text-xs leading-5 text-muted">
           确认删除分类「{group.name}」({group.slug}) 吗？此操作不可撤销。
         </p>
 
         {failure && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger">
             {failure}
           </p>
         )}
 
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
-          >
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" size="sm" type="button" onClick={onClose}>
             取消
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
             type="button"
-            disabled={busy}
             onClick={handleDelete}
-            className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+            disabled={busy}
+            busy={busy}
+            busyText="正在删除..."
           >
-            {busy ? "正在删除..." : "确认删除"}
-          </button>
+            确认删除
+          </Button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }

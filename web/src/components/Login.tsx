@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { Database } from "lucide-react";
 
 import { ApiError, api, clearKey, setKey } from "../api";
 import type { KeyInfo } from "../types";
+import { Button, FormField, Input } from "./ui";
 
 export function Login({ onConnected }: { onConnected: (key: string, info: KeyInfo) => void }) {
   const [value, setValue] = useState("");
@@ -17,7 +19,6 @@ export function Login({ onConnected }: { onConnected: (key: string, info: KeyInf
     try {
       onConnected(key, await api.me());
     } catch (failure) {
-      // 网关已判定凭据是否具备管理员权限，这里只把 403 换成人话并丢弃该凭据。
       if (failure instanceof ApiError && failure.code === "FORBIDDEN") {
         clearKey();
         setError("管理台仅支持管理员凭据登录（需 *:rw 权限）");
@@ -30,38 +31,51 @@ export function Login({ onConnected }: { onConnected: (key: string, info: KeyInf
   }
 
   return (
-    <main className="grid min-h-screen place-items-center bg-zinc-100 px-4">
+    <main className="grid min-h-screen place-items-center bg-background px-4">
       <form
         onSubmit={connect}
-        className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-200 bg-white p-6"
+        className="w-full max-w-sm space-y-4 rounded-lg border border-stroke bg-surface p-6 shadow-card"
       >
         <div className="space-y-1">
-          <h1 className="text-base font-semibold tracking-tight">Capsa Studio</h1>
-          <p className="text-xs text-zinc-500">输入管理员 API Key 以继续</p>
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded bg-brand/10 text-brand">
+              <Database className="h-4 w-4" aria-hidden />
+            </div>
+            <h1 className="text-base font-semibold tracking-tight text-foreground">Capsa Studio</h1>
+          </div>
+          <p className="text-xs text-muted">输入管理员 API Key 以继续</p>
         </div>
-        <label className="block space-y-1.5">
-          <span className="text-xs font-medium text-zinc-600">API Key</span>
-          <input
+
+        <FormField label="API Key" id="login-key">
+          <Input
+            id="login-key"
             type="password"
+            aria-label="API Key"
             value={value}
             onChange={(event) => setValue(event.target.value)}
             placeholder="capsa_xxxxxxxx_..."
             autoComplete="off"
-            className="w-full rounded border border-zinc-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="font-mono"
           />
-        </label>
+        </FormField>
+
         {error && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger">
             {error}
           </p>
         )}
-        <button
+
+        <Button
           type="submit"
+          variant="primary"
+          size="md"
+          className="w-full"
           disabled={busy || value.trim() === ""}
-          className="w-full rounded bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          busy={busy}
+          busyText="正在连接..."
         >
           连接
-        </button>
+        </Button>
       </form>
     </main>
   );
