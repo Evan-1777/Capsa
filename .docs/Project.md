@@ -21,7 +21,7 @@
 ## 1. 概述
 
 - **一句话定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。
-- **当前阶段**：Phase 8（Web 管理台 Fluent 2 完全重写）交付完成。
+- **当前阶段**：Phase 8（Web 管理台 Fluent 2 完全重写）交付完成；已支持 URL 查询参数凭据兼容接入。
 - **非目标**：不引入向量检索与自动抽取写入，不做多租户，不引入独立用户表、多角色 RBAC 与 Cookie/Session；回收站 CLI 仍为管理员通道。分类删除与 Key 签发/吊销/删除已纳入 Web 管理台。完整边界见 `SCOPE.md`。
 - **设计与交付文档**：Phase 3 的设计方案、落地交付分期规划、可视化前端管理计划与架构功能报告归档于 `.docs/09-13-v3/docs/`；Phase 4 的部署形态收敛归档于 `.docs/09-16-v1/`。归档是带日期的历史快照，其中描述的容器编排形态以本文件与 `README.md` 为准；Phase 6 的检索能力扩展归档于 `.docs/09-17-v2/`
 
@@ -69,7 +69,7 @@ capsa/
 ├── db.py            # 连接辅助、幂等建表、健康检查
 ├── dal.py           # 三态授权数据访问层与记忆写读入口，唯一 SQL 出口
 ├── ids.py           # 标识符与令牌生成
-├── auth.py          # 令牌校验器，接入 FastMCP 鉴权与管理级环境变量令牌
+├── auth.py          # 令牌校验器、URL 查询参数鉴权中间件与 FastMCP 鉴权接入
 ├── permissions.py   # 权限判定单一事实来源：permission_for 与管理级令牌常量
 ├── retrieval.py     # 归一化、二字组分词、打分排序（含正文低权重兜底）与标题近似查重
 ├── formatters.py    # 三级披露与分组列表的纯文本契约
@@ -103,12 +103,14 @@ tests/
 ├── test_phase3_assembly.py # 路由顺序、静态根路径的条件挂载
 ├── test_phase3_cli.py      # review 同源序、backup/restore 快照链路
 ├── test_deploy.py          # Dockerfile / compose / Cron 的静态校验
-└── test_ci_workflow.py      # 镜像构建工作流的触发器、权限与推送参数静态校验
+├── test_ci_workflow.py      # 镜像构建工作流的触发器、权限与推送参数静态校验
+└── test_auth_query.py       # URL 查询参数凭据（token / access_token）鉴权、优先级与边界异常
 ```
 
 ## 4. 架构与数据流
 
-- **核心模块**：`server.py` 是唯一 ASGI 入口（应用工厂 `create_app`），装配 starlette 内置 `RequestBodyLimitMiddleware`（1MB）后按 `/healthz → /mcp → /api → /` 顺序注册；`mcp_service.py` 与 `web_api.py` 是并列的两个传输适配层，两者内部都不出现 SQL，全部经 `dal.py` 访问数据
+- **核心模块**：`server.py` 是唯一 ASGI 入口（应用工厂 `create_app`），装配 starlette 内置 `RequestBodyLimitMiddleware`（1MB）与 `QueryTokenAuthMiddleware` 后按 `/healthz → /mcp → /api → /` 顺序注册；`mcp_service.py` 与 `web_api.py` 是并列的两个传输适配层，两者内部都不出现 SQL，全部经 `dal.py` 访问数据
+- **凭据接入流**：根应用中间件 `QueryTokenAuthMiddleware` 在 HTTP 请求边界统一处理访问凭据：当请求无 `Authorization` 头且 URL 查询参数含非空 ASCII `token`（或兼容 RFC 6750 的 `access_token`）时，代客合成 `Authorization: Bearer <token>` 注入 ASGI 请求头；下游 FastMCP 校验器、Web REST API 网关、DAL 数据访问层及鉴权链路完全复用，保持契约对称与零侵入。
 - **读数据流**：Agent → Bearer 令牌 → FastMCP 校验器（`auth.py`）→ 工具层读取 claims 中的 `key_id` 与 `grants` → `dal.py` 三态判定 → `retrieval.py` 打分排序 → `formatters.py` 渲染纯文本
 - **写数据流**：适配层经 `permissions.permission_for(grants, group)` 判定 `rw` 与字段长度 → `retrieval.py` 规范化复核时间并计算标题近似度 → `dal.py` 写入并自行提交
 - **权限判定单一来源**：`permissions.permission_for` 是唯一的有效权限计算函数，DAL、MCP 工具层与 `/api` 处理器共用；任一 `*` 通配都覆盖全库（是否可见与读写级别正交），`permission_for` 再逐条决定该分组是 `r` 还是 `rw`
@@ -122,6 +124,7 @@ tests/
 ## 5. 关键约定
 
 - **命名约定**：模块与函数 snake_case；记忆 ID 为 `mem_` + 6 位随机串（总长 10），Key ID 为 8 位随机串，明文令牌为 `capsa_{key_id}_{32位随机串}`（总长 47）
+- **凭据传递约定**：支持标准 HTTP `Authorization: Bearer <token>` 请求头与 URL 查询参数（`token` 与兼容 RFC 6750 的 `access_token`）。当两者同时出现时，严格以 HTTP 请求头为单一权威来源（不降级、不回退）。空参数、纯空白字符或含非 ASCII 字符的查询参数不注入，交由下游自然返回 401，避免在 latin-1 编码阶段抛出 500 异常。
 - **注释 / 文档语言**：代码注释与标识符用英文，用户可见的工具描述、错误消息与 CLI 输出用中文
 - **错误处理**：协议层问题走 HTTP 状态码（401 / 413），工具自身可给出可操作反馈的问题走工具级 `isError: true`；同一契约在 Web 侧映射为 HTTP 状态码与 `error.code`（401 `UNAUTHORIZED` / 403 `FORBIDDEN` / 404 `NOT_FOUND` / 422 `VALIDATION_ERROR` / 500 `INTERNAL_ERROR`），`error.message` 与 MCP 工具文本逐字相同；数据库不可用原样上报，不降级为业务错误
 - **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；界面采用 Fluent 2 体系，以 CSS 变量承载语义令牌并通过根节点 `data-theme` 切换（持久化于 `localStorage` 键 `capsa_theme`，`index.html` 首帧内联脚本即时挂载防闪烁），分为 Layer 0–3 物理层级（Mica 画布、Acrylic 导航与顶栏、Depth 4 卡片、Depth 16 弹层）；正文与排版收敛为 `text-body`（13px/20px）与 `text-caption`（12px/16px）；实心按钮采用 `--color-fill-foreground` 确保深色高对比（WCAG AAA 8:1~13:1）；弹层走原生 `<dialog>` 与 `showModal()`；组件统一基于克制规范的 `ui/` 原语构建；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
@@ -154,6 +157,7 @@ tests/
 - `add_group` 用 `INSERT OR IGNORE` 的 `rowcount` 表达插入结果，不先查后插——原因：先查后插在并发下会静默成功却未入库（TOCTOU），唯一约束在 SQL 内原子裁决
 - 正文字段按需投影，默认查询不选 `body` 列；含正文字段的命中判据与打分只在 MCP 兜底检索路径开启——原因：正文是库内体积最大的列，全库浏览或默认检索把它读进内存只增加 VPS 的峰值占用，而兜底召回只在元数据未命中时才有价值
 - 空 `query` 的浏览请求即使传入 `include_body=True` 也不投影正文——原因：此时没有关键词可供打分，正文加载不产生任何召回收益，只留下全库扫描正文的开销；守卫落在工具层一次收敛，不散到 DAL
+- URL 查询参数凭据的固有安全代价与缓解——原因：URL 中的查询参数极易被反向代理（如 Nginx、Caddy）、宿主机日志或第三方网络设备记录在访问日志中。建议在反代配置中对含 `token` 或 `access_token` 参数的访问日志进行脱敏处理；强烈建议为 Claude Web 自定义连接器等仅支持 URL 配置的客户端签发专用的低权限分组 Key（例如仅授予特定项目的 `rw` 权限），严禁直接复用全局通配管理员凭据（`*:rw`）
 
 ## 8. 决策记录
 
@@ -199,6 +203,8 @@ tests/
 - 2026-09-20 Web 管理台完全重写采用自建 Fluent 2 语义令牌与原语层，而非引入 Fluent UI React v9 或第三方组件库——理由：个人 VPS 工具优先轻量与零新增依赖，既有 Tailwind + CSS 变量即可表达完整 Fluent 2 令牌、Layer 0–3 材质层级与深度阴影；引入外部大组件库产物膨胀数倍且带来双样式体系维护负担
 - 2026-09-20 弹层统一采用原生 <dialog> 与 showModal() 表达 Layer 3 表面——理由：焦点约束、Esc 关闭与背景 inert 由浏览器平台原生提供，无需手写焦点循环或外置 focus-trap 依赖；全屏透明重置 UA 边距后既可承载居中 Modal，亦可承载右侧滑出抽屉
 - 2026-09-20 UI 原语与令牌层规范收敛与死代码剔除——理由：严格按 Ponytail 原则淘汰未使用的过度设计分支（Card 的 clickable/selected、Dialog 的 drawer、Button 的 subtle 及零引用阴影/排版令牌）；全库正文字号统一收敛至 text-body 语义类；在 index.html 首帧内联执行主题同步解决刷新闪白；为填充按钮配置深色高对比 fill-foreground 令牌确保 WCAG 合规；Card 支持 as="ul" 修复复核与回收站 HTML 列表语义合法性
+- 2026-09-30 兼容 URL 查询参数凭据（`token` 与 `access_token`）接入——理由：Claude Web 端自定义连接器（Custom Connector）等第三方客户端仅允许配置端点 URL，无法附加自定义 HTTP Header，且 Capsa 作为面向个人 VPS 的轻量私人记忆服务未实现复杂 OAuth 2.0 授权码流；在根应用层通过极简 ASGI 中间件将 URL 凭据映射为标准 Bearer 头，既平滑解除了客户端接入断点，又无需在 FastMCP 工具层或 Web API 路由打补丁，下游三态鉴权与授权链路零改动复用
+- 2026-09-30 URL 凭据中间件采用根应用全局装配而非按路径挂载——理由：符合最短有效差分与模型对称原则，免去针对 `/mcp` 路径的前缀匹配与特判分支，与现有 `RequestBodyLimitMiddleware` 统一守卫流水线保持正交，同时自然覆盖 MCP 与 API 端点
 
 ## 9. 术语表
 
@@ -208,3 +214,17 @@ tests/
 - 三态 = 单条记忆相对当前 Key 的三种判定：`authorized` / `forbidden` / `not_found`
 - 三级披露 = 检索（`memory_search`）返回标题与元数据、peek（`memory_peek`）返回摘要、read（`memory_read`）返回正文；边界由工具描述陈述，不作为调用顺序约束
 - 正文兜底检索 = `memory_search` 的 `include_body=True` 可选能力：把正文并入命中判定与打分，权重低于全部元数据字段
+
+## 10. 部署后联调指导（Claude Web 自定义连接器）
+
+生产环境（个人 VPS）通过 `docker compose` 部署或重启后，按以下步骤完成 Claude Web 端自定义连接器接入：
+
+1. **签发专用连接器凭据**：在 Web 管理台或通过 VPS CLI 签发专用分组 Key（例如仅授权项目分组）：
+   ```bash
+   docker compose exec capsa capsa key create --name "claude-connector" --scopes proj:rw
+   ```
+2. **配置连接器端点**：在 Claude Web 端进入「Custom Connectors」，填入服务地址并携带查询参数：
+   ```
+   https://<your-vps-domain>/mcp?token=capsa_<key_id>_<secret>
+   ```
+3. **验证连通性**：点击连接测试，Claude 完成 initialize 握手并拉取工具列表后即可在对话中读写指定分组记忆。

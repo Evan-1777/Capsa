@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from capsa.auth import QueryTokenAuthMiddleware
 from capsa.db import check_db_health
 from capsa.mcp_service import mcp
 from capsa.web_api import web_api_app
@@ -47,6 +48,7 @@ def create_app(static_directory: str | None = None) -> Starlette:
         routes.append(Mount("/", app=StaticFiles(directory=directory, html=True)))
     application = Starlette(routes=routes, lifespan=mcp_app.lifespan)
     application.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_REQUEST_BYTES)
+    application.add_middleware(QueryTokenAuthMiddleware)
     return application
 
 
