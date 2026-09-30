@@ -126,6 +126,7 @@
 ### 通用约定
 
 所有 subagent 共享：
+- **Prompt 格式**：调用时优先用工作流模板覆盖或替换 Agent 工具的默认提示词格式；若工具接口强制要求特定格式且无法替换，保留该格式，并在其后附加完整的工作流提示词模板内容，确保目标、上下文、边界和报告要求均传达。
 - `inherit_context: false` — 隔离会话；以目标为单位委托，允许并行多开，同一时刻不超过 3 个
 - **嵌套**：subagent 仅由主线 spawn，被委托方不得再 spawn subagent——任务须在单层内完成
 - 执行中不与主 Agent 通信；遇障碍 `advisor` → 自行决策 → 继续；整链结束后 return 最终报告
@@ -176,9 +177,12 @@ Rules: no parent channel; no subagents; on blockers call advisor; return executo
   - **适用**：`git init` 后建立基线；项目演进后文档脱节时刷新
 - **Main-hybrid**（用户输入含 "Main-hybrid"）：`Explore → Plan → Formulate Tasks` ‖ `Explore-lite → Execute → Test → Document Maintenance → Archive → Git Commit`
   - **规划段**：以 `engineering-discipline` 为会话临时上下文，深读 SCOPE / Project 与代码库，产出 Plan.md 与可机械验证的 Tasks.md
-  - **交接**：Tasks.md 产出后立即结束当前回复，等待接手模型，不继续交付阶段
+  - **交接**：Tasks.md 产出后立即结束当前回复，等待接手模型，不继续交付阶段；交接后的评审反馈与计划修订仅在规划段内处理，收到用户明确的执行指令才进入交付段。在交接处接收外部审阅报告时，须批判性吸收（严禁盲目拿来主义），对照代码库与工程纪律逐条核实正误与合理性，排查并剔除过度设计与过度安全防御，仅将确属合理有效的建议吸纳入 Plan.md 与 Tasks.md，并在回复中简要陈述采纳与驳回理由；修订后继续保持交接等待，直至收到明确执行指令
   - **交付段**：接手模型依据落盘文档建立上下文、不依赖上一会话；Explore-lite 聚焦 Plan / Task 关联的源文件与调用链，随后执行至归档提交
-  - **适用**：跨模型智商梯度调度、跨 Agent 工具协同交付
+  - **Frontend 扩展**（输入含 "Main-hybrid" 且含 "Frontend" 时触发，如 "Main-hybrid(Frontend)"）：
+    - 规划段额外加载 `frontend-design` 与 `production-frontend` 为临时上下文，选定设计哲学；Plan 阶段额外在项目目录 `temp/` 产出前端变更 Demo（静态 HTML，浏览器直接打开）。Demo 严格依据修改范围与目标对象靶向产出（禁止全量重抄无关页面）；变更核心重点展示，强依赖上下文严格对齐既有设计与排版，弱相关或无关内容直接省略或极简色块占位；多方案须按方案创建独立文件（如 `temp/<name>-variant-a.html`），禁止单文件堆叠；以排版节奏与组件关系设计为核心，保证整体设计美观和谐；Tasks.md 与 Demo 产出后结束回复进入交接
+    - 交付段加载 `frontend-design` 与 `production-frontend`，依从规划段选定的设计哲学执行，遵循成品级表面要求，保证最终实现与设计规范一致
+  - **适用**：跨模型智商梯度调度、跨 Agent 工具协同交付；涉及前端界面/组件变更时使用 Main-hybrid(Frontend) 拓展
 - **Quick**（用户输入含 "Quick"）：`Explore → Formulate Tasks → Execute → Document Maintenance → Archive → Git Commit`
   - **要点**：跳过 Plan；Task 粒度更细，单 Task 修改不超过 3 个文件，禁止跨模块大重构
 - **Fast**（用户输入含 "Fast"）：`Explore → Plan（轻量）→ Execute → Document Maintenance → Git Commit`
@@ -190,8 +194,9 @@ Rules: no parent channel; no subagents; on blockers call advisor; return executo
   - **范围**：用户自然语言指定优先，未指定时按默认范围
   - **默认范围**：根目录存在未归档 `Plan.md` / `Tasks.md` 时，审核其能否直接落地执行、有无漏洞与考虑不周；否则审核最近一次归档交付的实际改动（代码、内容与任务质量）
   - **基准**：按名称加载 `engineering-discipline`
-  - **理念**：不吹毛求疵，不提倡过度安全防御；问题须指向实际风险与根因
-  - **报告**：自然语言陈述问题、位置、判定依据与修改建议，须有证据支撑；结论为 100 分制评分并说明扣分依据
+  - **理念**：不吹毛求疵；问题须指向实际风险与根因
+  - **维度**：将「过度设计（非必要的过度扩张性与过度安全防御）」列为必要审计与评分维度，重点排查违背 YAGNI 的未证实抽象、过度防御性分支/配置膨胀及脱离实际的极端边界臆测
+  - **报告**：自然语言陈述问题、位置、判定依据与修改建议，须有证据支撑；结论为 100 分制评分并说明各维度扣分依据（含过度设计扣分项）
   - **复审**：逐条核销上次问题并回填证据
 - **Brainstorm**（用户输入含 "Brainstorm" 或"头脑风暴"）：`Explore（深入）→ Interview → Brainstorm`
   - **要点**：Explore 扩大检索与阅读范围；产出自由形式分析讨论，不产出 Plan.md / Tasks.md，无后续执行阶段
