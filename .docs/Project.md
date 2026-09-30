@@ -124,7 +124,7 @@ tests/
 ## 5. 关键约定
 
 - **命名约定**：模块与函数 snake_case；记忆 ID 为 `mem_` + 6 位随机串（总长 10），Key ID 为 8 位随机串，明文令牌为 `capsa_{key_id}_{32位随机串}`（总长 47）
-- **凭据传递约定**：支持标准 HTTP `Authorization: Bearer <token>` 请求头与 URL 查询参数（`token` 与兼容 RFC 6750 的 `access_token`）。当两者同时出现时，严格以 HTTP 请求头为单一权威来源（不降级、不回退）。空参数、纯空白字符或含非 ASCII 字符的查询参数不注入，交由下游自然返回 401，避免在 latin-1 编码阶段抛出 500 异常。
+- **凭据传递约定**：支持标准 HTTP `Authorization: Bearer <token>` 请求头与 URL 查询参数（`token` 与兼容 RFC 6750 的 `access_token`）。当两者同时出现时，严格以 HTTP 请求头为单一权威来源（不降级、不回退）。空参数、纯空白字符、含非 ASCII 字符或不可打印控制字符（如 CRLF）的查询参数均不予注入，交由下游自然返回 401，避免在 latin-1 编码阶段抛出 500 异常或产生畸形 Header。
 - **注释 / 文档语言**：代码注释与标识符用英文，用户可见的工具描述、错误消息与 CLI 输出用中文
 - **错误处理**：协议层问题走 HTTP 状态码（401 / 413），工具自身可给出可操作反馈的问题走工具级 `isError: true`；同一契约在 Web 侧映射为 HTTP 状态码与 `error.code`（401 `UNAUTHORIZED` / 403 `FORBIDDEN` / 404 `NOT_FOUND` / 422 `VALIDATION_ERROR` / 500 `INTERNAL_ERROR`），`error.message` 与 MCP 工具文本逐字相同；数据库不可用原样上报，不降级为业务错误
 - **前端约定**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；界面采用 Fluent 2 体系，以 CSS 变量承载语义令牌并通过根节点 `data-theme` 切换（持久化于 `localStorage` 键 `capsa_theme`，`index.html` 首帧内联脚本即时挂载防闪烁），分为 Layer 0–3 物理层级（Mica 画布、Acrylic 导航与顶栏、Depth 4 卡片、Depth 16 弹层）；正文与排版收敛为 `text-body`（13px/20px）与 `text-caption`（12px/16px）；实心按钮采用 `--color-fill-foreground` 确保深色高对比（WCAG AAA 8:1~13:1）；弹层走原生 `<dialog>` 与 `showModal()`；组件统一基于克制规范的 `ui/` 原语构建；正文 Markdown 必须经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真，不出现 `dangerouslySetInnerHTML`
@@ -205,6 +205,7 @@ tests/
 - 2026-09-20 UI 原语与令牌层规范收敛与死代码剔除——理由：严格按 Ponytail 原则淘汰未使用的过度设计分支（Card 的 clickable/selected、Dialog 的 drawer、Button 的 subtle 及零引用阴影/排版令牌）；全库正文字号统一收敛至 text-body 语义类；在 index.html 首帧内联执行主题同步解决刷新闪白；为填充按钮配置深色高对比 fill-foreground 令牌确保 WCAG 合规；Card 支持 as="ul" 修复复核与回收站 HTML 列表语义合法性
 - 2026-09-30 兼容 URL 查询参数凭据（`token` 与 `access_token`）接入——理由：Claude Web 端自定义连接器（Custom Connector）等第三方客户端仅允许配置端点 URL，无法附加自定义 HTTP Header，且 Capsa 作为面向个人 VPS 的轻量私人记忆服务未实现复杂 OAuth 2.0 授权码流；在根应用层通过极简 ASGI 中间件将 URL 凭据映射为标准 Bearer 头，既平滑解除了客户端接入断点，又无需在 FastMCP 工具层或 Web API 路由打补丁，下游三态鉴权与授权链路零改动复用
 - 2026-09-30 URL 凭据中间件采用根应用全局装配而非按路径挂载——理由：符合最短有效差分与模型对称原则，免去针对 `/mcp` 路径的前缀匹配与特判分支，与现有 `RequestBodyLimitMiddleware` 统一守卫流水线保持正交，同时自然覆盖 MCP 与 API 端点
+- 2026-09-30 审阅意见吸收与防御精简——理由：`decode(errors="replace")` 与 `parse_qs(strict_parsing=False)` 无抛错路径，剔除外层不可达 `try/except` 防御性分支以保持代码克制；在 `isascii()` 基础上增补 `isprintable()` 过滤 CRLF 等控制字符，避免畸形 Header 进入 ASGI 元组
 
 ## 9. 术语表
 

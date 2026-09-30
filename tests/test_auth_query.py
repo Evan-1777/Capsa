@@ -132,6 +132,13 @@ def test_boundary_and_invalid_query_tokens(client: TestClient):
     res_spaces = client.post("/mcp?token=%20%20%20", headers=headers, json=INIT_PAYLOAD)
     assert res_spaces.status_code == 401
 
+    # Control characters (CRLF) in token -> 401 (must not inject malformed header)
+    res_crlf_embedded = client.post("/mcp?token=abc%0d%0aX-Evil:1", headers=headers, json=INIT_PAYLOAD)
+    assert res_crlf_embedded.status_code == 401
+
+    res_crlf_only = client.post("/mcp?token=%0d%0a", headers=headers, json=INIT_PAYLOAD)
+    assert res_crlf_only.status_code == 401
+
     # Absent token -> 401
     res_absent = client.post("/mcp", headers=headers, json=INIT_PAYLOAD)
     assert res_absent.status_code == 401

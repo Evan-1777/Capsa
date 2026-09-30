@@ -32,11 +32,7 @@ class QueryTokenAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        try:
-            params = parse_qs(query_bytes.decode("utf-8", errors="replace"), keep_blank_values=True)
-        except Exception:
-            await self.app(scope, receive, send)
-            return
+        params = parse_qs(query_bytes.decode("utf-8", errors="replace"), keep_blank_values=True)
 
         raw_token = None
         for key in ("token", "access_token"):
@@ -47,7 +43,7 @@ class QueryTokenAuthMiddleware:
                     raw_token = cand
                     break
 
-        if not raw_token or not raw_token.isascii():
+        if not raw_token or not raw_token.isascii() or not raw_token.isprintable():
             await self.app(scope, receive, send)
             return
 
