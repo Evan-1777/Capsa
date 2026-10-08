@@ -6,6 +6,7 @@
 >
 > - **Plan 不涉及具体文件、函数签名、代码片段。这些全部归属于 Task。**
 > - 每个 Task 必须可独立验证——执行完一个 Task 后，代码应处于可编译/可运行状态。
+> - 每个 Task 须显式标注执行主体（`Executor: 主线` 或 `Executor: Subagent: <agent名>`），界定委托边界与依赖。
 > - 禁止模糊动词（如"优化""完善""改进"），须用可验证动作描述（如"添加校验""重构为函数""提取接口"）。
 > - Quick 模式：单 Task 修改不超过 3 个文件，禁止跨模块大重构。
 
@@ -23,6 +24,7 @@
 ### TASK-001：创建 users/roles/permissions 建表迁移脚本
 
 - **Status**：DONE
+- **Executor**：主线
 - **Description**：在 `migrations/` 目录下新增 `001_create_users.up.sql` 和 `001_create_users.down.sql`，定义三张表的完整 schema 与索引。
 - **Details**：
   - `users` 表：id (UUID PK)、username (UNIQUE)、password_hash、email (UNIQUE)、created_at、updated_at
@@ -38,6 +40,7 @@
 ### TASK-002：插入初始角色与权限数据
 
 - **Status**：DONE
+- **Executor**：主线
 - **Description**：在 `seeds/` 目录下新增 `seed_roles.sql`，预置管理员、编辑者、查看者三种角色及对应权限。
 - **Details**：
   - 管理员：全部权限
@@ -51,6 +54,7 @@
 ### TASK-003：编写回滚验证脚本
 
 - **Status**：DONE
+- **Executor**：主线
 - **Description**：在 `scripts/` 下新增 `verify_migration.sh`，依次执行 up → seed → down → up，验证迁移的幂等性与可回滚性。
 - **Details**：
   - 脚本使用本地开发数据库连接
@@ -66,6 +70,7 @@
 ### TASK-004：实现注册端点 POST /auth/register
 
 - **Status**：DONE
+- **Executor**：主线
 - **Description**：在 `src/routes/auth.ts` 中新增 `register` 处理函数，接收 username/email/password，写入 users 表。
 - **Details**：
   - 校验 email 格式、password 最小长度 8 位
@@ -81,6 +86,7 @@
 ### TASK-005：实现登录端点 POST /auth/login
 
 - **Status**：DONE
+- **Executor**：主线
 - **Description**：在 `src/routes/auth.ts` 中新增 `login` 处理函数，验证凭据并签发 JWT。
 - **Details**：
   - 接收 email + password
@@ -95,6 +101,7 @@
 ### TASK-006：添加请求参数校验中间件
 
 - **Status**：PENDING
+- **Executor**：主线
 - **Description**：在 `src/middleware/validate.ts` 中实现通用请求体校验，为 auth 路由接入。
 - **Details**：
   - 基于 JSON Schema 或 zod 定义校验规则
@@ -108,6 +115,7 @@
 ### TASK-007：定义错误码映射与统一错误响应
 
 - **Status**：PENDING
+- **Executor**：主线
 - **Description**：在 `src/errors.ts` 中定义错误码枚举与标准响应格式 `{ code, message, details? }`。
 - **Details**：
   - 覆盖 400/401/403/404/409/422/500
@@ -124,6 +132,7 @@
 ### TASK-008：实现 AuthMiddleware
 
 - **Status**：PENDING
+- **Executor**：主线
 - **Description**：在 `src/middleware/auth.ts` 中实现 JWT 验证中间件，从 Authorization header 提取令牌并解析。
 - **Details**：
   - 解析 Bearer token
@@ -139,6 +148,7 @@
 ### TASK-009：实现 RequireRole 装饰器/中间件
 
 - **Status**：PENDING
+- **Executor**：主线
 - **Description**：在 `src/middleware/auth.ts` 中实现角色校验函数，接收允许的角色列表，拒绝无权限用户。
 - **Details**：
   - 支持单角色和多角色（满足任一即可）
@@ -152,6 +162,7 @@
 ### TASK-010：实现 Token 刷新端点 POST /auth/refresh
 
 - **Status**：PENDING
+- **Executor**：主线
 - **Description**：在 `src/routes/auth.ts` 中新增 `refresh` 处理函数，接收 refresh_token，签发新 access_token。
 - **Details**：
   - refresh_token 存储在 Redis，key 格式 `refresh:<user_id>`
@@ -169,8 +180,10 @@
 ### TASK-011：编写注册/登录集成测试
 
 - **Status**：PENDING
+- **Executor**：Subagent: executor
 - **Description**：在 `tests/auth.test.ts` 中编写注册与登录端点的集成测试。
 - **Details**：
+  - 输入边界：Phase 2/3 已定型的路由和中间件
   - 使用测试数据库，每个 case 后清理
   - 覆盖：正常注册、重复注册、格式校验、正常登录、错误密码、不存在的用户
 - **Acceptance Criteria**：
@@ -180,8 +193,10 @@
 ### TASK-012：编写鉴权边界测试
 
 - **Status**：PENDING
+- **Executor**：Subagent: executor
 - **Description**：在 `tests/auth.test.ts` 中补充鉴权边界场景。
 - **Details**：
+  - 输入边界：Phase 3 鉴权中间件与角色校验逻辑
   - 无令牌访问受保护路由 → 401
   - 低权限角色访问高权限路由 → 403
   - 过期令牌 → 401
@@ -194,8 +209,10 @@
 ### TASK-013：更新 API 文档
 
 - **Status**：PENDING
+- **Executor**：Subagent: executor
 - **Description**：在 `docs/api.md` 中补充认证相关端点说明，包含请求/响应示例与错误码。
 - **Details**：
+  - 输入边界：前序已定型接口模型与错误码
   - 每个端点列出 Method、Path、Headers、Body、Response
   - 标注认证要求
   - 错误码速查表

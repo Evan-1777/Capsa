@@ -1,7 +1,7 @@
 ---
 name: frontend-design
 description: >-
-  Frontend design specifications and workflow: enforces design philosophy selection (Apple HIG vs Microsoft Fluent), 4-tier Z-index physical material & light hierarchy, native-first component strategy with shadcn/ui as bridge, and document-driven component reuse. Load whenever designing, structuring, or implementing frontend UI.
+  Frontend design specifications and workflow: enforces design philosophy selection (Apple HIG vs Microsoft Fluent), task-oriented information architecture with progressive disclosure (P0/P1/P2 entry priorities & container selection & context trade-offs), 4-tier Z-index physical material & light hierarchy, native-first component strategy with shadcn/ui as bridge, and document-driven component reuse. Load whenever designing, structuring, or implementing frontend UI.
 ---
 
 # 前端设计规范与流程 (Frontend Design)
@@ -28,7 +28,56 @@ description: >-
 
 ---
 
-## 二、空间布局与 Z 轴物理层级（Z-index Layers）
+## 二、信息架构与分层呈现理念（Information Architecture & Hierarchy）
+
+在构建界面结构时，**以任务为导向实施功能聚类与渐进披露**。界面应主次清晰，避免将异质、低频或配置类功能在首屏同层平铺。入口按任务频次与关注度分层后即自解释，不附加引导标注或说明文案（默认使用者为资深用户，见 `production-frontend` 的同名立场）。
+
+### 1. 任务导向的三级优先级模型（P0 / P1 / P2）
+
+将用户交互行为按关注度与使用频次建立清晰的心智分层：
+
+<div style="border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; margin: 16px 0; background: #ffffff; font-family: sans-serif;">
+  <div style="font-weight: 600; margin-bottom: 12px; color: #24292f;">任务导向三级优先级模型</div>
+  <div style="display: grid; gap: 10px;">
+    <div style="border-left: 4px solid #0969da; background: #f6f8fa; padding: 10px 12px; border-radius: 0 6px 6px 0;">
+      <div style="font-weight: 600; color: #0969da; font-size: 13px;">P0 核心作业流 / 主画布（Primary Canvas）</div>
+      <div style="color: #57606a; font-size: 12px; margin-top: 4px;">承载系统核心价值的高频操作流（如主编辑画布、核心作业列表、实时监控流）。占据一级视口主体，保证核心任务连贯通畅，避免被次级内容平分空间。</div>
+    </div>
+    <div style="border-left: 4px solid #1a7f37; background: #f6f8fa; padding: 10px 12px; border-radius: 0 6px 6px 0;">
+      <div style="font-weight: 600; color: #1a7f37; font-size: 13px;">P1 上下文探索 / 辅助动作（In-context Secondary / Drill-down）</div>
+      <div style="color: #57606a; font-size: 12px; margin-top: 4px;">明细钻取、单项编辑、高级过滤与操作历史。通过侧边抽屉或分栏展开呈现，在保持主画布上下文连贯的同时提供深度作业能力。</div>
+    </div>
+    <div style="border-left: 4px solid #6e7781; background: #f6f8fa; padding: 10px 12px; border-radius: 0 6px 6px 0;">
+      <div style="font-weight: 600; color: #57606a; font-size: 13px;">P2 系统配置 / 管理事务（Low-frequency / Settings / Management）</div>
+      <div style="color: #57606a; font-size: 12px; margin-top: 4px;">全局参数、环境切换、成员权限等低频管理事务。收敛至二级设置中心或专用子视图，不占用一级作业视口。</div>
+    </div>
+  </div>
+</div>
+
+- **首屏聚焦**：首屏明确呈现核心高频主路径，让用户直接感知主作业流。
+- **渐进披露**：进阶与辅助能力顺应交互意图按需呈现，减少非必要的信息负荷。
+
+### 2. 容器选型与上下文权衡（Container Selection & Context Trade-offs）
+
+依据任务深度与上下文连续性需求选择容器形式：
+
+| 任务场景 | 推荐容器 | 交互考量与设计意图 |
+|---|---|---|
+| **P0 高频核心作业** | 一级主视口画布（Primary Canvas） | 视口主体，承载核心数据与高频动作，保持作业流畅无阻断 |
+| **P1 明细查看 / 局部编辑** | 侧边抽屉 / 分栏（Drawer / Split-view） | 保持主画布上下文可见，随查随关，降低来回跳转心智负担 |
+| **P1 即时确认 / 短表单** | 模态弹窗（Modal / Dialog） | 聚焦视线，阻断底层交互，适用于少量字段输入或破坏性操作确认 |
+| **P1 复杂长流程装配** | 引导向导（Step Wizard） | 步骤条驱动分步流转，适合阶段性配置与明确的状态暂存 |
+| **P2 系统配置 / 批量运维** | 二级设置中心 / 独立子视图（Sub-page） | 专用于全局性低频维护，提供清晰的导航分类与确定性保存机制 |
+
+### 3. Demo 原型交互感知
+
+在 `Main-hybrid(Frontend)` 规划段或原型设计阶段产出 `temp/*.html` 时：
+- **空间感知**：为分层容器（如抽屉、模态）提供基础显隐开合交互，以便直观评估展开后的主副空间占比、视觉层级与遮罩明暗。
+- **范围克制**：原型重点在于验证排版节奏与层级关系，不编写无关的复杂数据流或业务校验逻辑。
+
+---
+
+## 三、空间布局与 Z 轴物理层级（Z-index Layers）
 
 在开始编写页面结构与样式前，**必须先规划界面的 Z 轴物理层级。严禁使用单一平铺布局，严禁大量偷懒使用扁平纯色块**。每个层级之间必须具有明显的材质或光影差异。
 
@@ -61,7 +110,7 @@ description: >-
 
 ---
 
-## 三、组件选型路径：原生优先与桥接策略
+## 四、组件选型路径：原生优先与桥接策略
 
 在具体 UI 组件实现上，建立明确的选型优先级阶梯，杜绝随意堆砌非标准组件：
 
@@ -91,7 +140,7 @@ description: >-
 
 ---
 
-## 四、文档驱动与组件复用
+## 五、文档驱动与组件复用
 
 为了确保界面系统的一致性并降低维护成本，开发过程必须严格遵循文档驱动：
 
@@ -106,12 +155,14 @@ description: >-
 
 ---
 
-## 五、执行清单与自查红线
+## 六、执行清单与自查红线
 
 每次交付前端界面前，进行以下检查：
 
 - [ ] **风格确认**：是否已在 Apple HIG 与 Fluent 之间明确主风格？
+- [ ] **架构主次**：首屏是否主线清晰，辅助与低频能力是否合理分层呈现？功能入口是否自解释，有无额外上手引导标注？
 - [ ] **层级规划**：是否已按 Layer 0–3 规划层级，且每一层均有明确的材质、模糊或阴影反差？
 - [ ] **拒绝纯色块**：悬浮栏是否带有毛玻璃与 1px 高光边框？卡片是否具备合理的背景半透明/投影？
 - [ ] **组件阶梯**：是否优先使用了风格原生组件？非原生组件是否经由 shadcn/ui 进行了正确风格化？
+- [ ] **原型感知**：若产出 temp/ 原型，分层容器是否支持基础开合以验证空间节奏？
 - [ ] **复用与规范**：是否查阅并遵循了用户提供的文档与已有组件规范？
