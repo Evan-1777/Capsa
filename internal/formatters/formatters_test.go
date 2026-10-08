@@ -95,3 +95,27 @@ func TestFormatReadMissingBodyPlaceholder(t *testing.T) {
 		t.Fatalf("FormatRead empty mismatch:\n got %q\nwant %q", got, want)
 	}
 }
+
+func TestFormatReadOffsetPastEnd(t *testing.T) {
+	// An offset beyond the body must clamp to the end and render the placeholder,
+	// matching Python slicing (which yields "") instead of panicking.
+	item := map[string]any{"status": "authorized", "id": "mem_1", "group_slug": "proj",
+		"updated_at": "2026-10-01T00:00:00.000000+00:00", "title": "标题一", "body": "短正文"}
+	want := "===== mem_1 | proj | 更新 2026-10-01 =====\n# 标题一\n\n（正文已到结尾，无更多内容）\n"
+	if got := FormatRead([]map[string]any{item}, 999); got != want {
+		t.Fatalf("FormatRead(999) mismatch:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestFormatReadOffsetAppliesPerItem(t *testing.T) {
+	// Clamping the offset for a short entry must not leak into a later long entry.
+	short := map[string]any{"status": "authorized", "id": "mem_1", "group_slug": "proj",
+		"updated_at": "2026-10-01T00:00:00.000000+00:00", "title": "短", "body": "abc"}
+	long := map[string]any{"status": "authorized", "id": "mem_2", "group_slug": "proj",
+		"updated_at": "2026-10-01T00:00:00.000000+00:00", "title": "长", "body": "0123456789"}
+	want := "===== mem_1 | proj | 更新 2026-10-01 =====\n# 短\n\n（正文已到结尾，无更多内容）\n\n" +
+		"===== mem_2 | proj | 更新 2026-10-01 =====\n# 长\n\n56789\n"
+	if got := FormatRead([]map[string]any{short, long}, 5); got != want {
+		t.Fatalf("FormatRead per-item offset mismatch:\n got %q\nwant %q", got, want)
+	}
+}

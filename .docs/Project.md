@@ -47,7 +47,7 @@
 - **如何测试**：Go 侧 `go test ./...`（含 `tests/` 集成测试与各 `internal/` 单元测试）；前端侧 `cd web && npm run test:e2e`（Playwright 驱动系统 Chrome，经 `web/tests/serve.sh` 起真实 Go 二进制）。两侧全程使用临时数据库，不触碰 `/data`
   - ★ 本机若配置了 `http_proxy`/`https_proxy`，Playwright 的 webServer 探活会被代理拦截而误报「端口已占用」；运行 E2E 前须清空代理变量，例如 `env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY npm run test:e2e`
 - **如何构建镜像**：仅手动触发。网页在仓库 Actions 页签选 `build-image`，命令行 `gh workflow run build-image.yml -f tag=v0.1.0`；本地等价命令 `docker build -t ghcr.io/evan-1777/capsa:dev .`。私有 GHCR 包需先 `docker login ghcr.io`（PAT 需 `read:packages`）
-- **实测基线**（本机 Linux x86_64）：`go build -ldflags="-s -w"` 产物 13.1 MiB；`capsa serve` 空载常驻 RSS ≈ 2.2 MB（重构前 Python 版为 81 MB）。容器镜像为 Alpine + curl + 该静态二进制，构建由 CI 完成（本机无 Docker，镜像体积以 CI 构建为准）
+- **实测基线**（本机 Linux x86_64）：`go build -ldflags="-s -w"` 产物 13.1 MiB；`capsa serve` 空载常驻 RSS ≈ 13 MB，遇请求后升至约 16–20 MB 且不回落至空载值（重构前 Python 版约 81 MB）。容器镜像为 Alpine + curl + 该静态二进制，构建由 CI 完成（本机无 Docker，镜像体积以 CI 构建为准）
 - **定时热备（宿主机 Cron）**：`0 3 * * * docker compose -f /opt/capsa/docker-compose.yml exec -T capsa capsa backup /backup`
 
 ## 结构
@@ -104,7 +104,7 @@ tests/integration_test.go # Go 集成测试：端点状态码、统一信封、M
 
 ## 约束与决策
 
-- 后端从 Python + Starlette + FastMCP 重构为 Go 单一静态二进制——原因：常驻内存从实测 81MB 压降至约 2MB，消除容器内 Python 与 Node 运行时依赖，镜像收敛到 Alpine 极简形态
+- 后端从 Python + Starlette + FastMCP 重构为 Go 单一静态二进制——原因：常驻内存从实测 81MB 压降至空载约 13MB，消除容器内 Python 与 Node 运行时依赖，镜像收敛到 Alpine 极简形态
 - 2026-10-08 选 `modernc.org/sqlite`（纯 Go）而非 `mattn/go-sqlite3`——理由：无 CGO，支持静态交叉编译与原生备份接口，避免容器内引入 gcc/musl 工具链
 - 2026-10-08 时间戳固定 `2006-01-02T15:04:05.000000+00:00` 定宽布局——理由：字符串字典序与时间先后严格等价，同秒内 6 位微秒对齐；相对 Python `isoformat()`（微秒为 0 时省略小数）属有意增强的定宽布局
 - 2026-10-08 HTTP 路由用 Go 标准库 `net/http`（1.22+ 方法与路径参数匹配），不引入 `chi`/`gin`——理由：标准库已完全覆盖，新增框架属冗余抽象

@@ -168,11 +168,12 @@ func FormatRead(items []map[string]any, offset int) string {
 			break
 		}
 		body := []rune(stringOf(item, "body"))
-		available := len(body) - offset
-		if available < 0 {
-			available = 0
+		start := offset
+		if start > len(body) {
+			start = len(body)
 		}
-		take := minInt(MaxBodyChars, available, MaxResponseChars-consumed)
+		available := len(body) - start
+		take := min(MaxBodyChars, available, MaxResponseChars-consumed)
 		consumed += take
 		header := fmt.Sprintf("===== %s | %s | 更新 %s =====",
 			stringOf(item, "id"), stringOf(item, "group_slug"), date(item["updated_at"]))
@@ -183,7 +184,7 @@ func FormatRead(items []map[string]any, offset int) string {
 		lines = append(lines, header)
 		lines = append(lines, fmt.Sprintf("# %s", stringOf(item, "title")))
 		lines = append(lines, "")
-		section := string(body[offset : offset+take])
+		section := string(body[start : start+take])
 		if section == "" {
 			section = "（正文已到结尾，无更多内容）"
 		}
@@ -195,14 +196,4 @@ func FormatRead(items []map[string]any, offset int) string {
 			idsLiteral(truncated), offset+MaxBodyChars))
 	}
 	return strings.Join(lines, "\n")
-}
-
-func minInt(values ...int) int {
-	minimum := values[0]
-	for _, value := range values[1:] {
-		if value < minimum {
-			minimum = value
-		}
-	}
-	return minimum
 }

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -298,5 +299,111 @@ func TestQueryTokenAuth(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
 		t.Fatalf("query-token status = %d", response.StatusCode)
+	}
+}
+
+func mcpText(payload map[string]any) string {
+	result, _ := payload["result"].(map[string]any)
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		return ""
+	}
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	return text
+}
+
+func mcpSession(t *testing.T, env *testEnv) string {
+	t.Helper()
+	request, _ := http.NewRequest("POST", env.server.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`))
+	request.Header.Set("Authorization", "Bearer "+adminToken)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	defer response.Body.Close()
+	return response.Header.Get("Mcp-Session-Id")
+}
+
+func groupDescription(t *testing.T, env *testEnv, slug string) string {
+	t.Helper()
+	response := env.request(t, "GET", "/api/groups", adminToken, "")
+	payload := decodeEnvelope(t, response)
+	data, _ := payload["data"].(map[string]any)
+	items, _ := data["items"].([]any)
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item["slug"] == slug {
+			text, _ := item["description"].(string)
+			return text
+		}
+	}
+	t.Fatalf("group %s not found", slug)
+	return ""
+}
+
+func TestGroupUpdateNullDoesNotClear(t *testing.T) {
+	env := setup(t)
+	before := groupDescription(t, env, "proj")
+	response := env.request(t, "PUT", "/api/groups/proj", adminToken, `{"description":null}`)
+	if response.StatusCode != 422 {
+		raw, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("null description status = %d body=%s", response.StatusCode, raw)
+	}
+	response.Body.Close()
+	if after := groupDescription(t, env, "proj"); after != before {
+		t.Fatalf("description must not be cleared: %q -> %q", before, after)
+	}
+}
+
+func TestMemoriesListEmptyStatusRejected(t *testing.T) {
+	env := setup(t)
+	response := env.request(t, "GET", "/api/memories?status=", adminToken, "")
+	defer response.Body.Close()
+	if response.StatusCode != 422 {
+		t.Fatalf("empty status must be rejected, got %d", response.StatusCode)
+	}
+}
+
+func TestMCPUpdateNullTagsAndFieldOrder(t *testing.T) {
+	env := setup(t)
+	create := env.request(t, "POST", "/api/memories", adminToken,
+		`{"group":"proj","title":"原标题","summary":"原摘要","body":"正文","tags":["a","b"]}`)
+	data, _ := decodeEnvelope(t, create)["data"].(map[string]any)
+	memoryID, _ := data["id"].(string)
+	session := mcpSession(t, env)
+
+	tagsOf := func() []any {
+		detail := env.request(t, "GET", "/api/memories/"+memoryID, adminToken, "")
+		detailData, _ := decodeEnvelope(t, detail)["data"].(map[string]any)
+		tags, _ := detailData["tags"].([]any)
+		return tags
+	}
+
+	// tags: null is a no-op, and the field echo must not mention tags.
+	nullTags := mcpCall(t, env, session,
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_update","arguments":{"id":%q,"title":"改后","tags":null}}}`, memoryID))
+	if text := mcpText(nullTags); text != "已更新记忆："+memoryID+" | 字段: title" {
+		t.Fatalf("tags:null must be a no-op, got %q", text)
+	}
+	if tags := tagsOf(); len(tags) != 2 {
+		t.Fatalf("tags must be unchanged after null, got %v", tags)
+	}
+
+	// Field echo preserves insertion order (title before summary), matching Python.
+	order := mcpCall(t, env, session,
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_update","arguments":{"id":%q,"summary":"s2","title":"t2"}}}`, memoryID))
+	if text := mcpText(order); !strings.HasSuffix(text, "字段: title, summary") {
+		t.Fatalf("field order mismatch, got %q", text)
+	}
+
+	// tags: [] clears the list.
+	mcpCall(t, env, session,
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_update","arguments":{"id":%q,"tags":[]}}}`, memoryID))
+	if tags := tagsOf(); len(tags) != 0 {
+		t.Fatalf("tags:[] must clear, got %v", tags)
 	}
 }

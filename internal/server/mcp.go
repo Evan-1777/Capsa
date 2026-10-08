@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,8 +24,6 @@ import (
 )
 
 func nowUTC() time.Time { return time.Now().UTC() }
-
-func sortStrings(values []string) { sort.Strings(values) }
 
 // Tool limits and field length caps, shared with the Web layer.
 const (
@@ -77,7 +74,7 @@ func NewMCPServer() *mcpserver.MCPServer {
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query", mcp.Description("关键词；省略时按置顶与更新时间倒序浏览")),
 		mcp.WithString("group", mcp.Description("只检索该分组；省略时检索凭据可访问的全部分组")),
-		mcp.WithNumber("limit", mcp.Description(fmt.Sprintf("返回条数上限，取值 1~%d", SearchLimit)), mcp.DefaultNumber(10)),
+		mcp.WithInteger("limit", mcp.Description(fmt.Sprintf("返回条数上限，取值 1~%d", SearchLimit)), mcp.DefaultNumber(10)),
 		mcp.WithBoolean("include_body", mcp.Description("是否把正文并入检索范围；正文命中权重低于标题与摘要，仅在元数据未命中时开启")),
 	), handleSearch)
 
@@ -91,7 +88,7 @@ func NewMCPServer() *mcpserver.MCPServer {
 		mcp.WithDescription(fmt.Sprintf("批量读取指定记忆条目的完整正文（ids 最多 %d 条）。单条正文过长时支持通过 offset 分页读取。", ReadLimit)),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithArray("ids", mcp.Required(), mcp.Description(fmt.Sprintf("记忆 id 列表，最多 %d 条", ReadLimit)), mcp.WithStringItems()),
-		mcp.WithNumber("offset", mcp.Description(fmt.Sprintf("单条正文的字符起始偏移，负数按 0 处理；单条最多返回 %d 字符", formatters.MaxBodyChars)), mcp.DefaultNumber(0)),
+		mcp.WithInteger("offset", mcp.Description(fmt.Sprintf("单条正文的字符起始偏移，负数按 0 处理；单条最多返回 %d 字符", formatters.MaxBodyChars)), mcp.DefaultNumber(0)),
 	), handleRead)
 
 	instance.AddTool(mcp.NewTool("memory_save",
@@ -114,7 +111,7 @@ func NewMCPServer() *mcpserver.MCPServer {
 		mcp.WithString("body", mcp.Description(fmt.Sprintf("新正文，不超过 %d 字符", BodyMax))),
 		mcp.WithArray("tags", mcp.Description("新标签列表；传 [] 清空标签"), mcp.WithStringItems()),
 		mcp.WithString("review_at", mcp.Description("新复核时间，ISO 8601")),
-		mcp.WithBoolean("clear_review_at", mcp.Description("置空复核时间；与 review_at 互斥")),
+		mcp.WithBoolean("clear_review_at", mcp.Description("置空复核时间；与 review_at 互斥"), mcp.DefaultBool(false)),
 		mcp.WithBoolean("pinned", mcp.Description("是否置顶")),
 	), handleUpdate)
 
@@ -413,12 +410,14 @@ func handleUpdate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 		return toolError(message)
 	}
 	fields := map[string]any{}
+	names := []string{}
 	if value, ok := arguments["title"]; ok && value != nil {
 		text, message := requireText(request.GetString("title", ""), TitleMax, "标题")
 		if message != "" {
 			return toolError(message)
 		}
 		fields["title"] = text
+		names = append(names, "title")
 	}
 	if value, ok := arguments["summary"]; ok && value != nil {
 		text, message := requireText(request.GetString("summary", ""), SummaryMax, "摘要")
@@ -426,6 +425,7 @@ func handleUpdate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 			return toolError(message)
 		}
 		fields["summary"] = text
+		names = append(names, "summary")
 	}
 	if value, ok := arguments["body"]; ok && value != nil {
 		text, message := requireText(request.GetString("body", ""), BodyMax, "正文")
@@ -433,21 +433,26 @@ func handleUpdate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 			return toolError(message)
 		}
 		fields["body"] = text
+		names = append(names, "body")
 	}
-	if _, ok := arguments["tags"]; ok {
+	if value, ok := arguments["tags"]; ok && value != nil {
 		fields["tags"] = request.GetStringSlice("tags", nil)
+		names = append(names, "tags")
 	}
 	if value, ok := arguments["pinned"]; ok && value != nil {
 		fields["pinned"] = boolToInt(request.GetBool("pinned", false))
+		names = append(names, "pinned")
 	}
 	if clearReview {
 		fields["review_at"] = nil
+		names = append(names, "review_at")
 	} else if text := request.GetString("review_at", ""); text != "" {
 		normalized, message := parseReviewAt(text)
 		if message != "" {
 			return toolError(message)
 		}
 		fields["review_at"] = normalized
+		names = append(names, "review_at")
 	}
 	if len(fields) == 0 {
 		return toolError("至少提供一个待更新字段")
@@ -459,11 +464,6 @@ func handleUpdate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 	if !updated {
 		return toolError(fmt.Sprintf("记忆 %s 不存在或无权访问", memoryID))
 	}
-	names := make([]string, 0, len(fields))
-	for name := range fields {
-		names = append(names, name)
-	}
-	sortStrings(names)
 	return toolText(fmt.Sprintf("已更新记忆：%s | 字段: %s", memoryID, strings.Join(names, ", ")))
 }
 

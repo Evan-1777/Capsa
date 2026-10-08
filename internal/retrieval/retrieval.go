@@ -289,7 +289,8 @@ func epochOf(memory map[string]any) float64 {
 }
 
 func round2(value float64) float64 {
-	return math.Round(value*100) / 100
+	// Round half to even, matching Python's round() used by the original layer.
+	return math.RoundToEven(value*100) / 100
 }
 
 // stringField reads a string field, treating nil as empty.

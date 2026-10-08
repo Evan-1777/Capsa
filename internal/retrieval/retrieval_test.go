@@ -122,3 +122,22 @@ func TestIsExpired(t *testing.T) {
 		t.Fatal("nil review_at must not be expired")
 	}
 }
+
+func TestRound2HalfToEven(t *testing.T) {
+	// Python's round() rounds half to even; 0.625 (a reachable 5/8 Jaccard) must
+	// resolve to 0.62, not the 0.63 that math.Round would produce.
+	cases := []struct {
+		in   float64
+		want float64
+	}{
+		{0.625, 0.62},
+		{0.375, 0.38},
+		{0.875, 0.88},
+		{0.627, 0.63},
+	}
+	for _, testCase := range cases {
+		if got := round2(testCase.in); got != testCase.want {
+			t.Fatalf("round2(%v) = %v, want %v", testCase.in, got, testCase.want)
+		}
+	}
+}

@@ -2,7 +2,9 @@ package db
 
 import (
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"testing"
 )
 
@@ -24,6 +26,37 @@ func TestUtcNowLexicographicOrder(t *testing.T) {
 			t.Fatalf("timestamp went backwards: %q < %q", current, previous)
 		}
 		previous = current
+	}
+}
+
+func TestTimestampLexicographicMatchesChronological(t *testing.T) {
+	// Interleave the fixed-width layout with legacy Python isoformat() rows
+	// (microseconds omitted when zero) to prove string ordering equals time
+	// ordering across both storage generations.
+	values := []string{
+		"2025-12-31T23:59:59.999999+00:00",
+		"2026-01-01T00:00:00+00:00",
+		"2026-01-01T00:00:00.000001+00:00",
+		"2026-01-01T00:00:00.500000+00:00",
+		"2026-01-01T00:00:01+00:00",
+		"2026-01-02T00:00:00+00:00",
+	}
+	byString := append([]string(nil), values...)
+	sort.Strings(byString)
+	byTime := append([]string(nil), values...)
+	sort.Slice(byTime, func(i, j int) bool {
+		left, err := ParseTimestamp(byTime[i])
+		if err != nil {
+			t.Fatalf("parse %q: %v", byTime[i], err)
+		}
+		right, err := ParseTimestamp(byTime[j])
+		if err != nil {
+			t.Fatalf("parse %q: %v", byTime[j], err)
+		}
+		return left.Before(right)
+	})
+	if !reflect.DeepEqual(byString, byTime) {
+		t.Fatalf("lexicographic order != chronological order:\n string %v\n time   %v", byString, byTime)
 	}
 }
 

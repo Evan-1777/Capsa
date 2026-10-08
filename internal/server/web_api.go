@@ -383,9 +383,9 @@ func groupUpdate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	name, hasName := payload["name"]
-	description, hasDescription := payload["description"]
-	if !hasName && !hasDescription {
+	name := payload["name"]
+	description := payload["description"]
+	if name == nil && description == nil {
 		return validation("至少提供一个待更新字段")
 	}
 	var updated map[string]any
@@ -399,14 +399,14 @@ func groupUpdate(w http.ResponseWriter, r *http.Request) error {
 		}
 		nextName := group["name"].(string)
 		nextDescription := group["description"].(string)
-		if hasName {
+		if name != nil {
 			value, message := requireText(stringValue(name), groupNameMax, "分类名称")
 			if message != "" {
 				return validation(message)
 			}
 			nextName = value
 		}
-		if hasDescription {
+		if description != nil {
 			value, err := groupDescription(description)
 			if err != nil {
 				return err
@@ -449,9 +449,9 @@ func groupDelete(w http.ResponseWriter, r *http.Request) error {
 
 func memoriesList(w http.ResponseWriter, r *http.Request) error {
 	query := r.URL.Query()
-	status := query.Get("status")
-	if status == "" {
-		status = "active"
+	status := "active"
+	if query.Has("status") {
+		status = query.Get("status")
 	}
 	if status != "active" && status != "overdue" && status != "deleted" {
 		return validation(fmt.Sprintf("status 只接受 active / overdue / deleted，本次传入 %s", status))

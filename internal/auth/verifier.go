@@ -9,7 +9,6 @@ import (
 
 // AccessToken is the verified identity of a caller: a key id and its grants.
 type AccessToken struct {
-	Token  string
 	KeyID  string
 	Grants map[string]string
 }
@@ -26,7 +25,7 @@ func IssueKey() (string, string) {
 // request so revocation takes effect immediately.
 func VerifyToken(token string) (*AccessToken, error) {
 	if admin := permissions.AdminToken(); admin != "" && token == admin {
-		return &AccessToken{Token: token, KeyID: permissions.AdminKeyID, Grants: permissions.AdminGrants}, nil
+		return &AccessToken{KeyID: permissions.AdminKeyID, Grants: permissions.AdminGrants}, nil
 	}
 	handle, err := db.Connect()
 	if err != nil {
@@ -44,5 +43,5 @@ func VerifyToken(token string) (*AccessToken, error) {
 	if err := dal.TouchLastUsedAt(handle, keyID); err != nil {
 		return nil, err
 	}
-	return &AccessToken{Token: token, KeyID: keyID, Grants: key["scopes"].(map[string]string)}, nil
+	return &AccessToken{KeyID: keyID, Grants: key["scopes"].(map[string]string)}, nil
 }
