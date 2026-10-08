@@ -117,12 +117,12 @@
 
 ## Subagent 定义
 
-以下 subagent 定义于 `.pi/agents/`，任意工作流均可引用，用户也可直接通过 `subagent_type` 调用。
+以下 subagent 定义于 `.agents/agents/`，任意工作流均可引用，用户也可直接通过 `subagent_type` 调用。
 
 | Agent | 文件 | 职责 | 默认模型 |
 |-------|------|------|---------|
-| explore | `.pi/agents/explore.md` | 只读代码库探索，返回结构化报告 | 主模型（未指定不 spawn） |
-| executor | `.pi/agents/executor.md` | Execute → Test → Doc Maintenance → Archive → Git Commit | haiku+high |
+| explore | `.agents/agents/explore.md` | 只读代码库探索，返回结构化报告 | 主模型（未指定不 spawn） |
+| executor | `.agents/agents/executor.md` | Execute → Test → Doc Maintenance → Archive → Git Commit | haiku+high |
 
 ### 通用约定
 
