@@ -1,0 +1,21 @@
+# 构建上下文瘦身：运行时产物与工具链均不入镜像上下文
+.git
+.github
+.venv
+.devtools
+.pytest_cache
+.agents
+.codebuddy
+.docs
+docs
+node_modules
+web/node_modules
+web/test-results
+web/playwright-report
+web/dist
+bin
+internal/server/static
+**/__pycache__
+*.db
+*.db-wal
+*.db-shm

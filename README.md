@@ -1,6 +1,6 @@
 # Capsa
 
-部署在个人 VPS 上的私人记忆服务。以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。
+部署在个人 VPS 上的私人记忆服务。以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。后端为单一 Go 静态二进制，常驻内存约 2MB。
 
 ## 能力与边界
 
@@ -127,7 +127,7 @@ location / {
 
 用 Caddy 反代时 `reverse_proxy` 默认不缓冲，加一行 `flush_interval -1` 显式固定该行为。Nginx Proxy Manager 在 Advanced 页签粘贴上述指令。
 
-**不要配置请求体上限**。1MB 上限由应用层的 `RequestBodyLimitMiddleware` 执行，超限返回 413。宿主侧重复配置只会产生第二处需要同步的常量。
+**不要配置请求体上限**。1MB 上限由应用层中间件执行，超限返回 413。宿主侧重复配置只会产生第二处需要同步的常量。
 
 反代加入容器的网络时，用环境变量放宽端口绑定：
 
@@ -175,7 +175,7 @@ CAPSA_ADMIN_TOKEN=<你的密钥>
 
 ## 备份与恢复
 
-备份用连接级快照生成，文件名 `capsa-YYYY-MM-DD.db`，默认保留 14 天。
+备份用 SQLite 在线快照（`VACUUM INTO`）生成，文件名 `capsa-YYYY-MM-DD.db`，默认保留 14 天。
 
 ```bash
 # 手动热备
@@ -194,7 +194,7 @@ docker compose restart capsa
 
 ## 镜像构建
 
-镜像由 GitHub Actions 手动触发构建并推送到 GHCR，`docker-compose.yml` 只拉取不构建，VPS 无需 Node 与 Python 构建链。
+镜像由 GitHub Actions 手动触发构建并推送到 GHCR，`docker-compose.yml` 只拉取不构建，VPS 无需 Node 构建链。
 
 网页入口：仓库的 Actions 页签选择 `build-image`，点击 Run workflow，填写标签。
 
@@ -213,11 +213,11 @@ gh run watch
 docker build -t ghcr.io/evan-1777/capsa:dev .
 ```
 
-`Dockerfile` 为两阶段构建：第一阶段用 `node:20-alpine` 产出前端静态文件，第二阶段用 `python:3.12-slim` 打包运行时，最终镜像不含 Node。
+`Dockerfile` 为三阶段构建：第一阶段用 `node:20-alpine` 产出前端静态文件，第二阶段用 `golang:1.27-alpine` 以 `embed` 把产物编译进单一静态二进制，第三阶段用 `alpine` 仅安装 `curl` 承载运行时。最终镜像不含 Node 与 Go 工具链。
 
 ## 运维命令速查
 
-`capsa` 命令在容器内执行，宿主机无需安装 Python。
+`capsa` 命令在容器内执行，宿主机无需安装 Go 或 Python。
 
 ```bash
 # 初始化：预置 proj/study/life/track 四个分组
@@ -249,20 +249,21 @@ docker compose exec -T capsa capsa restore /backup/capsa-2026-09-16.db
 ## 目录结构
 
 ```
-capsa/                 Python 服务
-  server.py            根 ASGI 应用：/healthz、/mcp、/api、静态页面
-  mcp_service.py       FastMCP 实例与七个工具
-  permissions.py       权限判定单一来源：permission_for 与管理级令牌
-  web_api.py           REST API：统一信封、管理员网关守卫、十个端点
-  dal.py               三态授权数据访问层，唯一 SQL 出口
-  retrieval.py         分词、打分排序（含正文低权重兜底）与近似查重
-  formatters.py        三级披露的纯文本契约
-  cli.py               init / group / key / memory / review / backup / restore
-web/                   Capsa Studio：Vite + React 18 + TypeScript + Tailwind
-tests/                 pytest 套件，含部署与工作流的静态校验
-Dockerfile             两阶段构建
-docker-compose.yml     单服务编排，只拉取镜像
-.github/workflows/     手动触发的镜像构建
+cmd/capsa/main.go       单入口：serve 子命令与 13 项管理叶子命令
+internal/
+  db/                   SQLite 连接、幂等建表与固定微秒时间戳
+  dal/                  三态授权数据访问层，唯一 SQL 出口
+  ids/                  CSPRNG 标识符与 SHA-256 令牌哈希
+  permissions/          权限判定单一来源：PermissionFor 与管理级令牌
+  auth/                 令牌校验器与 URL 查询参数鉴权中间件
+  retrieval/            分词、打分排序（含正文低权重兜底）与近似查重
+  formatters/           三级披露的纯文本契约
+  server/               根路由装配、MCP 服务、Web REST API 与内嵌 SPA
+web/                     Capsa Studio：Vite + React 18 + TypeScript + Tailwind
+tests/                   Go 集成测试（端点状态码、信封、MCP 握手）
+Dockerfile               三阶段构建：Node 产物 → Go 静态二进制 → Alpine
+docker-compose.yml       单服务编排，只拉取镜像
+.github/workflows/       手动触发的镜像构建
 ```
 
 ## 文档

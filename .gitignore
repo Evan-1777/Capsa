@@ -14,9 +14,11 @@ __pycache__/
 
 # 环境变量
 .env
+# Go 构建产物
+bin/
 # 前端工程与构建产物
 node_modules/
-capsa/static/
+internal/server/static/
 web/dist/
 web/test-results/
 web/playwright-report/

@@ -9,27 +9,28 @@ COPY web/ ./
 ENV CAPSA_STATIC_DIR=/build/static
 RUN mkdir -p $CAPSA_STATIC_DIR && npm run build
 
-# 阶段二：Python 运行时
-FROM python:3.12-slim
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    CAPSA_DB_PATH=/data/capsa.db
+# 阶段二：编译单一静态二进制（无 CGO，无外部运行时）
+FROM golang:1.27-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ cmd/
+COPY internal/ internal/
+# embed 目录由前端构建阶段注入，编译期必须非空。
+COPY --from=web-builder /build/static/ internal/server/static/
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /capsa ./cmd/capsa
 
-WORKDIR /app
+# 阶段三：Alpine 极简运行时
+FROM alpine:latest
+ENV CAPSA_DB_PATH=/data/capsa.db
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# curl 供 HEALTHCHECK 探活；非 root 用户持有数据与备份目录。
+RUN apk add --no-cache curl \
+    && adduser -D -u 1000 -s /sbin/nologin capsa \
+    && mkdir -p /data /backup \
+    && chown -R capsa:capsa /data /backup
 
-RUN useradd -m -u 1000 -s /bin/bash capsa \
-    && mkdir -p /data /backup /app/capsa/static \
-    && chown -R capsa:capsa /app /data /backup
-
-COPY --chown=capsa:capsa pyproject.toml ./
-COPY --chown=capsa:capsa capsa/ capsa/
-COPY --from=web-builder --chown=capsa:capsa /build/static/ capsa/static/
-
-RUN pip install --no-cache-dir .
+COPY --from=builder /capsa /usr/local/bin/capsa
 
 USER capsa
 EXPOSE 8000
@@ -37,4 +38,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8000/healthz || exit 1
 
-CMD ["uvicorn", "capsa.server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["capsa", "serve", "--host", "0.0.0.0", "--port", "8000"]
