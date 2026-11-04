@@ -117,17 +117,17 @@
 
 ## Subagent 定义
 
-以下 subagent 定义于 `.agents/agents/`，任意工作流均可引用，用户也可直接通过 `subagent_type` 调用。
+Subagent 经安装器部署后，由各工具（Pi / Opencode / ClaudeCode / AGY / CodeBuddy / DSH）原生机制按名称识别与加载，提示词与调用指令中不引用工具物理目录。
 
-| Agent | 文件 | 职责 | 默认模型 |
-|-------|------|------|---------|
-| explore | `.agents/agents/explore.md` | 只读代码库探索，返回结构化报告 | 主模型（未指定不 spawn） |
-| executor | `.agents/agents/executor.md` | Execute → Test → Doc Maintenance → Archive → Git Commit | haiku+high |
+| Agent | 职责 | 默认模型 |
+|-------|------|---------|
+| explore | 只读代码库探索，返回结构化报告 | 主模型（未指定不 spawn） |
+| executor | Execute → Test → Doc Maintenance → Archive → Git Commit | haiku+high |
 
 ### 通用约定
 
 所有 subagent 共享：
-- **Prompt 格式**：调用时优先用工作流模板覆盖或替换 Agent 工具的默认提示词格式；若工具接口强制要求特定格式且无法替换，保留该格式，并在其后附加完整的工作流提示词模板内容，确保目标、上下文、边界和报告要求均传达。
+- **Prompt 格式**：当用户显式调用工作流（如输入含 Main、Main-hybrid、Quick 等关键词）或处于活跃工作流生命周期（存在活跃 Plan.md / Tasks.md）时，主 Agent 派发 Subagent **必须且仅能严格使用工作流三行模版格式传入 Prompt 参数**。严禁以自由自然语言叙述替代该模版，严禁在 Prompt 中大段堆砌业务上下文或复制业务代码。当 Harness 底层调用工具含有必填元数据字段（如 `TypeName`、`Role`）时，按工具定义填入标识，但 `Prompt` 正文必须严格且仅包含三行模板。常规日常非工作流对话不施加此三行限制。
 - `inherit_context: false` — 隔离会话；以目标为单位委托，允许并行多开，同一时刻不超过 3 个
 - **嵌套**：subagent 仅由主线 spawn，被委托方不得再 spawn subagent——任务须在单层内完成
 - 执行中不与主 Agent 通信；遇障碍 `advisor` → 自行决策 → 继续；整链结束后 return 最终报告
@@ -148,22 +148,22 @@ subagent 以 `inherit_context: false` 隔离运行：不继承当前会话上下
 
 ### explore
 
-只读探索，返回结构化报告（Files Examined / Architecture Overview / Risks / Recommendations）。Spawn 时传入 `{one-line goal}`，agent 自行读取 Project.md、SCOPE.md、Plan.md、Tasks.md（缺失跳过）。
+只读探索，返回结构化报告（Files Examined / Architecture Overview / Risks / Recommendations）。Spawn 时传入 `{one-line goal / target tasks}`，agent 自行读取 Project.md、SCOPE.md、Plan.md、Tasks.md（缺失跳过）。
 
 Spawn prompt 模板：
 ```
-Goal: {one-line goal}
+Goal: {one-line goal / target tasks}
 Read: Project.md, SCOPE.md, Plan.md, Tasks.md (.docs/ or root).
 Rules: read-only, no edits; no subagents; return structured findings in explore format.
 ```
 
 ### executor
 
-执行完整交付链，返回最终报告（Status / Tasks / Test / Files Changed / Open Issues）。Spawn 时传入 `{one-line goal}`，agent 自行读取 Project.md、SCOPE.md、Plan.md、Tasks.md。
+执行完整交付链，返回最终报告（Status / Tasks / Test / Files Changed / Open Issues）。Spawn 时传入 `{one-line goal / target tasks}`，agent 自行读取 Project.md、SCOPE.md、Plan.md、Tasks.md。
 
 Spawn prompt 模板：
 ```
-Goal: {one-line goal}
+Goal: {one-line goal / target tasks}
 Read: Project.md, SCOPE.md, Plan.md, Tasks.md (.docs/ or root).
 Rules: no parent channel; no subagents; on blockers call advisor; return executor format report.
 ```
@@ -181,8 +181,8 @@ Rules: no parent channel; no subagents; on blockers call advisor; return executo
   - **交接**：Tasks.md 产出后立即结束当前回复，等待接手模型，不继续交付阶段；交接后的评审反馈与计划修订仅在规划段内处理，收到用户明确的执行指令才进入交付段。在交接处接收外部审阅报告时，须批判性吸收（严禁盲目拿来主义），对照代码库与工程纪律逐条核实正误与合理性，排查并剔除过度设计与过度安全防御，仅将确属合理有效的建议吸纳入 Plan.md 与 Tasks.md，并在回复中简要陈述采纳与驳回理由；修订后继续保持交接等待，直至收到明确执行指令
   - **交付段**：接手模型依据落盘文档建立上下文、不依赖上一会话；Explore-lite 聚焦 Plan / Task 关联的源文件与调用链，随后执行至归档提交
   - **Frontend 扩展**（输入含 "Main-hybrid" 且含 "Frontend" 时触发，如 "Main-hybrid(Frontend)"）：
-    - 规划段额外加载 `frontend-design` 与 `production-frontend` 为临时上下文，选定设计哲学；Plan 阶段额外在项目目录 `temp/` 产出前端变更 Demo（静态 HTML，浏览器直接打开）。Demo 严格依据修改范围与目标对象靶向产出（禁止全量重抄无关页面）；变更核心重点展示，强依赖上下文严格对齐既有设计与排版，弱相关或无关内容直接省略或极简色块占位；多方案须按方案创建独立文件（如 `temp/<name>-variant-a.html`），禁止单文件堆叠；以排版节奏与组件关系设计为核心，保证整体设计美观和谐；Tasks.md 与 Demo 产出后结束回复进入交接
-    - 交付段加载 `frontend-design` 与 `production-frontend`，依从规划段选定的设计哲学执行，遵循成品级表面要求，保证最终实现与设计规范一致
+    - 规划段额外加载 `frontend-design` 与 `production-frontend` 为临时上下文，选定设计哲学（Apple HIG / Microsoft Fluent / Material 3），并加载对应设计系统技能（Fluent → `fluent-design`，Material 3 → `material-3`）；Plan 阶段额外在项目目录 `temp/` 产出前端变更 Demo（静态 HTML，浏览器直接打开）。Demo 严格依据修改范围与目标对象靶向产出（禁止全量重抄无关页面）；变更核心重点展示，强依赖上下文严格对齐既有设计与排版，弱相关或无关内容直接省略或极简色块占位；多方案须按方案创建独立文件（如 `temp/<name>-variant-a.html`），禁止单文件堆叠；以排版节奏与组件关系设计为核心，保证整体设计美观和谐；Tasks.md 与 Demo 产出后结束回复进入交接
+    - 交付段加载 `frontend-design`、`production-frontend` 与规划段选定的设计系统技能，依从规划段选定的设计哲学执行，遵循成品级表面要求，保证最终实现与设计规范一致
   - **适用**：跨模型智商梯度调度、跨 Agent 工具协同交付；涉及前端界面/组件变更时使用 Main-hybrid(Frontend) 拓展
 - **Quick**（用户输入含 "Quick"）：`Explore → Formulate Tasks → Execute → Document Maintenance → Archive → Git Commit`
   - **要点**：跳过 Plan；Task 粒度更细，单 Task 修改不超过 3 个文件，禁止跨模块大重构
@@ -208,6 +208,7 @@ Rules: no parent channel; no subagents; on blockers call advisor; return executo
 - 任一阶段发现前置条件不满足，须回退至上一阶段重新执行，禁止跳过。
 - 用户未明确要求时，禁止主动创建文档文件（*.md、README 等）。
 - 所有文件操作优先使用专用工具（Read / Write / SearchReplace），避免 RunCommand 执行文件读写。
+- 工作流执行期间以中文简短通报当前阶段与必要信息，保证进度可跟踪；仅通报必要信息，不输出与进度无关的冗余内容；该通报要求在工作流执行期间优先于宿主环境的静默设定。
 </workflow>
 
 <ponytail>
