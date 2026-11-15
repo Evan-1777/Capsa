@@ -2,21 +2,29 @@
 <workflow>
 ## 工作流规则
 
-- .docs/SCOPE.md：项目定位与边界
-- .docs/Project.md：项目基本信息
-- .docs/Plan.md：当前活跃阶段计划（活跃阶段开始时按 .docs/Plan.example.md 格式创建于根目录；阶段完成后按 Archive 流程移入 .docs/）
-- .docs/Tasks.md：当前活跃阶段任务（活跃阶段开始时按 .docs/Tasks.example.md 格式创建于根目录；阶段完成后按 Archive 流程移入 .docs/）
+项目文档优先通过 `capsa-docs` MCP 服务读写，分两级作用域：
+- `scope="public"`（工作区公共只读区）：存放 `Plan.example.md`、`Tasks.example.md`、`Project.example.md` 通用模板；读取时须显式传 `scope="public"`。
+- `scope="category"`（当前项目读写区，默认作用域）：
+  - `SCOPE.md`：项目定位与边界
+  - `Project.md`：项目基本信息
+  - `Plan.md`：当前活跃阶段计划（活跃阶段开始时按公共区 `Plan.example.md` 格式创建；阶段完成后按 Archive 流程归档至 `archive/MM-DD-vN/Plan.md`）
+  - `Tasks.md`：当前活跃阶段任务（活跃阶段开始时按公共区 `Tasks.example.md` 格式创建；阶段完成后按 Archive 流程归档至 `archive/MM-DD-vN/Tasks.md`）
+
+`capsa-docs` 工具契约：
+- 只读：`doc_glob(pattern?, scope?)`、`doc_grep(pattern, is_regex?, scope?, path?, limit?)`、`doc_read(path, scope?, offset?, limit?)`
+- 写入（仅限 `scope="category"`）：`doc_create(path, content)`（防覆盖新建）、`doc_write(path, content)`（全量覆写已有文档）、`doc_edit(path, old_string, new_string, replace_all?)`（原子局部替换）、`doc_delete(path)`
+- 工作区定位：所有 `doc_*` 调用须显式传公共参数 `cwd` 为当前项目工作区绝对路径。代理桥以独立进程运行，自身工作目录与会话工作区相互独立；传入 `cwd` 方可自目标项目向上检索 `.env`，省略时回退至代理进程工作目录，导致工作区凭据漏读或错配。
 
 **进入任何阶段前，先读 SCOPE.md 与 Project.md 建立上下文；代码库变更后，须同步维护 Project.md。**
 
-> 注：根目录是否同时存在 Plan.md / Tasks.md 取决于是否有活跃阶段；阶段完成后按 Archive 流程移入 .docs/，无活跃阶段时根目录仅保留 .docs/ 中的 example 模板。
+> **本地降级约定**：若当前项目未配置 `CAPSA_DOCS_TOKEN`（`capsa-docs` 工具列表为空或服务未挂载），自动回退读写本地 `.docs/`（`SCOPE.md`、`Project.md`、`*.example.md` 及归档 `.docs/MM-DD-vN/`）与项目根目录（活跃期 `Plan.md` / `Tasks.md`）。
 
 ## 工作流阶段定义
 
 ### Explore
 
 - **任务**：
-  1. 阅读 `.docs/SCOPE.md` 与 `.docs/Project.md` 了解项目定位与基本信息
+  1. 通过 `doc_read` 读取 `SCOPE.md` 与 `Project.md`（降级时读本地 `.docs/SCOPE.md` 与 `.docs/Project.md`）了解项目定位与基本信息
   2. 阅读用户提供的全部上下文（代码片段、报错、需求描述）
   3. 检索相关文件，理解现有架构与依赖关系
   4. 识别关键模块、数据流与潜在冲突点
@@ -32,7 +40,7 @@
   3. 评估风险并记录关键决策
   4. 评估 Subagent 协同需求，输出协同规划结论（基于三维权衡，明确各 Phase 哪些移交 Subagent 并行、哪些保留主线；收益不足或上下文强相关时不强制使用，保持克制）
 - **约束**：
-  - 计划必须写入 Plan.md
+  - 按公共区 `Plan.example.md`（`doc_read(path="Plan.example.md", scope="public")`，降级时读本地 `.docs/Plan.example.md`）格式，通过 `doc_create` / `doc_write` 写入 `Plan.md`（降级时写入本地根目录 `Plan.md`）
   - 阶段粒度不超过 5 个
   - 禁止切换到 Plan Mode —— 本阶段为工作流内的 Plan 阶段，直接在当前对话中产出文档
 
@@ -53,13 +61,13 @@
   2. 每个 Task 须含：编号、状态、执行主体（主线 / Subagent: <agent名>）、描述、Details、验收标准
   3. 标注依赖关系与优先级
 - **约束**：
-  - 必须写入 Tasks.md
+  - 按公共区 `Tasks.example.md`（`doc_read(path="Tasks.example.md", scope="public")`，降级时读本地 `.docs/Tasks.example.md`）格式，通过 `doc_create` / `doc_write` 写入 `Tasks.md`（降级时写入本地根目录 `Tasks.md`）
   - 禁止出现模糊动词（如"优化""完善"），须用可验证动作（如"添加校验""重构为函数"）
 
 ### Execute
 
 - **任务**：
-  1. 按 Task 顺序执行，每完成一项更新状态为 DONE
+  1. 按 Task 顺序执行，每完成一项通过 `doc_edit`（降级时用本地编辑工具）将 `Tasks.md` 对应状态更新为 `DONE`
 - **约束**：
   - 动手修改前须针对当前 Task 相关文件进行必要探索，确认实现细节与调用约定
   - 禁止批量修改无关文件
@@ -78,10 +86,10 @@
 ### Document Maintenance
 
 - **任务**：
-  1. 更新 Project.md（架构变更、新增依赖、接口变动）
-  2. 清理临时文件与无效配置
+  1. 通过 `doc_edit` / `doc_write`（首次创建用 `doc_create`；降级时更新本地 `.docs/Project.md`）更新 `Project.md`（架构变更、新增依赖、接口变动）
+  2. 清理本地临时文件与无效配置
 - **约束**：
-  - Project.md 必须与代码库实际状态一致
+  - `Project.md` 必须与代码库实际状态一致
   - 禁止遗留过期文档
 
 ### Git Commit
@@ -91,10 +99,10 @@
   2. 执行 `git diff` 检查暂存与未暂存的改动
   3. 执行 `git log` 查看最近提交记录，保持提交风格一致
   4. 基于变更内容草拟简洁、有意义的提交信息（聚焦"为什么"而非"是什么"）
-  5. 将相关文件加入暂存区并提交
+  5. 将业务代码与受管配置变更加入暂存区并提交
 - **约束**：
   - 项目未初始化 Git 仓库时，跳过本阶段
-  - 禁止提交包含密钥的文件（.env、credentials.json 等）
+  - 只提交业务代码与配置变更，严禁提交 `.env`、`credentials.json` 等包含密钥的文件
   - 禁止使用 `--no-verify`、`--no-gpg-sign` 跳过钩子（除非用户明确要求）
   - 禁止执行破坏性命令（`push --force`、`hard reset`）除非用户明确要求
   - 提交失败或被钩子拒绝时，修复问题后创建新提交，禁止使用 `--amend`
@@ -103,17 +111,19 @@
 
 ### Archive
 
-- **触发条件**：Document Maintenance 完成后，根目录存在已完成的 Plan.md / Tasks.md
+- **触发条件**：Document Maintenance 完成后，存在已完成的活跃 `Plan.md` / `Tasks.md`（`capsa-docs` 当前分类或降级模式下本地根目录）
 - **任务**：
   1. 确定归档目录名：格式 `MM-DD-vN`
     - `MM-DD`：当前日期（月、日各两位，前导零）
-    - `vN`：当天递增版本号，从 `v1` 开始；查询 `.docs/` 下同日前缀目录，取最大 N 加 1
-  2. 将根目录 `Plan.md` 与 `Tasks.md` 移入 `.docs/<归档目录名>/`
-  3. 校验：`.docs/<归档目录名>/` 同时含 `Plan.md` 与 `Tasks.md`，根目录无残留
+    - `vN`：当天递增版本号，从 `v1` 开始；通过 `doc_glob(pattern="archive/MM-DD-v*", scope="category")` 查询同日前缀归档（降级时查询本地 `.docs/` 下同日前缀目录），取最大 N 加 1
+  2. 归档迁移：
+    - `capsa-docs` 模式：`doc_read` 读取活跃 `Plan.md` 与 `Tasks.md` → `doc_create` 写入 `archive/<归档目录名>/Plan.md` 与 `archive/<归档目录名>/Tasks.md` → `doc_delete` 移除活跃 `Plan.md` 与 `Tasks.md`
+    - 本地降级模式：将根目录 `Plan.md` 与 `Tasks.md` 移入 `.docs/<归档目录名>/`
+  3. 校验：归档目录同时含 `Plan.md` 与 `Tasks.md`，活跃区无残留 `Plan.md` / `Tasks.md`
 - **约束**：
-  - 归档前须确保 Plan.md / Tasks.md 已标注 `状态：DONE`，含完成日期与回归测试结论
-  - 根目录不允许残留已完成的 Plan.md / Tasks.md
-- **例外**：若下一阶段紧接开始（用户立即给出"继续下一 Phase"指令），可保留根目录文件作为新阶段起点，阶段全部完成后仍须归档。
+  - 归档前须确保 `Plan.md` / `Tasks.md` 已标注 `状态：DONE`，含完成日期与回归测试结论
+  - 活跃区不允许残留已完成的 `Plan.md` / `Tasks.md`
+- **例外**：若下一阶段紧接开始（用户立即给出"继续下一 Phase"指令），可保留活跃 `Plan.md` / `Tasks.md` 作为新阶段起点，阶段全部完成后仍须归档。
 
 ## Subagent 定义
 
@@ -148,23 +158,23 @@ subagent 以 `inherit_context: false` 隔离运行：不继承当前会话上下
 
 ### explore
 
-只读探索，返回结构化报告（Files Examined / Architecture Overview / Risks / Recommendations）。Spawn 时传入 `{one-line goal / target tasks}`，agent 自行读取 Project.md、SCOPE.md、Plan.md、Tasks.md（缺失跳过）。
+只读探索，返回结构化报告（Files Examined / Architecture Overview / Risks / Recommendations）。Spawn 时传入 `{one-line goal / target tasks}`，agent 自行通过 `capsa-docs`（未挂载时回退本地 `.docs/` 或根目录）读取 `Project.md`、`SCOPE.md`、`Plan.md`、`Tasks.md`（缺失跳过）。
 
 Spawn prompt 模板：
 ```
 Goal: {one-line goal / target tasks}
-Read: Project.md, SCOPE.md, Plan.md, Tasks.md (.docs/ or root).
+Read: Project.md, SCOPE.md, Plan.md, Tasks.md (via capsa-docs with cwd=project workspace root; fallback .docs/ or root).
 Rules: read-only, no edits; no subagents; return structured findings in explore format.
 ```
 
 ### executor
 
-执行完整交付链，返回最终报告（Status / Tasks / Test / Files Changed / Open Issues）。Spawn 时传入 `{one-line goal / target tasks}`，agent 自行读取 Project.md、SCOPE.md、Plan.md、Tasks.md。
+执行完整交付链，返回最终报告（Status / Tasks / Test / Files Changed / Open Issues）。Spawn 时传入 `{one-line goal / target tasks}`，agent 自行通过 `capsa-docs`（未挂载时回退本地 `.docs/` 或根目录）读取并维护 `Project.md`、`SCOPE.md`、`Plan.md`、`Tasks.md`。
 
 Spawn prompt 模板：
 ```
 Goal: {one-line goal / target tasks}
-Read: Project.md, SCOPE.md, Plan.md, Tasks.md (.docs/ or root).
+Read: Project.md, SCOPE.md, Plan.md, Tasks.md (via capsa-docs with cwd=project workspace root; fallback .docs/ or root).
 Rules: no parent channel; no subagents; on blockers call advisor; return executor format report.
 ```
 
@@ -174,14 +184,14 @@ Rules: no parent channel; no subagents; on blockers call advisor; return executo
 
 - **Main**（用户输入含 "Main"）：`Explore → Plan → Formulate Tasks → Execute → Test → Document Maintenance → Archive → Git Commit`
 - **Init**（用户输入含 "Init"）：`Explore → 生成/更新 Project.md → Git Commit`
-  - **流程**：读 `.docs/SCOPE.md` 与 `Project.example.md`，Explore 代码库结构与约定（空项目跳过），按模板填充 `.docs/Project.md`，再提交
+  - **流程**：通过 `doc_read` 读取 `SCOPE.md` 与公共区 `Project.example.md`（`scope="public"`；降级时读本地 `.docs/SCOPE.md` 与 `.docs/Project.example.md`），Explore 代码库结构与约定（空项目跳过），按模板通过 `doc_create` / `doc_write` 填充 `Project.md`（降级时写入 `.docs/Project.md`），存在本地代码库变更时提交
   - **适用**：`git init` 后建立基线；项目演进后文档脱节时刷新
 - **Main-hybrid**（用户输入含 "Main-hybrid"）：`Explore → Plan → Formulate Tasks` ‖ `Explore-lite → Execute → Test → Document Maintenance → Archive → Git Commit`
   - **规划段**：以 `engineering-discipline` 为会话临时上下文，深读 SCOPE / Project 与代码库，产出 Plan.md 与可机械验证的 Tasks.md
   - **交接**：Tasks.md 产出后立即结束当前回复，等待接手模型，不继续交付阶段；交接后的评审反馈与计划修订仅在规划段内处理，收到用户明确的执行指令才进入交付段。在交接处接收外部审阅报告时，须批判性吸收（严禁盲目拿来主义），对照代码库与工程纪律逐条核实正误与合理性，排查并剔除过度设计与过度安全防御，仅将确属合理有效的建议吸纳入 Plan.md 与 Tasks.md，并在回复中简要陈述采纳与驳回理由；修订后继续保持交接等待，直至收到明确执行指令
-  - **交付段**：接手模型依据落盘文档建立上下文、不依赖上一会话；Explore-lite 聚焦 Plan / Task 关联的源文件与调用链，随后执行至归档提交
+  - **交付段**：接手模型依据 `capsa-docs` 文档（降级时为本地落盘文档）建立上下文、不依赖上一会话；Explore-lite 聚焦 Plan / Task 关联的源文件与调用链，随后执行至归档提交
   - **Frontend 扩展**（输入含 "Main-hybrid" 且含 "Frontend" 时触发，如 "Main-hybrid(Frontend)"）：
-    - 规划段额外加载 `frontend-design` 与 `production-frontend` 为临时上下文，选定设计哲学（Apple HIG / Microsoft Fluent / Material 3），并加载对应设计系统技能（Fluent → `fluent-design`，Material 3 → `material-3`）；Plan 阶段额外在项目目录 `temp/` 产出前端变更 Demo（静态 HTML，浏览器直接打开）。Demo 严格依据修改范围与目标对象靶向产出（禁止全量重抄无关页面）；变更核心重点展示，强依赖上下文严格对齐既有设计与排版，弱相关或无关内容直接省略或极简色块占位；多方案须按方案创建独立文件（如 `temp/<name>-variant-a.html`），禁止单文件堆叠；以排版节奏与组件关系设计为核心，保证整体设计美观和谐；Tasks.md 与 Demo 产出后结束回复进入交接
+    - 规划段额外加载 `frontend-design` 与 `production-frontend` 为临时上下文，选定设计哲学（Apple HIG / Microsoft Fluent / Material 3），并加载对应设计系统技能（Fluent → `fluent-design`，Material 3 → `material-3`）；Plan 阶段额外在本地项目目录 `temp/` 产出前端变更 Demo（静态 HTML，浏览器直接打开）。Demo 严格依据修改范围与目标对象靶向产出（禁止全量重抄无关页面）；变更核心重点展示，强依赖上下文严格对齐既有设计与排版，弱相关或无关内容直接省略或极简色块占位；多方案须按方案创建独立文件（如 `temp/<name>-variant-a.html`），禁止单文件堆叠；以排版节奏与组件关系设计为核心，保证整体设计美观和谐；Tasks.md 与 Demo 产出后结束回复进入交接
     - 交付段加载 `frontend-design`、`production-frontend` 与规划段选定的设计系统技能，依从规划段选定的设计哲学执行，遵循成品级表面要求，保证最终实现与设计规范一致
   - **适用**：跨模型智商梯度调度、跨 Agent 工具协同交付；涉及前端界面/组件变更时使用 Main-hybrid(Frontend) 拓展
 - **Quick**（用户输入含 "Quick"）：`Explore → Formulate Tasks → Execute → Document Maintenance → Archive → Git Commit`
@@ -193,7 +203,7 @@ Rules: no parent channel; no subagents; on blockers call advisor; return executo
   - **要点**：Explore 扩大检索与阅读范围；Plan 产出正式文档，须用户审核通过后方可继续
 - **Review**（用户输入含 "Review" 或"复审"）：只读质量审计，不修改文件、不产出 Plan / Tasks
   - **范围**：用户自然语言指定优先，未指定时按默认范围
-  - **默认范围**：根目录存在未归档 `Plan.md` / `Tasks.md` 时，审核其能否直接落地执行、有无漏洞与考虑不周；否则审核最近一次归档交付的实际改动（代码、内容与任务质量）
+  - **默认范围**：存在未归档活跃 `Plan.md` / `Tasks.md`（`capsa-docs` 当前分类，降级时为本地根目录）时，审核其能否直接落地执行、有无漏洞与考虑不周；否则审核最近一次归档（`archive/MM-DD-vN/`，降级时为 `.docs/MM-DD-vN/`）交付的实际改动（代码、内容与任务质量）
   - **基准**：按名称加载 `engineering-discipline`
   - **理念**：不吹毛求疵；问题须指向实际风险与根因
   - **维度**：将「过度设计（非必要的过度扩张性与过度安全防御）」列为必要审计与评分维度，重点排查违背 YAGNI 的未证实抽象、过度防御性分支/配置膨胀及脱离实际的极端边界臆测
@@ -207,7 +217,7 @@ Rules: no parent channel; no subagents; on blockers call advisor; return executo
 
 - 任一阶段发现前置条件不满足，须回退至上一阶段重新执行，禁止跳过。
 - 用户未明确要求时，禁止主动创建文档文件（*.md、README 等）。
-- 所有文件操作优先使用专用工具（Read / Write / SearchReplace），避免 RunCommand 执行文件读写。
+- 项目文档操作优先使用 `capsa-docs` 的 `doc_*` 工具，本地文件操作优先使用专用工具（Read / Write / SearchReplace），避免 RunCommand 执行文件读写。
 - 工作流执行期间以中文简短通报当前阶段与必要信息，保证进度可跟踪；仅通报必要信息，不输出与进度无关的冗余内容；该通报要求在工作流执行期间优先于宿主环境的静默设定。
 </workflow>
 

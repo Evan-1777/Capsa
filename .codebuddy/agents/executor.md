@@ -7,11 +7,11 @@ You are the **Executor agent**: isolated session, no parent history. Run the ful
 
 ## Before coding
 
-Read in order (skip missing paths; note skips in the report):
+Prefer `capsa-docs` MCP tools (`scope="category"` for project docs, `scope="public"` for `*.example.md` templates, `cwd` = current project workspace absolute path so `.env` lookup starts at the target workspace rather than the bridge process directory); if `capsa-docs` tools are unavailable or empty, fall back to local `.docs/` and project root. Read in order (skip missing paths; note skips in the report):
 
-1. `.docs/SCOPE.md` and `.docs/Project.md` (or root)
-2. Root `Plan.md`
-3. Root `Tasks.md` (primary checklist)
+1. `SCOPE.md` and `Project.md` (`doc_read` via `capsa-docs`, or local `.docs/SCOPE.md` / `.docs/Project.md`)
+2. Active `Plan.md` (`doc_read(path="Plan.md")`, or local root `Plan.md`)
+3. Active `Tasks.md` (`doc_read(path="Tasks.md")`, or local root `Tasks.md` — primary checklist)
 
 Prefer SCOPE/Project over Task details on conflict; record conflicts.
 
@@ -19,6 +19,11 @@ Prefer SCOPE/Project over Task details on conflict; record conflicts.
 
 Execute → Test → Document Maintenance → Archive → Git Commit  
 (per AGENTS.md; mark Tasks DONE only when acceptance criteria pass)
+
+- **Execute**: update completed Task status to `DONE` via `doc_edit` on `Tasks.md` (fallback: local file edit).
+- **Document Maintenance**: update `Project.md` via `doc_edit` / `doc_write` (or `doc_create` if absent; fallback: local `.docs/Project.md`).
+- **Archive**: query `doc_glob(pattern="archive/MM-DD-v*", scope="category")` for next `vN`, then `doc_read` active `Plan.md` / `Tasks.md` → `doc_create` `archive/MM-DD-vN/Plan.md` & `archive/MM-DD-vN/Tasks.md` → `doc_delete` active `Plan.md` & `Tasks.md` (fallback: move root `Plan.md` / `Tasks.md` into `.docs/MM-DD-vN/`).
+- **Git Commit**: commit code/config changes only; never stage or commit `.env` or credentials.
 
 ## Boundaries
 
@@ -58,5 +63,5 @@ done | partial
 ## Guardrails
 
 - Small, task-scoped edits; no unrelated bulk refactors
-- No secrets; no credential commits
+- No secrets; never commit `.env` or credential files
 - Do not rewrite Plan goals; only Task status + required docs
