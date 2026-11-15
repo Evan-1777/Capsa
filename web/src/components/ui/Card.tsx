@@ -1,15 +1,21 @@
 import React from "react";
 
 export interface CardProps extends React.HTMLAttributes<HTMLElement> {
-  as?: "div" | "article" | "ul" | "ol" | "li";
+  as?: "div" | "article" | "section" | "ul" | "ol" | "li";
+  variant?: "outlined" | "filled";
 }
 
+const VARIANTS = {
+  outlined: "border border-outline-variant bg-surface-container-low",
+  filled: "bg-surface-container",
+};
+
 export const Card = React.forwardRef<HTMLElement, CardProps>(
-  ({ as: Component = "div", className = "", children, ...props }, ref) => {
+  ({ as: Component = "div", variant = "outlined", className = "", children, ...props }, ref) => {
     return (
       <Component
         ref={ref as never}
-        className={`rounded-md border border-stroke bg-surface text-foreground shadow-card transition-colors ${className}`}
+        className={`rounded-md text-on-surface ${VARIANTS[variant]} ${className}`}
         {...(props as object)}
       >
         {children}

@@ -1,11 +1,28 @@
 import React from "react";
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: "primary" | "secondary" | "danger" | "warning";
+  variant?: "primary" | "tonal" | "secondary" | "text" | "danger" | "warning";
   size?: "sm" | "md";
   busy?: boolean;
   busyText?: string;
 }
+
+const BASE =
+  "md-state-layer inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full font-medium transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-[0.38] disabled:cursor-not-allowed";
+
+const SIZES = {
+  sm: "h-8 px-4 text-label-large",
+  md: "h-10 px-6 text-label-large",
+};
+
+const VARIANTS = {
+  primary: "bg-primary text-on-primary",
+  tonal: "bg-secondary-container text-on-secondary-container",
+  secondary: "border border-outline bg-transparent text-on-surface",
+  text: "bg-transparent text-primary",
+  danger: "bg-error text-on-error",
+  warning: "bg-warning-container text-on-warning-container",
+};
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   (
@@ -21,27 +38,12 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     },
     ref,
   ) => {
-    const base =
-      "inline-flex items-center justify-center font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed";
-
-    const sizes = {
-      sm: "px-2.5 py-1 text-xs rounded",
-      md: "px-3.5 py-1.5 text-sm rounded",
-    };
-
-    const variants = {
-      primary: "bg-brand text-fill-foreground hover:bg-brand-hover active:bg-brand-pressed border border-transparent",
-      secondary: "bg-surface text-foreground border border-stroke hover:bg-background active:bg-surface",
-      danger: "bg-danger text-fill-foreground hover:bg-danger-hover active:bg-danger-pressed border border-transparent",
-      warning: "bg-warning text-fill-foreground hover:opacity-90 active:opacity-80 border border-transparent",
-    };
-
     return (
       <button
         ref={ref}
         disabled={disabled || busy}
         aria-busy={busy || undefined}
-        className={`${base} ${sizes[size]} ${variants[variant]} ${className}`}
+        className={`${BASE} ${SIZES[size]} ${VARIANTS[variant]} ${className}`}
         {...props}
       >
         {busy && busyText ? busyText : children}
@@ -50,3 +52,33 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   },
 );
 Button.displayName = "Button";
+
+export interface IconButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  /** standard 为纯图标；tonal 为带填充的图标按钮。 */
+  variant?: "standard" | "tonal";
+  /** 切换态：选中时套用 secondary-container 并透出 aria-pressed。 */
+  selected?: boolean;
+}
+
+export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
+  ({ variant = "standard", selected = false, className = "", children, ...props }, ref) => {
+    const tone = selected
+      ? "bg-secondary-container text-on-secondary-container"
+      : variant === "tonal"
+        ? "bg-surface-container-highest text-on-surface-variant"
+        : "text-on-surface-variant";
+
+    return (
+      <button
+        ref={ref}
+        type="button"
+        aria-pressed={selected || undefined}
+        className={`md-state-layer inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-[0.38] disabled:cursor-not-allowed ${tone} ${className}`}
+        {...props}
+      >
+        {children}
+      </button>
+    );
+  },
+);
+IconButton.displayName = "IconButton";

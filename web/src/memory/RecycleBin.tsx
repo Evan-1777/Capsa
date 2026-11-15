@@ -1,7 +1,6 @@
 import { useState } from "react";
 
 import { api } from "../api";
-import { useAsync } from "../useAsync";
 import {
   Button,
   Card,
@@ -9,7 +8,8 @@ import {
   ErrorBanner,
   Skeleton,
   UnauthorizedState,
-} from "./ui";
+} from "../components/ui";
+import { useAsync } from "../useAsync";
 
 export function RecycleBin() {
   const [version, setVersion] = useState(0);
@@ -36,20 +36,20 @@ export function RecycleBin() {
   return (
     <div className="mx-auto max-w-3xl space-y-3 px-5 py-6">
       <div className="space-y-1">
-        <h1 className="text-sm font-semibold tracking-tight text-foreground">回收站</h1>
+        <h1 className="text-headline-small text-on-surface">回收站</h1>
         {failure && (
-          <p role="alert" className="text-xs text-danger">
+          <p role="alert" className="text-body-small text-error">
             {failure}
           </p>
         )}
       </div>
 
-      <Card as="ul" role="list" className="divide-y divide-stroke overflow-hidden">
+      <Card as="ul" role="list" variant="outlined" className="divide-y divide-outline-variant overflow-hidden">
         {items.map((item) => (
           <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
             <div className="min-w-0 space-y-1">
-              <p className="truncate text-body font-medium text-foreground">{item.title}</p>
-              <p className="truncate text-caption text-muted">
+              <p className="truncate text-title-small text-on-surface">{item.title}</p>
+              <p className="truncate text-body-small text-on-surface-variant">
                 {item.group_slug} · 删除于 {item.deleted_at?.slice(0, 10)} · {item.deleted_reason}
               </p>
             </div>

@@ -1,24 +1,16 @@
 import { useEffect, useState } from "react";
 
 import { ApiError, api, clearKey, getKey, setUnauthorizedHandler } from "./api";
-import { GroupManager } from "./components/GroupManager";
-import { KeyManager } from "./components/KeyManager";
-import { Login } from "./components/Login";
-import { MemoryWorkspace } from "./components/MemoryList";
-import { RecycleBin } from "./components/RecycleBin";
-import { ReviewCenter } from "./components/ReviewCenter";
-import { Sidebar, VIEWS, type View } from "./components/Sidebar";
-import { TopBar } from "./components/TopBar";
 import { Skeleton, UnauthorizedState } from "./components/ui";
-import type { GroupInfo, KeyInfo } from "./types";
+import { MemoryApp } from "./memory/MemoryApp";
+import { Login } from "./shell";
+import type { KeyInfo } from "./types";
 
+/** 全局守卫：只负责鉴权会话与主题持久化，业务视图全部下沉到 MemoryApp。 */
 export default function App() {
   const [info, setInfo] = useState<KeyInfo | null>(null);
-  const [groups, setGroups] = useState<GroupInfo[]>([]);
-  const [view, setView] = useState<View>("workbench");
   const [loading, setLoading] = useState(true);
   const [expired, setExpired] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
 
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     return (
@@ -53,11 +45,11 @@ export default function App() {
     (async () => {
       try {
         const me = await api.me();
-        const listed = await api.groups();
         if (!active) return;
         setInfo(me);
-        setGroups(listed.items);
+        setExpired(false);
       } catch (error) {
+        // 401 已由 api 层清空凭据并触发 unauthorized 处理器，此处只兜住其余失败。
         if (active && error instanceof ApiError && error.code !== "UNAUTHORIZED") {
           clearKey();
         }
@@ -70,27 +62,19 @@ export default function App() {
     };
   }, []);
 
-  async function refreshGroups() {
-    const listed = await api.groups();
-    setGroups(listed.items);
-  }
-
-  async function connect(_key: string, me: KeyInfo) {
-    await refreshGroups();
+  function connect(_key: string, me: KeyInfo) {
     setExpired(false);
     setInfo(me);
-    setView("workbench");
   }
 
   function signOut() {
     clearKey();
     setInfo(null);
-    setGroups([]);
   }
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-background">
+      <main className="min-h-screen bg-surface">
         <Skeleton rows={3} />
       </main>
     );
@@ -98,7 +82,7 @@ export default function App() {
 
   if (!info) {
     return expired ? (
-      <main className="grid min-h-screen place-items-center bg-background px-4">
+      <main className="grid min-h-screen place-items-center bg-surface px-4">
         <UnauthorizedState />
       </main>
     ) : (
@@ -106,44 +90,12 @@ export default function App() {
     );
   }
 
-  const currentViewItem = VIEWS.find((v) => v.id === view) ?? VIEWS[0];
-
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <Sidebar
-        currentView={view}
-        onSelectView={setView}
-        mobileOpen={mobileOpen}
-        onCloseMobile={() => setMobileOpen(false)}
-        info={info}
-      />
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <TopBar
-          currentViewLabel={currentViewItem.label}
-          onToggleMobile={() => setMobileOpen((open) => !open)}
-          onSignOut={signOut}
-          theme={theme}
-          onToggleTheme={toggleTheme}
-          info={info}
-        />
-        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {view === "workbench" && (
-            <MemoryWorkspace groups={groups} onManageGroups={() => setView("groups")} />
-          )}
-          {view === "groups" && <GroupManager groups={groups} onGroupsChange={refreshGroups} />}
-          {view === "keys" && <KeyManager groups={groups} currentKeyId={info.key_id} />}
-          {view === "review" && (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <ReviewCenter />
-            </div>
-          )}
-          {view === "recycle" && (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <RecycleBin />
-            </div>
-          )}
-        </main>
-      </div>
-    </div>
+    <MemoryApp
+      info={info}
+      theme={theme}
+      onToggleTheme={toggleTheme}
+      onSignOut={signOut}
+    />
   );
 }

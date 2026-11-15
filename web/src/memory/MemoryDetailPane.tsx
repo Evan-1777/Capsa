@@ -2,10 +2,19 @@ import { Pencil, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { api } from "../api";
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  FormField,
+  Input,
+  Skeleton,
+  UnauthorizedState,
+} from "../components/ui";
 import type { MemoryDetail } from "../types";
 import type { AsyncState } from "../useAsync";
 import { Markdown } from "./Markdown";
-import { Button, FormField, Input, Skeleton, EmptyState, ErrorBanner, UnauthorizedState } from "./ui";
 
 export function MemoryDetailPane({
   state,
@@ -42,55 +51,38 @@ export function MemoryDetailPane({
   }
 
   return (
-    <article className="mx-auto max-w-3xl space-y-5 px-5 py-6">
-      <Button
-        variant="secondary"
-        size="sm"
-        onClick={onBack}
-        className="mb-1 md:hidden"
-      >
+    <article className="mx-auto max-w-3xl space-y-6 px-5 py-6">
+      <Button variant="text" size="sm" onClick={onBack} className="px-2 md:hidden">
         返回列表
       </Button>
 
-      <header className="space-y-3 border-b border-stroke pb-5">
+      <header className="space-y-4 border-b border-outline-variant pb-5">
         <div className="flex items-start justify-between gap-3">
-          <h1 className="text-lg font-semibold leading-7 tracking-tight text-foreground">
-            {memory.title}
-          </h1>
+          <h1 className="text-headline-small text-on-surface">{memory.title}</h1>
           <div className="flex shrink-0 items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => onEdit(memory)}
-              className="gap-1.5"
-            >
+            <Button variant="tonal" size="sm" onClick={() => onEdit(memory)}>
               <Pencil className="h-3.5 w-3.5" aria-hidden />
               <span>编辑</span>
             </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setConfirming(true)}
-              className="gap-1.5"
-            >
+            <Button variant="secondary" size="sm" onClick={() => setConfirming(true)}>
               <Trash2 className="h-3.5 w-3.5" aria-hidden />
               <span>删除</span>
             </Button>
           </div>
         </div>
 
-        <dl className="flex flex-wrap gap-x-4 gap-y-1.5 text-caption text-muted">
+        <dl className="flex flex-wrap gap-x-4 gap-y-1.5 text-body-small text-on-surface-variant">
           <div className="flex gap-1.5">
             <dt>分组</dt>
-            <dd className="text-foreground font-medium">{memory.group_slug}</dd>
+            <dd className="font-medium text-on-surface">{memory.group_slug}</dd>
           </div>
           <div className="flex gap-1.5">
             <dt>更新</dt>
-            <dd className="text-foreground">{memory.updated_at.slice(0, 10)}</dd>
+            <dd className="text-on-surface">{memory.updated_at.slice(0, 10)}</dd>
           </div>
           <div className="flex gap-1.5">
             <dt>复核</dt>
-            <dd className={memory.is_overdue ? "text-warning font-medium" : "text-foreground"}>
+            <dd className={memory.is_overdue ? "font-medium text-warning" : "text-on-surface"}>
               {memory.review_at ? memory.review_at.slice(0, 10) : "未设置"}
               {memory.is_overdue && " · 已过期"}
             </dd>
@@ -98,18 +90,18 @@ export function MemoryDetailPane({
           {memory.tags.length > 0 && (
             <div className="flex gap-1.5">
               <dt>标签</dt>
-              <dd className="text-foreground">{memory.tags.join("、")}</dd>
+              <dd className="text-on-surface">{memory.tags.join("、")}</dd>
             </div>
           )}
         </dl>
 
-        <p className="text-body leading-6 text-muted">{memory.summary}</p>
+        <p className="text-body-large text-on-surface-variant">{memory.summary}</p>
       </header>
 
       <Markdown>{memory.body}</Markdown>
 
       {confirming && (
-        <div className="space-y-3 rounded-md border border-stroke bg-surface p-4 shadow-card">
+        <Card variant="filled" className="space-y-3 p-4">
           <FormField label="删除原因" id="delete-reason-input">
             <Input
               id="delete-reason-input"
@@ -120,28 +112,19 @@ export function MemoryDetailPane({
             />
           </FormField>
           {failure && (
-            <p role="alert" className="text-xs text-danger">
+            <p role="alert" className="text-body-small text-error">
               {failure}
             </p>
           )}
           <div className="flex gap-2">
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={remove}
-              disabled={!reason.trim()}
-            >
+            <Button variant="danger" size="sm" onClick={remove} disabled={!reason.trim()}>
               移入回收站
             </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setConfirming(false)}
-            >
+            <Button variant="text" size="sm" onClick={() => setConfirming(false)}>
               取消
             </Button>
           </div>
-        </div>
+        </Card>
       )}
     </article>
   );

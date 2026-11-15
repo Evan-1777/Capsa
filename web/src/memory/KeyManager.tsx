@@ -2,7 +2,6 @@ import { AlertTriangle, Check, Copy, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
-import type { CreatedKeyResult, GroupInfo, KeyRecord, Permission } from "../types";
 import {
   Badge,
   Button,
@@ -13,7 +12,8 @@ import {
   FormField,
   Input,
   Skeleton,
-} from "./ui";
+} from "../components/ui";
+import type { CreatedKeyResult, GroupInfo, KeyRecord, Permission } from "../types";
 
 const NAME_MAX = 60;
 
@@ -69,22 +69,17 @@ export function KeyManager({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-background">
+    <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
       <div className="mx-auto max-w-3xl space-y-4 px-5 py-6">
         <div className="flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-sm font-semibold tracking-tight text-foreground">凭据管理</h1>
-            <p className="text-xs text-muted">
+          <div className="space-y-0.5">
+            <h1 className="text-headline-small text-on-surface">凭据管理</h1>
+            <p className="text-body-medium text-on-surface-variant">
               管理 Agent 访问凭据，签发分组权限 Key 与吊销废弃 Key
             </p>
           </div>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => setIssuing(true)}
-            className="gap-1.5"
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden />
+          <Button variant="primary" size="sm" onClick={() => setIssuing(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
             <span>签发 Key</span>
           </Button>
         </div>
@@ -97,11 +92,7 @@ export function KeyManager({
           <EmptyState
             message="暂无凭据"
             action={
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setIssuing(true)}
-              >
+              <Button variant="primary" size="sm" onClick={() => setIssuing(true)}>
                 签发 Key
               </Button>
             }
@@ -113,63 +104,51 @@ export function KeyManager({
               const isRevoked = Boolean(key.revoked_at);
 
               return (
-                <Card
-                  as="li"
-                  key={key.id}
-                  className="space-y-3 p-4"
-                >
+                <Card as="li" key={key.id} className="space-y-3 p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-body font-semibold text-foreground">
-                          {key.name}
-                        </span>
-                        <span className="font-mono text-caption text-muted">{key.id}</span>
-                        {isCurrent && <Badge variant="brand">当前凭据</Badge>}
-                        {isRevoked ? (
-                          <Badge variant="neutral">已吊销 ({formatTime(key.revoked_at)})</Badge>
-                        ) : (
-                          <Badge variant="success">有效</Badge>
-                        )}
-                      </div>
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="truncate text-title-small text-on-surface">{key.name}</span>
+                      <span className="font-mono text-body-small text-on-surface-variant">
+                        {key.id}
+                      </span>
+                      {isCurrent && <Badge variant="primary">当前凭据</Badge>}
+                      {isRevoked ? (
+                        <Badge variant="neutral">已吊销 ({formatTime(key.revoked_at)})</Badge>
+                      ) : (
+                        <Badge variant="success">有效</Badge>
+                      )}
                     </div>
 
                     <div className="flex shrink-0 items-center gap-2">
                       {isCurrent ? (
-                        <span className="text-xs text-muted">当前会话不可操作</span>
+                        <span className="text-body-small text-on-surface-variant">
+                          当前会话不可操作
+                        </span>
                       ) : !isRevoked ? (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setRevokingKey(key)}
-                          className="border-warning/30 text-warning hover:bg-warning/10"
-                        >
+                        <Button variant="secondary" size="sm" onClick={() => setRevokingKey(key)}>
                           吊销
                         </Button>
                       ) : (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setDeletingKey(key)}
-                          className="gap-1 border-danger/30 text-danger hover:bg-danger/10"
-                        >
-                          <Trash2 className="h-3 w-3" aria-hidden />
+                        <Button variant="secondary" size="sm" onClick={() => setDeletingKey(key)}>
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden />
                           <span>删除</span>
                         </Button>
                       )}
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-1.5 text-xs text-muted sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-1.5 text-body-small text-on-surface-variant sm:grid-cols-2">
                     <div>
-                      <span className="text-subtle">授权权限：</span>
-                      <span className="font-medium text-foreground">{formatScopes(key.scopes)}</span>
+                      <span>授权权限：</span>
+                      <span className="font-medium text-on-surface">
+                        {formatScopes(key.scopes)}
+                      </span>
                     </div>
                     <div>
-                      <span className="text-subtle">最后调用：</span>
-                      <span className="text-foreground">{formatTime(key.last_used_at)}</span>
+                      <span>最后调用：</span>
+                      <span className="text-on-surface">{formatTime(key.last_used_at)}</span>
                     </div>
-                    <div className="text-caption text-subtle">
+                    <div className="text-label-medium">
                       创建时间：{formatTime(key.created_at)}
                     </div>
                   </div>
@@ -247,11 +226,8 @@ function IssueKeyDialog({
 
   const nameInvalid = !name.trim() || name.length > NAME_MAX;
 
-  let customEmpty = false;
-  if (mode === "custom") {
-    const activeCount = Object.values(customScopes).filter((v) => v !== "none").length;
-    customEmpty = activeCount === 0;
-  }
+  const customEmpty =
+    mode === "custom" && Object.values(customScopes).every((value) => value === "none");
 
   const invalid = nameInvalid || customEmpty;
 
@@ -285,9 +261,13 @@ function IssueKeyDialog({
   }
 
   return (
-    <Dialog open={true} onClose={onClose} panelClassName="max-w-lg max-h-[90vh] overflow-y-auto">
+    <Dialog
+      open
+      onClose={onClose}
+      panelClassName="!max-w-lg max-h-[90vh] overflow-y-auto"
+    >
       <form onSubmit={submit} className="space-y-4">
-        <h2 className="text-sm font-semibold text-foreground">签发新 Key</h2>
+        <h2 className="text-title-large text-on-surface">签发新 Key</h2>
 
         <FormField
           label="Key 名称"
@@ -309,37 +289,37 @@ function IssueKeyDialog({
         </FormField>
 
         <div className="space-y-2">
-          <span className="block text-xs font-medium text-foreground">权限范围</span>
+          <span className="block text-label-large text-on-surface">权限范围</span>
           <div className="space-y-2">
-            <label className="flex items-center gap-2 text-xs text-foreground cursor-pointer">
+            <label className="flex cursor-pointer items-center gap-2 text-body-medium text-on-surface">
               <input
                 type="radio"
                 name="perm_mode"
                 checked={mode === "all_rw"}
                 onChange={() => setMode("all_rw")}
-                className="accent-brand"
+                className="accent-primary"
               />
               <span>全库读写（具备全部现有及未来分组的读写权限）</span>
             </label>
 
-            <label className="flex items-center gap-2 text-xs text-foreground cursor-pointer">
+            <label className="flex cursor-pointer items-center gap-2 text-body-medium text-on-surface">
               <input
                 type="radio"
                 name="perm_mode"
                 checked={mode === "all_r"}
                 onChange={() => setMode("all_r")}
-                className="accent-brand"
+                className="accent-primary"
               />
               <span>全库只读（具备全部现有及未来分组的只读权限）</span>
             </label>
 
-            <label className="flex items-center gap-2 text-xs text-foreground cursor-pointer">
+            <label className="flex cursor-pointer items-center gap-2 text-body-medium text-on-surface">
               <input
                 type="radio"
                 name="perm_mode"
                 checked={mode === "custom"}
                 onChange={() => setMode("custom")}
-                className="accent-brand"
+                className="accent-primary"
               />
               <span>自定义分组权限</span>
             </label>
@@ -347,28 +327,30 @@ function IssueKeyDialog({
         </div>
 
         {mode === "custom" && (
-          <div className="space-y-2 border-t border-stroke pt-3">
-            <span className="block text-xs font-medium text-foreground">分组权限分配</span>
+          <div className="space-y-2 border-t border-outline-variant pt-3">
+            <span className="block text-label-large text-on-surface">分组权限分配</span>
             {customEmpty && (
-              <p role="alert" className="text-xs text-danger">
+              <p role="alert" className="text-body-small text-error">
                 请至少为一个分组授予权限
               </p>
             )}
             {groups.length === 0 ? (
-              <p className="text-xs text-muted">库中暂无分组</p>
+              <p className="text-body-medium text-on-surface-variant">库中暂无分组</p>
             ) : (
-              <div className="divide-y divide-stroke rounded border border-stroke">
+              <div className="divide-y divide-outline-variant rounded-sm border border-outline-variant">
                 {groups.map((group) => (
                   <div
                     key={group.slug}
-                    className="flex items-center justify-between gap-3 px-3 py-2 text-xs"
+                    className="flex items-center justify-between gap-3 px-3 py-2 text-body-medium"
                   >
                     <div>
-                      <span className="font-medium text-foreground">{group.name}</span>
-                      <span className="ml-1.5 font-mono text-caption text-muted">{group.slug}</span>
+                      <span className="font-medium text-on-surface">{group.name}</span>
+                      <span className="ml-1.5 font-mono text-body-small text-on-surface-variant">
+                        {group.slug}
+                      </span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-1 cursor-pointer">
+                      <label className="flex cursor-pointer items-center gap-1">
                         <input
                           type="radio"
                           name={`perm_${group.slug}`}
@@ -376,11 +358,11 @@ function IssueKeyDialog({
                           onChange={() =>
                             setCustomScopes((prev) => ({ ...prev, [group.slug]: "none" }))
                           }
-                          className="accent-brand"
+                          className="accent-primary"
                         />
-                        <span className="text-muted">无权限</span>
+                        <span className="text-on-surface-variant">无权限</span>
                       </label>
-                      <label className="flex items-center gap-1 cursor-pointer">
+                      <label className="flex cursor-pointer items-center gap-1">
                         <input
                           type="radio"
                           name={`perm_${group.slug}`}
@@ -388,11 +370,11 @@ function IssueKeyDialog({
                           onChange={() =>
                             setCustomScopes((prev) => ({ ...prev, [group.slug]: "r" }))
                           }
-                          className="accent-brand"
+                          className="accent-primary"
                         />
-                        <span className="text-foreground">只读</span>
+                        <span className="text-on-surface">只读</span>
                       </label>
-                      <label className="flex items-center gap-1 cursor-pointer">
+                      <label className="flex cursor-pointer items-center gap-1">
                         <input
                           type="radio"
                           name={`perm_${group.slug}`}
@@ -400,9 +382,9 @@ function IssueKeyDialog({
                           onChange={() =>
                             setCustomScopes((prev) => ({ ...prev, [group.slug]: "rw" }))
                           }
-                          className="accent-brand"
+                          className="accent-primary"
                         />
-                        <span className="text-foreground">读写</span>
+                        <span className="text-on-surface">读写</span>
                       </label>
                     </div>
                   </div>
@@ -413,13 +395,13 @@ function IssueKeyDialog({
         )}
 
         {failure && (
-          <p role="alert" className="text-xs text-danger">
+          <p role="alert" className="text-body-small text-error">
             {failure}
           </p>
         )}
 
         <div className="flex justify-end gap-2 pt-2">
-          <Button variant="secondary" size="sm" type="button" onClick={onClose}>
+          <Button variant="text" size="sm" type="button" onClick={onClose}>
             取消
           </Button>
           <Button
@@ -468,34 +450,29 @@ function DisclosureDialog({
   }
 
   return (
-    <Dialog open={true} onClose={onClose} panelClassName="max-w-md">
+    <Dialog open onClose={onClose} panelClassName="max-w-md">
       <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-foreground">Key 签发成功</h2>
+        <h2 className="text-title-large text-on-surface">Key 签发成功</h2>
 
-        <div className="flex items-start gap-2.5 rounded border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
-          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
-          <p className="leading-5">
+        <div className="flex items-start gap-2.5 rounded-md bg-warning-container p-3 text-on-warning-container">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <p className="text-body-small">
             明文令牌仅在本次创建后展示一次，服务端仅保存哈希，关闭后无法找回，请立即复制保存。
           </p>
         </div>
 
         <div className="space-y-1.5">
-          <span className="text-xs font-medium text-foreground">明文令牌 (Token)</span>
+          <span className="text-label-large text-on-surface">明文令牌 (Token)</span>
           <div
             ref={tokenRef}
-            className="rounded border border-stroke bg-background p-3 font-mono text-xs text-foreground break-all select-all"
+            className="select-all break-all rounded-sm border border-outline-variant bg-surface-container-highest p-3 font-mono text-body-small text-on-surface"
           >
             {result.token}
           </div>
         </div>
 
-        <div className="flex justify-between items-center gap-2 pt-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={copyToken}
-            className="gap-1.5"
-          >
+        <div className="flex items-center justify-between gap-2 pt-2">
+          <Button variant="tonal" size="sm" onClick={copyToken}>
             {copied ? (
               <>
                 <Check className="h-3.5 w-3.5 text-success" aria-hidden />
@@ -508,17 +485,13 @@ function DisclosureDialog({
               </>
             ) : (
               <>
-                <Copy className="h-3.5 w-3.5 text-muted" aria-hidden />
+                <Copy className="h-3.5 w-3.5" aria-hidden />
                 <span>复制令牌</span>
               </>
             )}
           </Button>
 
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={onClose}
-          >
+          <Button variant="primary" size="sm" onClick={onClose}>
             我已保存并关闭
           </Button>
         </div>
@@ -552,21 +525,22 @@ function RevokeKeyDialog({
   }
 
   return (
-    <Dialog open={true} onClose={onClose} panelClassName="max-w-sm">
+    <Dialog open onClose={onClose} panelClassName="max-w-sm">
       <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-foreground">吊销 Key</h2>
-        <p className="text-xs leading-5 text-muted">
-          确认吊销 Key「{keyRecord.name}」({keyRecord.id}) 吗？吊销后使用该 Key 的 Agent 将无法继续访问。
+        <h2 className="text-title-large text-on-surface">吊销 Key</h2>
+        <p className="text-body-medium text-on-surface-variant">
+          确认吊销 Key「{keyRecord.name}」({keyRecord.id}) 吗？吊销后使用该 Key
+          的 Agent 将无法继续访问。
         </p>
 
         {failure && (
-          <p role="alert" className="text-xs text-danger">
+          <p role="alert" className="text-body-small text-error">
             {failure}
           </p>
         )}
 
         <div className="flex justify-end gap-2 pt-1">
-          <Button variant="secondary" size="sm" onClick={onClose}>
+          <Button variant="text" size="sm" onClick={onClose}>
             取消
           </Button>
           <Button
@@ -610,21 +584,21 @@ function DeleteKeyDialog({
   }
 
   return (
-    <Dialog open={true} onClose={onClose} panelClassName="max-w-sm">
+    <Dialog open onClose={onClose} panelClassName="max-w-sm">
       <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-foreground">删除 Key</h2>
-        <p className="text-xs leading-5 text-muted">
+        <h2 className="text-title-large text-on-surface">删除 Key</h2>
+        <p className="text-body-medium text-on-surface-variant">
           确认永久物理删除 Key「{keyRecord.name}」({keyRecord.id}) 吗？此操作不可逆。
         </p>
 
         {failure && (
-          <p role="alert" className="text-xs text-danger">
+          <p role="alert" className="text-body-small text-error">
             {failure}
           </p>
         )}
 
         <div className="flex justify-end gap-2 pt-1">
-          <Button variant="secondary" size="sm" onClick={onClose}>
+          <Button variant="text" size="sm" onClick={onClose}>
             取消
           </Button>
           <Button

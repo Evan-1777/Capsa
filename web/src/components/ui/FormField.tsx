@@ -25,23 +25,25 @@ export function FormField({
 }: FormFieldProps) {
   return (
     <div className={`block space-y-1.5 ${className}`}>
-      <div className="flex items-center justify-between text-xs font-medium text-foreground">
-        <label htmlFor={id} className="cursor-default">
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor={id} className="cursor-default text-label-large text-on-surface">
           {label}
         </label>
         {counter && (
           <span
             aria-invalid={counter.over ? "true" : undefined}
-            className={counter.over ? "text-danger font-semibold" : "text-subtle font-normal"}
+            className={`text-label-medium ${
+              counter.over ? "font-semibold text-error" : "text-on-surface-variant"
+            }`}
           >
             {counter.current}/{counter.max}
           </span>
         )}
       </div>
       {children}
-      {hint && <p className="text-xs text-muted">{hint}</p>}
+      {hint && <p className="text-body-small text-on-surface-variant">{hint}</p>}
       {error && (
-        <p role="alert" className="text-xs text-danger">
+        <p role="alert" className="text-body-small text-error">
           {error}
         </p>
       )}

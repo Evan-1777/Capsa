@@ -2,7 +2,6 @@ import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { api } from "../api";
-import type { GroupInfo } from "../types";
 import {
   Button,
   Card,
@@ -12,7 +11,8 @@ import {
   FormField,
   Input,
   Textarea,
-} from "./ui";
+} from "../components/ui";
+import type { GroupInfo } from "../types";
 
 const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 const NAME_MAX = 60;
@@ -41,17 +41,16 @@ export function GroupManager({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-background">
+    <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
       <div className="mx-auto max-w-3xl space-y-4 px-5 py-6">
         <div className="flex items-center justify-between gap-4">
-          <h1 className="text-sm font-semibold tracking-tight text-foreground">分类管理</h1>
+          <h1 className="text-headline-small text-on-surface">分类管理</h1>
           <Button
             variant="primary"
             size="sm"
             onClick={() => setEditing({ mode: "create" })}
-            className="gap-1.5"
           >
-            <Plus className="h-3.5 w-3.5" aria-hidden />
+            <Plus className="h-4 w-4" aria-hidden />
             <span>新建分类</span>
           </Button>
         </div>
@@ -62,11 +61,7 @@ export function GroupManager({
           <EmptyState
             message="暂无分类"
             action={
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setEditing({ mode: "create" })}
-              >
+              <Button variant="primary" size="sm" onClick={() => setEditing({ mode: "create" })}>
                 新建分类
               </Button>
             }
@@ -74,43 +69,33 @@ export function GroupManager({
         ) : (
           <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {groups.map((group) => (
-              <Card
-                as="li"
-                key={group.slug}
-                className="space-y-2 p-4"
-              >
+              <Card as="li" key={group.slug} className="space-y-2 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 space-y-0.5">
-                    <p className="truncate text-body font-semibold text-foreground">
-                      {group.name}
+                    <p className="truncate text-title-small text-on-surface">{group.name}</p>
+                    <p className="truncate font-mono text-body-small text-on-surface-variant">
+                      {group.slug}
                     </p>
-                    <p className="truncate font-mono text-caption text-muted">{group.slug}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <Button
-                      variant="secondary"
+                      variant="tonal"
                       size="sm"
                       onClick={() => setEditing({ mode: "edit", group })}
-                      className="gap-1"
                     >
-                      <Pencil className="h-3 w-3" aria-hidden />
+                      <Pencil className="h-3.5 w-3.5" aria-hidden />
                       <span>编辑</span>
                     </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setDeletingGroup(group)}
-                      className="gap-1 border-danger/30 text-danger hover:bg-danger/10"
-                    >
-                      <Trash2 className="h-3 w-3" aria-hidden />
+                    <Button variant="secondary" size="sm" onClick={() => setDeletingGroup(group)}>
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
                       <span>删除</span>
                     </Button>
                   </div>
                 </div>
-                <p className="line-clamp-2 text-xs leading-5 text-muted">
+                <p className="line-clamp-2 text-body-small text-on-surface-variant">
                   {group.description || "暂无描述"}
                 </p>
-                <p className="text-caption text-subtle">{group.count} 条记忆</p>
+                <p className="text-label-medium text-on-surface-variant">{group.count} 条记忆</p>
               </Card>
             ))}
           </ul>
@@ -181,9 +166,9 @@ function GroupDialog({
   }
 
   return (
-    <Dialog open={true} onClose={onClose}>
+    <Dialog open onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
-        <h2 className="text-sm font-semibold text-foreground">
+        <h2 className="text-title-large text-on-surface">
           {existing ? "编辑分类" : "新建分类"}
         </h2>
 
@@ -241,13 +226,13 @@ function GroupDialog({
         </FormField>
 
         {failure && (
-          <p role="alert" className="text-xs text-danger">
+          <p role="alert" className="text-body-small text-error">
             {failure}
           </p>
         )}
 
         <div className="flex justify-end gap-2 pt-1">
-          <Button variant="secondary" size="sm" type="button" onClick={onClose}>
+          <Button variant="text" size="sm" type="button" onClick={onClose}>
             取消
           </Button>
           <Button
@@ -291,21 +276,21 @@ function DeleteGroupDialog({
   }
 
   return (
-    <Dialog open={true} onClose={onClose} panelClassName="max-w-sm">
+    <Dialog open onClose={onClose} panelClassName="max-w-sm">
       <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-foreground">删除分类</h2>
-        <p className="text-xs leading-5 text-muted">
+        <h2 className="text-title-large text-on-surface">删除分类</h2>
+        <p className="text-body-medium text-on-surface-variant">
           确认删除分类「{group.name}」({group.slug}) 吗？此操作不可撤销。
         </p>
 
         {failure && (
-          <p role="alert" className="text-xs text-danger">
+          <p role="alert" className="text-body-small text-error">
             {failure}
           </p>
         )}
 
         <div className="flex justify-end gap-2 pt-1">
-          <Button variant="secondary" size="sm" type="button" onClick={onClose}>
+          <Button variant="text" size="sm" type="button" onClick={onClose}>
             取消
           </Button>
           <Button

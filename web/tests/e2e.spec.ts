@@ -298,3 +298,38 @@ test("12. 凭据管理：签发分组 Key、查看权限明细、单次明文披
   await expect(keyCard).toHaveCount(0);
 });
 
+test("13. MD3 主题亮暗切换与窄屏模态抽屉导航", async ({ page }) => {
+  await signIn(page, keys.admin);
+
+  // 1. 首帧即挂载明确的亮暗属性，切换后 localStorage 同步
+  const before = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+  expect(before === "light" || before === "dark").toBeTruthy();
+  await page
+    .getByRole("button", { name: before === "dark" ? "切换至浅色模式" : "切换至深色模式" })
+    .click();
+  const after = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+  expect(after).not.toBe(before);
+  expect(await page.evaluate(() => localStorage.getItem("capsa_theme"))).toBe(after);
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue("--md-sys-color-surface").trim(),
+    ),
+  ).not.toBe("");
+
+  // 2. 窄屏唤起模态导航抽屉并完成跳转
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.getByRole("button", { name: "打开导航菜单" }).click();
+  await expect(page.getByRole("button", { name: "关闭导航菜单" })).toBeVisible();
+  await page.getByRole("button", { name: "分类管理" }).click();
+  await expect(page.getByRole("heading", { name: "分类管理" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "关闭导航菜单" })).toHaveCount(0);
+
+  // 3. 抽屉打开时跨入桌面断点须自动关闭且不遗留 inert 锁定
+  await page.getByRole("button", { name: "打开导航菜单" }).click();
+  await expect(page.getByRole("button", { name: "关闭导航菜单" })).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(page.getByRole("button", { name: "关闭导航菜单" })).toHaveCount(0);
+  await page.getByRole("button", { name: "凭据管理" }).click();
+  await expect(page.getByRole("heading", { name: "凭据管理" })).toBeVisible();
+});
+

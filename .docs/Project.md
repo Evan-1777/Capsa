@@ -67,10 +67,13 @@ internal/
     ├── mcp.go           # MCP 服务、7 个工具、Bearer 守卫与流式响应头
     ├── web_api.go       # REST API：统一信封、管理员网关、防自锁守卫与真实端点
     └── static.go        # go:embed 内嵌静态产物与 SPA 回退
-web/                     # Capsa Studio：Fluent 2 + React 18 + TypeScript + Tailwind
+web/                     # Capsa Studio：Material Design 3 + React 18 + TypeScript + Tailwind
+├── src/components/ui/   # 领域中立基础原语：按钮/图标按钮、表单控件、卡片、徽章、对话框与侧边抽屉、状态反馈
+├── src/shell/           # 全局应用外壳：登录页、弹性顶栏、Navigation Rail / Modal Navigation Drawer（纯单向受控）
+├── src/memory/          # 传统记忆业务子应用：MemoryApp 三态状态机与工作台/分类/凭据/复核/回收站五视图
 ├── vite.config.ts       # build.outDir 固定 ../internal/server/static
 ├── playwright.config.ts # channel: "chrome"，webServer 指向 web/tests/serve.sh
-└── tests/e2e.spec.ts    # 浏览器端到端套件（12 条用例）
+└── tests/e2e.spec.ts    # 浏览器端到端套件（13 条用例）
 README.md                # 定位、架构、部署、宿主反代接入与运维速查
 Dockerfile               # 三阶段构建：Node 产物 → Go 静态二进制 → Alpine
 docker-compose.yml       # 单服务编排，只拉取 GHCR 镜像
@@ -100,7 +103,7 @@ tests/integration_test.go # Go 集成测试：端点状态码、统一信封、M
 - **MCP 工具契约**：工具描述与参数注解只陈述可观察事实，不写调用顺序训诫或负向告诫；三级披露边界由各工具描述中立陈述。
 - **管理级令牌**：`CAPSA_ADMIN_TOKEN` 每次请求读取环境变量，非空即启用，身份固定为 `id="admin"`、`grants={"*": "rw"}`；轮换方式为更新环境变量并重启服务
 - **时间**：所有时间以 ISO 8601 UTC 字符串存储与比较，固定布局 `2006-01-02T15:04:05.000000+00:00`（定宽 6 位微秒）
-- **前端**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；Fluent 2 体系以 CSS 变量承载语义令牌并通过根节点 `data-theme` 切换；弹层走原生 `<dialog>` 与 `showModal()`；正文 Markdown 经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真
+- **前端**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；Material Design 3（MD3）体系以 `--md-sys-*` CSS 变量承载语义色彩、五级色调表面（`surface-container-*`）、圆角与字阶令牌，通过根节点 `data-theme="light" | "dark"` 与 `color-scheme` 切换，以表面明度差替代毛玻璃与重阴影；弹层走原生 `<dialog>` 与 `showModal()`（侧边抽屉以 `<dialog>` 自身为模态容器，不套中间包裹层）；正文 Markdown 经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真
 
 ## 约束与决策
 
@@ -128,6 +131,7 @@ tests/integration_test.go # Go 集成测试：端点状态码、统一信封、M
 - 备份用 SQLite `VACUUM INTO` 生成一致性快照，保留策略按文件名日期计算 14 天——原因：`VACUUM INTO` 在 WAL 下产出单文件一致快照，文件名日期确定性可测
 - `restore` 以文件覆盖方式回灌并清理 `-wal`/`-shm`——原因：离线管理动作，快照为 `VACUUM INTO` 产物无 WAL，回灌后须重启服务
 - 环境变量管理员虚拟凭据不落库、不进 Key 列表、不可作为管理接口操作目标——原因：单人场景无需用户表，防自锁统一在网关拦截
+- 2026-11-15 前端由 Fluent 2 切换至 Material Design 3，并将全局应用外壳与记忆业务解耦——理由：原亚克力模糊层与品牌蓝体系与 MD3 规范脱节；根入口组件直接持有记忆业务的分组状态、导航配置与五个视图，导致全局外壳与单一业务模式强耦合。重构后 `src/components/ui/`（领域中立原语）、`src/shell/`（单向受控外壳）、`src/memory/`（记忆子应用）三层单向依赖，外壳仅接收导航配置与激活标识，后续平行工作区可复用同一外壳而无需推翻顶栏与原语；以五级色调表面的明度差承载 Z 轴高度，同时消除毛玻璃合成开销并保证暗色模式层次稳定
 - URL 查询参数凭据的固有安全代价与缓解——原因：URL 查询参数易被反向代理、宿主日志记录；建议对含 `token`/`access_token` 的访问日志脱敏，并为仅支持 URL 配置的客户端签发专用低权限分组 Key，严禁复用全局通配管理员凭据
 
 ## 外部集成

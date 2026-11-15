@@ -1,21 +1,20 @@
 import React from "react";
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
-  variant?: "neutral" | "brand" | "success" | "warning" | "danger";
+  variant?: "neutral" | "primary" | "success" | "warning";
 }
 
-export function Badge({ variant = "neutral", className = "", children, ...props }: BadgeProps) {
-  const variants = {
-    neutral: "bg-surface text-muted border-stroke",
-    brand: "bg-brand/10 text-brand border-brand/20",
-    success: "bg-success/10 text-success border-success/20",
-    warning: "bg-warning/10 text-warning border-warning/20",
-    danger: "bg-danger/10 text-danger border-danger/20",
-  };
+const VARIANTS = {
+  neutral: "bg-surface-container-highest text-on-surface-variant",
+  primary: "bg-primary-container text-on-primary-container",
+  success: "bg-success-container text-on-success-container",
+  warning: "bg-warning-container text-on-warning-container",
+};
 
+export function Badge({ variant = "neutral", className = "", children, ...props }: BadgeProps) {
   return (
     <span
-      className={`inline-flex items-center px-1.5 py-0.5 rounded text-caption font-medium border ${variants[variant]} ${className}`}
+      className={`inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-label-small ${VARIANTS[variant]} ${className}`}
       {...props}
     >
       {children}

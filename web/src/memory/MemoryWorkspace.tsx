@@ -2,19 +2,20 @@ import { Pin, Plus, Search, Settings2 } from "lucide-react";
 import { useState } from "react";
 
 import { api } from "../api";
-import type { GroupInfo, MemoryDetail } from "../types";
-import { useAsync } from "../useAsync";
-import { EditDrawer } from "./EditDrawer";
-import { MemoryDetailPane } from "./MemoryDetail";
 import {
   Badge,
   Button,
   EmptyState,
   ErrorBanner,
+  IconButton,
   Input,
   Skeleton,
   UnauthorizedState,
-} from "./ui";
+} from "../components/ui";
+import type { GroupInfo, MemoryDetail } from "../types";
+import { useAsync } from "../useAsync";
+import { EditDrawer } from "./EditDrawer";
+import { MemoryDetailPane } from "./MemoryDetailPane";
 
 export function MemoryWorkspace({
   groups,
@@ -43,18 +44,18 @@ export function MemoryWorkspace({
   const items = (list.data?.items ?? []).filter((item) => !pinnedOnly || item.pinned);
 
   return (
-    <div className="grid flex-1 grid-cols-1 overflow-hidden bg-background md:grid-cols-[320px_1fr]">
+    <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden bg-surface md:grid-cols-[340px_1fr]">
       <section
         aria-label="记忆列表"
-        className={`min-h-0 flex-col border-stroke md:flex md:border-r ${
+        className={`min-h-0 flex-col border-outline-variant md:flex md:border-r ${
           selected ? "hidden" : "flex"
         }`}
       >
-        <div className="space-y-2.5 border-b border-stroke bg-acrylic backdrop-blur-md px-4 py-3">
+        <div className="space-y-2.5 border-b border-outline-variant bg-surface-container px-4 py-3">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
               <Search
-                className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-subtle"
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant"
                 aria-hidden
               />
               <Input
@@ -62,43 +63,39 @@ export function MemoryWorkspace({
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="检索标题、摘要或标签"
                 aria-label="检索记忆"
-                className="pl-8"
+                className="!rounded-full !border-transparent !bg-surface-container-high pl-9"
               />
             </div>
-            <button
-              type="button"
-              onClick={() => setPinnedOnly((current) => !current)}
+            <IconButton
+              variant="tonal"
+              selected={pinnedOnly}
               aria-pressed={pinnedOnly}
+              aria-label="只看置顶"
               title="只看置顶"
-              className={`rounded border p-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
-                pinnedOnly
-                  ? "border-brand bg-brand/10 text-brand"
-                  : "border-stroke bg-surface text-muted hover:text-foreground hover:bg-background"
-              }`}
+              onClick={() => setPinnedOnly((current) => !current)}
             >
-              <Pin className="h-3.5 w-3.5" aria-hidden />
-            </button>
+              <Pin className="h-4 w-4" aria-hidden />
+            </IconButton>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
-            <GroupPill active={group === null} onClick={() => setGroup(null)} label="全部" />
+            <GroupChip active={group === null} onClick={() => setGroup(null)} label="全部" />
             {groups.map((item) => (
-              <GroupPill
+              <GroupChip
                 key={item.slug}
                 active={group === item.slug}
                 onClick={() => setGroup(item.slug)}
                 label={item.name}
               />
             ))}
-            <button
-              type="button"
-              onClick={onManageGroups}
-              title="管理分类"
+            <IconButton
               aria-label="管理分类"
-              className="rounded-full border border-stroke bg-surface p-1 text-muted hover:text-foreground hover:bg-background focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              title="管理分类"
+              onClick={onManageGroups}
+              className="h-8 w-8"
             >
-              <Settings2 className="h-3.5 w-3.5" aria-hidden />
-            </button>
+              <Settings2 className="h-4 w-4" aria-hidden />
+            </IconButton>
           </div>
         </div>
 
@@ -126,26 +123,26 @@ export function MemoryWorkspace({
                     type="button"
                     onClick={() => setSelected(item.id)}
                     aria-current={selected === item.id}
-                    className={`relative w-full space-y-1.5 border-b border-stroke px-4 py-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand ${
-                      selected === item.id ? "bg-surface shadow-card" : "hover:bg-surface/60"
+                    className={`md-state-layer relative w-full space-y-1.5 border-b border-outline-variant px-4 py-3 text-left transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${
+                      selected === item.id ? "bg-secondary-container" : ""
                     }`}
                   >
                     {selected === item.id && (
-                      <span className="absolute bottom-0 left-0 top-0 w-1 bg-brand" />
+                      <span className="absolute bottom-0 left-0 top-0 w-1 bg-primary" />
                     )}
                     <div className="flex items-start justify-between gap-2">
-                      <span className="text-body font-semibold leading-5 text-foreground">
-                        {item.title}
-                      </span>
+                      <span className="text-title-small text-on-surface">{item.title}</span>
                       {item.pinned ? (
                         <Pin
-                          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand"
+                          className="mt-0.5 h-4 w-4 shrink-0 text-primary"
                           aria-label="已置顶"
                         />
                       ) : null}
                     </div>
-                    <p className="line-clamp-2 text-xs leading-5 text-muted">{item.summary}</p>
-                    <div className="flex flex-wrap items-center gap-1.5 text-caption text-subtle">
+                    <p className="line-clamp-2 text-body-small text-on-surface-variant">
+                      {item.summary}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-1.5 text-label-small text-on-surface-variant">
                       <span>{item.group_slug}</span>
                       <span>·</span>
                       <span>{item.updated_at.slice(0, 10)}</span>
@@ -166,9 +163,7 @@ export function MemoryWorkspace({
 
       <section
         aria-label="记忆详情"
-        className={`min-h-0 overflow-y-auto bg-surface md:block ${
-          selected ? "block" : "hidden"
-        }`}
+        className={`min-h-0 overflow-y-auto bg-surface md:block ${selected ? "block" : "hidden"}`}
       >
         <MemoryDetailPane
           state={detail}
@@ -198,16 +193,16 @@ export function MemoryWorkspace({
       <button
         type="button"
         onClick={() => setEditing("new")}
-        className="fixed bottom-20 right-5 z-20 flex items-center gap-1.5 rounded-full bg-brand px-4 py-2.5 text-xs font-medium text-white shadow-dialog transition-colors hover:bg-brand-hover active:bg-brand-pressed focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 md:bottom-6"
+        className="md-state-layer fixed bottom-20 right-5 z-20 flex h-14 items-center gap-2 rounded-lg bg-primary-container px-4 text-label-large text-on-primary-container shadow-elevation-3 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:bottom-6"
       >
-        <Plus className="h-3.5 w-3.5" aria-hidden />
+        <Plus className="h-5 w-5" aria-hidden />
         <span>新建记忆</span>
       </button>
     </div>
   );
 }
 
-function GroupPill({
+function GroupChip({
   active,
   onClick,
   label,
@@ -221,10 +216,10 @@ function GroupPill({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+      className={`md-state-layer rounded-sm border px-3 py-1 text-label-large transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${
         active
-          ? "border-brand bg-brand text-white"
-          : "border-stroke bg-surface text-foreground hover:bg-background"
+          ? "border-transparent bg-secondary-container text-on-secondary-container"
+          : "border-outline text-on-surface-variant"
       }`}
     >
       {label}

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../api";
+import { Button, FormField, Input, Select, SideSheet, Textarea } from "../components/ui";
 import type { GroupInfo, MemoryDetail, SimilarItem } from "../types";
-import { Button, FormField, Input, Select, Textarea } from "./ui";
 
 const TITLE_MAX = 60;
 const SUMMARY_MAX = 200;
@@ -30,7 +30,6 @@ export function EditDrawer({
   onCreated: () => void;
   onSaved: (createdId: string | null) => void;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<FormState>({
     group: memory?.group_slug ?? groups[0]?.slug ?? "",
     title: memory?.title ?? "",
@@ -43,17 +42,6 @@ export function EditDrawer({
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (!dialog.open) {
-      dialog.showModal();
-    }
-    return () => {
-      if (dialog.open) dialog.close();
-    };
-  }, []);
 
   useEffect(() => {
     if (!dirty) return;
@@ -124,28 +112,16 @@ export function EditDrawer({
   }
 
   return (
-    <dialog
-      ref={dialogRef}
-      onCancel={(e) => {
-        e.preventDefault();
-        requestClose();
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          requestClose();
-        }
-      }}
-      className="fixed inset-0 m-0 flex h-screen w-screen max-h-none max-w-none justify-end border-0 bg-black/40 p-0 backdrop-blur-sm z-50"
-    >
+    <SideSheet open onClose={requestClose} side="right">
       <form
         onSubmit={submit}
-        className="relative flex h-full w-full flex-col bg-surface shadow-dialog md:w-[560px]"
+        className="relative flex h-full w-full flex-col bg-surface-container-high text-on-surface md:w-[560px] md:rounded-l-xl md:border-l md:border-outline-variant"
       >
-        <header className="flex items-center justify-between border-b border-stroke px-5 py-3">
-          <h2 className="text-sm font-semibold text-foreground">
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-outline-variant px-5 py-3">
+          <h2 className="text-title-medium text-on-surface">
             {memory ? "编辑记忆" : "新建记忆"}
           </h2>
-          <Button variant="secondary" size="sm" type="button" onClick={requestClose}>
+          <Button variant="text" size="sm" type="button" onClick={requestClose}>
             关闭
           </Button>
         </header>
@@ -227,11 +203,11 @@ export function EditDrawer({
           </FormField>
 
           {similar.length > 0 && (
-            <div className="space-y-1.5 rounded border border-warning/30 bg-warning/10 p-3">
-              <p className="text-xs font-medium text-warning">已创建，检测到相似标题</p>
+            <div className="space-y-1.5 rounded-md bg-warning-container p-3 text-on-warning-container">
+              <p className="text-title-small">已创建，检测到相似标题</p>
               <ul className="space-y-1">
                 {similar.map((item) => (
-                  <li key={item.id} className="text-xs text-foreground">
+                  <li key={item.id} className="text-body-small">
                     {item.id} · {item.title} · 相似度 {item.similarity}
                   </li>
                 ))}
@@ -240,14 +216,14 @@ export function EditDrawer({
           )}
 
           {failure && (
-            <p role="alert" className="text-xs text-danger">
+            <p role="alert" className="text-body-small text-error">
               {failure}
             </p>
           )}
         </div>
 
-        <footer className="flex justify-end gap-2 border-t border-stroke px-5 py-3">
-          <Button variant="secondary" size="sm" type="button" onClick={requestClose}>
+        <footer className="flex shrink-0 justify-end gap-2 border-t border-outline-variant px-5 py-3">
+          <Button variant="text" size="sm" type="button" onClick={requestClose}>
             取消
           </Button>
           <Button
@@ -262,7 +238,7 @@ export function EditDrawer({
           </Button>
         </footer>
       </form>
-    </dialog>
+    </SideSheet>
   );
 }
 
@@ -290,7 +266,11 @@ function Field({
       label={
         <span>
           {label}
-          {markdown && <span className="ml-1 text-caption font-normal text-muted">Markdown</span>}
+          {markdown && (
+            <span className="ml-1 text-body-small font-normal text-on-surface-variant">
+              Markdown
+            </span>
+          )}
         </span>
       }
       counter={{

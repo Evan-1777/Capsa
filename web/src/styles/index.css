@@ -2,76 +2,178 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --color-background: #F5F5F5;
-  --color-surface: #FFFFFF;
-  --color-acrylic: rgba(255, 255, 255, 0.7);
-  --color-stroke: #E1DFDD;
-  --color-foreground: #242424;
-  --color-fill-foreground: #FFFFFF;
-  --color-muted: #616161;
-  --color-subtle: #8A8886;
+/* ==========================================================================
+   Material Design 3 系统级令牌
+   语义色彩角色 / 五级色调表面 / 圆角阶梯 / 排版字阶 / 动效与阴影
+   --------------------------------------------------------------------------
+   亮暗两套均由根节点 data-theme="light" | "dark" 驱动，并同步声明 color-scheme，
+   使原生 <input type="date"> 与 <select> 弹出层跟随主题反色。
+   ========================================================================== */
 
-  --color-brand: #0078D4;
-  --color-brand-hover: #106EBE;
-  --color-brand-pressed: #005A9E;
+:root,
+[data-theme="light"] {
+  color-scheme: light;
 
-  --color-danger: #D13438;
-  --color-danger-hover: #A4262C;
-  --color-danger-pressed: #750B1C;
+  --md-sys-color-primary: #6750A4;
+  --md-sys-color-on-primary: #FFFFFF;
+  --md-sys-color-primary-container: #EADDFF;
+  --md-sys-color-on-primary-container: #21005D;
 
-  --color-warning: #B74700;
-  --color-success: #107C41;
+  --md-sys-color-secondary: #625B71;
+  --md-sys-color-on-secondary: #FFFFFF;
+  --md-sys-color-secondary-container: #E8DEF8;
+  --md-sys-color-on-secondary-container: #1D192B;
 
-  --shadow-card: 0 1.6px 3.6px 0 rgba(0, 0, 0, 0.13), 0 0.3px 0.9px 0 rgba(0, 0, 0, 0.11);
-  --shadow-dialog: 0 6.4px 14.4px 0 rgba(0, 0, 0, 0.13), 0 1.2px 3.6px 0 rgba(0, 0, 0, 0.11);
+  --md-sys-color-error: #B3261E;
+  --md-sys-color-on-error: #FFFFFF;
+  --md-sys-color-error-container: #F9DEDC;
+  --md-sys-color-on-error-container: #410E0B;
+
+  --md-sys-color-warning: #8B5000;
+  --md-sys-color-on-warning: #FFFFFF;
+  --md-sys-color-warning-container: #FFDCBE;
+  --md-sys-color-on-warning-container: #2C1600;
+
+  --md-sys-color-success: #1B6D3D;
+  --md-sys-color-on-success: #FFFFFF;
+  --md-sys-color-success-container: #B7F1C8;
+  --md-sys-color-on-success-container: #00210C;
+
+  --md-sys-color-surface: #FEF7FF;
+  --md-sys-color-on-surface: #1D1B20;
+  --md-sys-color-on-surface-variant: #49454F;
+  --md-sys-color-surface-container-lowest: #FFFFFF;
+  --md-sys-color-surface-container-low: #F7F2FA;
+  --md-sys-color-surface-container: #F3EDF7;
+  --md-sys-color-surface-container-high: #ECE6F0;
+  --md-sys-color-surface-container-highest: #E6E0E9;
+
+  --md-sys-color-outline: #79747E;
+  --md-sys-color-outline-variant: #CAC4D0;
+  --md-sys-color-scrim: rgba(0, 0, 0, 0.4);
+
+  --md-sys-elevation-3: 0 1px 3px rgba(0, 0, 0, 0.12), 0 4px 8px 3px rgba(0, 0, 0, 0.08);
 }
 
 [data-theme="dark"] {
-  --color-background: #1F1F1F;
-  --color-surface: #292929;
-  --color-acrylic: rgba(41, 41, 41, 0.7);
-  --color-stroke: #383838;
-  --color-foreground: #F3F2F1;
-  --color-fill-foreground: #1F1F1F;
-  --color-muted: #ADADAD;
-  --color-subtle: #797775;
+  color-scheme: dark;
 
-  --color-brand: #479EF5;
-  --color-brand-hover: #62ABF5;
-  --color-brand-pressed: #2886DE;
+  --md-sys-color-primary: #D0BCFF;
+  --md-sys-color-on-primary: #381E72;
+  --md-sys-color-primary-container: #4F378B;
+  --md-sys-color-on-primary-container: #EADDFF;
 
-  --color-danger: #FF99A4;
-  --color-danger-hover: #FF808F;
-  --color-danger-pressed: #D13438;
+  --md-sys-color-secondary: #CCC2DC;
+  --md-sys-color-on-secondary: #332D41;
+  --md-sys-color-secondary-container: #4A4458;
+  --md-sys-color-on-secondary-container: #E8DEF8;
 
-  --color-warning: #F8D22A;
-  --color-success: #54B054;
+  --md-sys-color-error: #F2B8B5;
+  --md-sys-color-on-error: #601410;
+  --md-sys-color-error-container: #8C1D18;
+  --md-sys-color-on-error-container: #F9DEDC;
 
-  --shadow-card: 0 1.6px 3.6px 0 rgba(0, 0, 0, 0.4), 0 0.3px 0.9px 0 rgba(0, 0, 0, 0.3);
-  --shadow-dialog: 0 6.4px 14.4px 0 rgba(0, 0, 0, 0.5), 0 1.2px 3.6px 0 rgba(0, 0, 0, 0.4);
+  --md-sys-color-warning: #FFB870;
+  --md-sys-color-on-warning: #4A2800;
+  --md-sys-color-warning-container: #693C00;
+  --md-sys-color-on-warning-container: #FFDCBE;
+
+  --md-sys-color-success: #89D6A4;
+  --md-sys-color-on-success: #00391B;
+  --md-sys-color-success-container: #00522A;
+  --md-sys-color-on-success-container: #B7F1C8;
+
+  --md-sys-color-surface: #141218;
+  --md-sys-color-on-surface: #E6E0E9;
+  --md-sys-color-on-surface-variant: #CAC4D0;
+  --md-sys-color-surface-container-lowest: #0F0D13;
+  --md-sys-color-surface-container-low: #1D1B20;
+  --md-sys-color-surface-container: #211F26;
+  --md-sys-color-surface-container-high: #2B2930;
+  --md-sys-color-surface-container-highest: #36343B;
+
+  --md-sys-color-outline: #938F99;
+  --md-sys-color-outline-variant: #49454F;
+  --md-sys-color-scrim: rgba(0, 0, 0, 0.56);
+
+  --md-sys-elevation-3: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 10px 3px rgba(0, 0, 0, 0.28);
 }
 
-@layer utilities {
-  .text-caption {
-    font-size: 12px;
-    line-height: 16px;
-  }
-  .text-body {
-    font-size: 13px;
-    line-height: 20px;
+:root {
+  --md-sys-shape-corner-none: 0px;
+  --md-sys-shape-corner-extra-small: 4px;
+  --md-sys-shape-corner-small: 8px;
+  --md-sys-shape-corner-medium: 12px;
+  --md-sys-shape-corner-large: 16px;
+  --md-sys-shape-corner-extra-large: 28px;
+  --md-sys-shape-corner-full: 9999px;
+
+  --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+
+  --md-sys-typescale-headline-small-size: 24px;
+  --md-sys-typescale-headline-small-line-height: 32px;
+  --md-sys-typescale-title-large-size: 22px;
+  --md-sys-typescale-title-large-line-height: 28px;
+  --md-sys-typescale-title-medium-size: 16px;
+  --md-sys-typescale-title-medium-line-height: 24px;
+  --md-sys-typescale-title-small-size: 14px;
+  --md-sys-typescale-title-small-line-height: 20px;
+  --md-sys-typescale-body-large-size: 16px;
+  --md-sys-typescale-body-large-line-height: 24px;
+  --md-sys-typescale-body-medium-size: 14px;
+  --md-sys-typescale-body-medium-line-height: 20px;
+  --md-sys-typescale-body-small-size: 12px;
+  --md-sys-typescale-body-small-line-height: 16px;
+  --md-sys-typescale-label-large-size: 14px;
+  --md-sys-typescale-label-large-line-height: 20px;
+  --md-sys-typescale-label-medium-size: 12px;
+  --md-sys-typescale-label-medium-line-height: 16px;
+  --md-sys-typescale-label-small-size: 11px;
+  --md-sys-typescale-label-small-line-height: 16px;
+}
+
+@layer base {
+  body {
+    background-color: var(--md-sys-color-surface);
+    color: var(--md-sys-color-on-surface);
+    font-family: Roboto, "Noto Sans SC", "PingFang SC", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 }
 
-body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
-  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, Roboto, "Helvetica Neue", sans-serif;
-  -webkit-font-smoothing: antialiased;
+@layer components {
+  /* MD3 交互状态层：以伪元素叠加 currentColor，标准 8% hover / 12% active。
+     归入 components 层，使 fixed/absolute 等定位工具类始终可以覆盖 position: relative。 */
+  .md-state-layer {
+    position: relative;
+  }
+  .md-state-layer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background-color: currentColor;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 150ms var(--md-sys-motion-easing-standard);
+  }
+  .md-state-layer:hover::after {
+    opacity: 0.08;
+  }
+  .md-state-layer:active::after {
+    opacity: 0.12;
+  }
+  .md-state-layer:disabled::after,
+  .md-state-layer[aria-disabled="true"]::after {
+    opacity: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, ::before, ::after {
+  *,
+  ::before,
+  ::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

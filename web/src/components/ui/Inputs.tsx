@@ -1,5 +1,15 @@
 import React from "react";
 
+/** MD3 Outlined Text Field：无效态整组替换边框与聚焦环，避免同级工具类互相覆盖。 */
+function fieldTone(invalid?: boolean): string {
+  return invalid
+    ? "border-error focus:border-error focus:ring-1 focus:ring-error"
+    : "border-outline focus:border-primary focus:ring-1 focus:ring-primary";
+}
+
+const FIELD_BASE =
+  "w-full rounded-sm border bg-surface-container-lowest px-3 py-2 text-body-medium text-on-surface placeholder:text-on-surface-variant transition-colors focus:outline-none disabled:opacity-[0.38] disabled:cursor-not-allowed";
+
 export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   invalid?: boolean;
 }
@@ -10,9 +20,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       <input
         ref={ref}
         aria-invalid={invalid || undefined}
-        className={`w-full rounded border bg-surface text-foreground text-body px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
-          invalid ? "border-danger focus:border-danger focus-visible:ring-danger" : "border-stroke"
-        } ${className}`}
+        className={`${FIELD_BASE} ${fieldTone(invalid)} ${className}`}
         {...props}
       />
     );
@@ -30,9 +38,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
       <textarea
         ref={ref}
         aria-invalid={invalid || undefined}
-        className={`w-full rounded border bg-surface text-foreground text-body px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
-          invalid ? "border-danger focus:border-danger focus-visible:ring-danger" : "border-stroke"
-        } ${className}`}
+        className={`${FIELD_BASE} ${fieldTone(invalid)} ${className}`}
         {...props}
       />
     );
@@ -50,9 +56,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
       <select
         ref={ref}
         aria-invalid={invalid || undefined}
-        className={`w-full rounded border bg-surface text-foreground text-body px-3 py-1.5 transition-colors focus:outline-none focus:border-brand focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50 disabled:cursor-not-allowed ${
-          invalid ? "border-danger focus:border-danger focus-visible:ring-danger" : "border-stroke"
-        } ${className}`}
+        className={`${FIELD_BASE} ${fieldTone(invalid)} ${className}`}
         {...props}
       >
         {children}
