@@ -16,11 +16,31 @@ import (
 // DefaultDBPath mirrors the container volume mount.
 const DefaultDBPath = "/data/capsa.db"
 
-// Schema is the idempotent DDL for the three tables and their index. It is the
-// single source of truth for storage structure.
+// Default memory workspace, created by InitSchema so aggregate SQL stays
+// non-null and existing groups have a stable owner.
+const (
+	DefaultWorkspaceID   = "default"
+	DefaultWorkspaceName = "默认记忆工作区"
+	DefaultWorkspaceDesc = "系统默认记忆工作区"
+)
+
+// Schema is the idempotent DDL for every table. It is the single source of
+// truth for storage structure. Indexes live in IndexSchema because adding an
+// index on a column that a legacy database still lacks must wait for the
+// column migration.
 const Schema = `
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL CHECK(mode IN ('memory', 'docs')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS groups (
     slug TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL DEFAULT 'default' REFERENCES workspaces(id),
     name TEXT NOT NULL,
     description TEXT NOT NULL,
     created_at TEXT NOT NULL
@@ -51,8 +71,46 @@ CREATE TABLE IF NOT EXISTS memories (
     deleted_reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS doc_categories (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    access_id TEXT UNIQUE NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    scope TEXT NOT NULL CHECK(scope IN ('public', 'category')),
+    category_id TEXT REFERENCES doc_categories(id),
+    path TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK((scope = 'public' AND category_id IS NULL) OR (scope = 'category' AND category_id IS NOT NULL))
+);
+`
+
+// IndexSchema carries every index. The two partial unique indexes on documents
+// exist because a plain composite UNIQUE treats NULL category_id values as
+// distinct and would let duplicate public documents through.
+const IndexSchema = `
+CREATE INDEX IF NOT EXISTS idx_groups_workspace ON groups(workspace_id);
+
 CREATE INDEX IF NOT EXISTS idx_memories_group_order
 ON memories(group_slug, pinned DESC, updated_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_categories_ws_name
+ON doc_categories(workspace_id, name);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_public_path
+ON documents(workspace_id, path) WHERE category_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_category_path
+ON documents(workspace_id, category_id, path) WHERE category_id IS NOT NULL;
 `
 
 // DBPath resolves the database path at call time so tests can override
@@ -88,12 +146,82 @@ func Connect() (*sql.DB, error) {
 	return handle, nil
 }
 
-// InitSchema creates the tables and index. Running it repeatedly is safe.
+// InitSchema creates the tables, upgrades a legacy groups table with the
+// workspace column and seeds the default memory workspace. Running it
+// repeatedly is safe.
 func InitSchema(handle *sql.DB) error {
 	if _, err := handle.Exec(Schema); err != nil {
 		return err
 	}
-	return nil
+	if err := ensureGroupWorkspaceColumn(handle); err != nil {
+		return err
+	}
+	if _, err := handle.Exec(IndexSchema); err != nil {
+		return err
+	}
+	return seedDefaultWorkspace(handle)
+}
+
+// ensureGroupWorkspaceColumn adds groups.workspace_id to databases created
+// before the workspace model. CREATE TABLE IF NOT EXISTS is a no-op there, so
+// the column only appears through this migration. The added column carries no
+// REFERENCES clause: SQLite rejects a non-NULL default on a column that
+// declares one while foreign key enforcement is on.
+func ensureGroupWorkspaceColumn(handle *sql.DB) error {
+	rows, err := handle.Query("PRAGMA table_info(groups)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	present := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &primaryKey); err != nil {
+			return err
+		}
+		if name == "workspace_id" {
+			present = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if present {
+		return nil
+	}
+	_, err = handle.Exec("ALTER TABLE groups ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'")
+	return err
+}
+
+func seedDefaultWorkspace(handle *sql.DB) error {
+	stamp := UtcNow()
+	_, err := handle.Exec(
+		"INSERT OR IGNORE INTO workspaces (id, name, description, mode, created_at, updated_at) VALUES (?, ?, ?, 'memory', ?, ?)",
+		DefaultWorkspaceID, DefaultWorkspaceName, DefaultWorkspaceDesc, stamp, stamp)
+	return err
+}
+
+// MigrateIfInitialized upgrades an already-initialized database in place. A
+// database without a groups table has never been initialized and is left
+// untouched, so CheckDBHealth keeps reporting false until capsa init runs.
+func MigrateIfInitialized(handle *sql.DB) error {
+	var name string
+	err := handle.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'groups'").Scan(&name)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return InitSchema(handle)
 }
 
 // CheckDBHealth reports whether the database is reachable and initialized.

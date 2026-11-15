@@ -33,6 +33,28 @@ func NewMemoryID() string {
 	return "mem_" + randomFrom(idAlphabet, memoryIDChars)
 }
 
+// NewWorkspaceID returns a workspace identifier: the "ws_" prefix plus 8 characters.
+func NewWorkspaceID() string {
+	return "ws_" + randomFrom(idAlphabet, 8)
+}
+
+// NewDocCategoryID returns a document category identifier: the "cat_" prefix
+// plus 8 characters.
+func NewDocCategoryID() string {
+	return "cat_" + randomFrom(idAlphabet, 8)
+}
+
+// NewDocumentID returns a document identifier: the "doc_" prefix plus 8 characters.
+func NewDocumentID() string {
+	return "doc_" + randomFrom(idAlphabet, 8)
+}
+
+// NewDocAccessID returns a category access id: the "capsa_doc_" prefix plus a
+// 32-character secret. The prefix space stays disjoint from capsa_<key_id>_ tokens.
+func NewDocAccessID() string {
+	return "capsa_doc_" + randomFrom(secretAlphabet, secretChars)
+}
+
 // NewToken builds a plaintext token from a key id and a fresh secret.
 func NewToken(keyID string) string {
 	return "capsa_" + keyID + "_" + NewSecret()

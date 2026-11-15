@@ -18,9 +18,11 @@ import { EditDrawer } from "./EditDrawer";
 import { MemoryDetailPane } from "./MemoryDetailPane";
 
 export function MemoryWorkspace({
+  workspaceId,
   groups,
   onManageGroups,
 }: {
+  workspaceId: string;
   groups: GroupInfo[];
   onManageGroups: () => void;
 }) {
@@ -32,8 +34,14 @@ export function MemoryWorkspace({
   const [version, setVersion] = useState(0);
 
   const list = useAsync(
-    () => api.memories({ group: group ?? undefined, query: query || undefined, limit: 100 }),
-    [group, query, version],
+    () =>
+      api.memories({
+        workspace_id: workspaceId,
+        group: group ?? undefined,
+        query: query || undefined,
+        limit: 100,
+      }),
+    [workspaceId, group, query, version],
   );
   const detail = useAsync(
     () => (selected ? api.memory(selected) : Promise.resolve(null)),

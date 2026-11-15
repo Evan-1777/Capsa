@@ -10,11 +10,11 @@ import {
   FormField,
   Input,
   Skeleton,
+  Markdown,
   UnauthorizedState,
 } from "../components/ui";
 import type { MemoryDetail } from "../types";
 import type { AsyncState } from "../useAsync";
-import { Markdown } from "./Markdown";
 
 export function MemoryDetailPane({
   state,

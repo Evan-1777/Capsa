@@ -5,9 +5,9 @@
 ## 概述
 
 - **定位**：Capsa 是部署在个人 VPS 上的私人记忆服务，以 MCP 协议向 Agent 提供分组隔离、分级披露的长期记忆读写，并附带一套全权限单管理员 Web 管理台。
-- **阶段**：Go 语言后端重构交付完成；服务为单一静态二进制，外部契约（SQLite 结构、MCP 工具名与纯文本、Web 端点与统一信封）与 Python 版逐字保真。
+- **阶段**：顶层双模工作区（记忆 / 文档）全栈子系统交付完成；服务仍为单一静态二进制。传统记忆模式的存储形态、权限契约、`/mcp` 的 7 个工具与 5 个 MD3 视图零破坏，文档工作区以独立数据表、独立端点 `/mcp/docs` 与独立界面平行接入。
 - **非目标**：不引入向量检索与自动抽取写入，不做多租户，不引入独立用户表、多角色 RBAC 与 Cookie/Session；回收站 CLI 仍为管理员通道。完整边界见 `SCOPE.md`。
-- **归档**：Phase 3 设计与交付归档于 `.docs/09-13-v3/docs/`；Phase 4 部署形态收敛归档于 `.docs/09-16-v1/`；Phase 6 检索扩展归档于 `.docs/09-17-v2/`；本次 Go 重构归档于 `.docs/10-08-v1/`。归档是带日期的历史快照，其中容器编排形态以本文件与 `README.md` 为准。
+- **归档**：Phase 3 设计与交付归档于 `.docs/09-13-v3/docs/`；Phase 4 部署形态收敛归档于 `.docs/09-16-v1/`；Phase 6 检索扩展归档于 `.docs/09-17-v2/`；本次 Go 重构归档于 `.docs/10-08-v1/`；顶层双模工作区与文档工作区子系统归档于 `.docs/11-15-v1/`。归档是带日期的历史快照，其中容器编排形态以本文件与 `README.md` 为准。
 
 ## 环境与运行
 
@@ -55,30 +55,36 @@
 ```
 cmd/capsa/main.go        # 单入口：13 项叶子命令（init / group / key / memory / review / backup / restore / serve）
 internal/
-├── db/db.go             # SQLite 连接、幂等建表、健康检查、固定微秒时间戳
+├── db/db.go             # SQLite 连接、幂等建表、存量库工作区迁移、健康检查、固定微秒时间戳
 ├── dal/dal.go           # 三态授权数据访问层与记忆写读入口，唯一 SQL 出口
-├── ids/ids.go           # CSPRNG 标识符与 SHA-256 令牌哈希
+├── dal/workspaces.go    # 工作区生命周期与按记忆工作区收敛的分组/记忆查询
+├── dal/docs.go          # 文档分类、分类访问 ID 轮换与两级文档原子读写（含排他事务局部替换）
+├── ids/ids.go           # CSPRNG 标识符（含工作区/文档/分类访问 ID）与 SHA-256 令牌哈希
 ├── permissions/         # 权限判定单一事实来源：PermissionFor 与管理级令牌常量
-├── auth/                # 令牌校验器（verifier.go）与 URL 查询参数鉴权中间件（middleware.go）
+├── auth/                # 令牌校验器（verifier.go：传统令牌与分类访问 ID）与 URL 查询参数鉴权中间件
 ├── retrieval/           # 归一化、二字组分词、打分排序（含正文低权重兜底）与标题近似查重
 ├── formatters/          # 三级披露与分组列表的纯文本契约
 └── server/
-    ├── server.go        # 根路由装配：/healthz → /mcp → /api → 静态根 + 1MB 请求体限制
-    ├── mcp.go           # MCP 服务、7 个工具、Bearer 守卫与流式响应头
-    ├── web_api.go       # REST API：统一信封、管理员网关、防自锁守卫与真实端点
+    ├── server.go        # 根路由装配：/healthz → /mcp → /mcp/docs → /api → 静态根 + 1MB 请求体限制
+    ├── mcp.go           # 记忆 MCP 服务、7 个工具、Bearer 守卫与流式响应头
+    ├── mcp_docs.go      # 文档 MCP 服务、7 个类文件原语、分类访问 ID 守卫
+    ├── web_api.go       # REST API：统一信封、管理员网关、防自锁守卫、记忆端点与工作区过滤
+    ├── web_docs_api.go  # 工作区 CRUD 与文档工作区分类/文档管理端点
     └── static.go        # go:embed 内嵌静态产物与 SPA 回退
 web/                     # Capsa Studio：Material Design 3 + React 18 + TypeScript + Tailwind
-├── src/components/ui/   # 领域中立基础原语：按钮/图标按钮、表单控件、卡片、徽章、对话框与侧边抽屉、状态反馈
-├── src/shell/           # 全局应用外壳：登录页、弹性顶栏、Navigation Rail / Modal Navigation Drawer（纯单向受控）
+├── src/components/ui/   # 领域中立基础原语：按钮/图标按钮、表单控件、卡片、徽章、对话框与侧边抽屉、状态反馈、安全 Markdown
+├── src/shell/           # 全局应用外壳：登录页、弹性顶栏（工作区切换器）、Navigation Rail / Modal Drawer、工作区设置视图
 ├── src/memory/          # 传统记忆业务子应用：MemoryApp 三态状态机与工作台/分类/凭据/复核/回收站五视图
+├── src/docs/            # 文档工作区子应用：DocsApp、分类访问 ID 管理栏、文档阅读与在线编辑面板、弹窗集合
 ├── vite.config.ts       # build.outDir 固定 ../internal/server/static
 ├── playwright.config.ts # channel: "chrome"，webServer 指向 web/tests/serve.sh
-└── tests/e2e.spec.ts    # 浏览器端到端套件（13 条用例）
+└── tests/e2e.spec.ts    # 浏览器端到端套件（15 条用例）
 README.md                # 定位、架构、部署、宿主反代接入与运维速查
 Dockerfile               # 三阶段构建：Node 产物 → Go 静态二进制 → Alpine
 docker-compose.yml       # 单服务编排，只拉取 GHCR 镜像
 .github/workflows/       # build-image.yml：手动触发的镜像构建
 tests/integration_test.go # Go 集成测试：端点状态码、统一信封、MCP 握手与流式响应头
+tests/docs_workspace_test.go # 工作区/文档 REST、分类访问 ID 边界与文档 MCP 7 原语集成测试
 ```
 
 - **数据流**：
@@ -86,24 +92,26 @@ tests/integration_test.go # Go 集成测试：端点状态码、统一信封、M
   - 读：Agent → Bearer 令牌 → MCP Bearer 守卫（`auth.VerifyToken`）→ 工具层从 context 读取 `key_id` 与 `grants` → `dal` 三态判定 → `retrieval` 打分排序 → `formatters` 渲染纯文本。
   - 写：适配层经 `permissions.PermissionFor(grants, group)` 判定 `rw` 与字段长度 → `retrieval` 规范化复核时间并计算标题近似度 → `dal` 写入（单语句自动提交）。
   - Web：浏览器 → `/api` 的 `AdminGuard`（复用 `auth.VerifyToken`）：未认证回 401 信封，凭据不含 `*:rw` 回 403 信封 → 处理器从 context 读 `grants` → `dal` 三态判定 → JSON 统一信封（`{success, data, error}`）。
+  - 文档读写：Agent → 分类访问 ID → `/mcp/docs` 守卫（`auth.VerifyDocAccessID` 经 `dal.FindDocCategoryByAccessID` 仅在 `mode='docs'` 的工作区内解析）→ 工具层从 context 读取工作区与分类上下文 → `dal` 两级文档原语 → 行级纯文本结果。公共文档区在工具层与 DAL 双重拒绝写入，唯管理台可维护。
 - **依赖方向**：`server → dal/retrieval/formatters/auth → permissions/db`；`dal` 是唯一执行 SQL 的模块，`retrieval`、`formatters`、`permissions` 为纯函数模块。
   - ★ `permissions` 独立成包（而非置于 `auth` 内）——原因：`dal` 依赖权限判定，`auth` 的校验器依赖 `dal`，若权限与校验器同包会形成 `auth → dal → auth` 的循环导入；`permissions` 下沉为最低层即满足「单一事实来源」又消除环。
   - ★ `dal` 与 `db` 禁止反向依赖工具层；授权范围由调用方从请求令牌注入，DAL 不接受全局状态。
-- **核心模块**：`server.NewHandler()` 是唯一根装配点，按 `/healthz → /mcp → /api/ → /` 顺序注册；`mcp.go` 与 `web_api.go` 是并列的两个传输适配层，内部都不出现 SQL，全部经 `dal` 访问数据。
+- **核心模块**：`server.NewHandler()` 是唯一根装配点，按 `/healthz → /mcp → /mcp/docs → /api/ → /` 顺序注册；`mcp.go`、`mcp_docs.go`、`web_api.go` 与 `web_docs_api.go` 是并列的传输适配层，内部都不出现 SQL，全部经 `dal` 访问数据。
 - **权限判定单一来源**：`permissions.PermissionFor` 是唯一的有效权限计算函数，DAL、MCP 工具层与 `/api` 处理器共用；任一 `*` 通配都覆盖全库（可见性与读写级别正交）。
 - **检索范围与打分**：`memory_search` 默认只匹配标题（4 分）、摘要（1 分）与标签（2 分）；`include_body=True` 且 `query` 非空时追加投影 `body` 列并并入命中判定，正文命中每词元 0.2 分、封顶 0.8 分，低于摘要单次命中的 1 分。空 `query` 是浏览而非检索，工具层以非空 query 收敛正文投影。
 - **部署形态**：公网 → 宿主机反向代理（TLS 终止、响应不缓冲）→ 容器 `127.0.0.1:8000` → `capsa-data` 数据卷。应用层是唯一职责边界：容器自带 `/healthz` 健康检查与 1MB 请求体上限。
 
 ## 约定
 
-- **命名**：Go 导出标识符 PascalCase，包内标识符 camelCase；记忆 ID 为 `mem_` + 6 位随机串（总长 10），Key ID 为 8 位随机串，明文令牌为 `capsa_{key_id}_{32位随机串}`（总长 47）
+- **命名**：Go 导出标识符 PascalCase，包内标识符 camelCase；记忆 ID 为 `mem_` + 6 位随机串（总长 10），Key ID 为 8 位随机串，明文令牌为 `capsa_{key_id}_{32位随机串}`（总长 47）；工作区 ID 为 `ws_` + 8 位随机串，文档分类 ID 为 `cat_` + 8 位随机串，文档 ID 为 `doc_` + 8 位随机串，分类访问 ID 为 `capsa_doc_` + 32 位随机串（总长 42，与 `capsa_<key_id>_` 前缀空间严格不交叠）
 - **凭据传递**：支持标准 HTTP `Authorization: Bearer <token>` 与 URL 查询参数（`token` 与兼容 RFC 6750 的 `access_token`）。两者同时出现时严格以 HTTP 请求头为单一权威来源（不降级、不回退）。空参数、纯空白、含非 ASCII 或不可打印控制字符（如 CRLF）的查询参数均不予注入，交由下游自然返回 401。
 - **注释 / 文档语言**：代码注释与标识符用英文，用户可见的工具描述、错误消息与 CLI 输出用中文
 - **错误处理**：协议层问题走 HTTP 状态码（401 / 413），工具自身可给出可操作反馈的问题走 MCP 工具级 `isError: true`；同一契约在 Web 侧映射为 HTTP 状态码与 `error.code`（401 `UNAUTHORIZED` / 403 `FORBIDDEN` / 404 `NOT_FOUND` / 422 `VALIDATION_ERROR` / 500 `INTERNAL_ERROR`），`error.message` 与 MCP 工具文本逐字相同。
 - **MCP 工具契约**：工具描述与参数注解只陈述可观察事实，不写调用顺序训诫或负向告诫；三级披露边界由各工具描述中立陈述。
 - **管理级令牌**：`CAPSA_ADMIN_TOKEN` 每次请求读取环境变量，非空即启用，身份固定为 `id="admin"`、`grants={"*": "rw"}`；轮换方式为更新环境变量并重启服务
 - **时间**：所有时间以 ISO 8601 UTC 字符串存储与比较，固定布局 `2006-01-02T15:04:05.000000+00:00`（定宽 6 位微秒）
-- **前端**：凭据只存 `sessionStorage`（键名 `capsa_key`），401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；Material Design 3（MD3）体系以 `--md-sys-*` CSS 变量承载语义色彩、五级色调表面（`surface-container-*`）、圆角与字阶令牌，通过根节点 `data-theme="light" | "dark"` 与 `color-scheme` 切换，以表面明度差替代毛玻璃与重阴影；弹层走原生 `<dialog>` 与 `showModal()`（侧边抽屉以 `<dialog>` 自身为模态容器，不套中间包裹层）；正文 Markdown 经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真
+- **文档路径**：逻辑路径是两级文档区内的唯一键，写入前经 `dal.NormalizeDocPath` 统一校验——空路径、反斜杠、控制字符、首尾斜杠、连续空段与 `.`/``..` 片段一律拒绝；公共区与分类区各自独立唯一（SQLite 部分唯一索引）
+- **前端**：凭据只存 `sessionStorage`（键名 `capsa_key`），当前工作区偏好存 `localStorage`（键名 `capsa_workspace_id`，失效或缺失时回退默认记忆工作区），主题存 `localStorage`（键名 `capsa_theme`）；401 即刻清空并回登录态，403 提示仅支持管理员凭据并同样清空；Material Design 3（MD3）体系以 `--md-sys-*` CSS 变量承载语义色彩、五级色调表面（`surface-container-*`）、圆角与字阶令牌，通过根节点 `data-theme="light" | "dark"` 与 `color-scheme` 切换，以表面明度差替代毛玻璃与重阴影；弹层走原生 `<dialog>` 与 `showModal()`（侧边抽屉以 `<dialog>` 自身为模态容器，不套中间包裹层）；正文 Markdown 经 `react-markdown` + `rehype-sanitize` 渲染，`skipHtml` 置真
 
 ## 约束与决策
 
@@ -133,6 +141,14 @@ tests/integration_test.go # Go 集成测试：端点状态码、统一信封、M
 - 环境变量管理员虚拟凭据不落库、不进 Key 列表、不可作为管理接口操作目标——原因：单人场景无需用户表，防自锁统一在网关拦截
 - 2026-11-15 前端由 Fluent 2 切换至 Material Design 3，并将全局应用外壳与记忆业务解耦——理由：原亚克力模糊层与品牌蓝体系与 MD3 规范脱节；根入口组件直接持有记忆业务的分组状态、导航配置与五个视图，导致全局外壳与单一业务模式强耦合。重构后 `src/components/ui/`（领域中立原语）、`src/shell/`（单向受控外壳）、`src/memory/`（记忆子应用）三层单向依赖，外壳仅接收导航配置与激活标识，后续平行工作区可复用同一外壳而无需推翻顶栏与原语；以五级色调表面的明度差承载 Z 轴高度，同时消除毛玻璃合成开销并保证暗色模式层次稳定
 - URL 查询参数凭据的固有安全代价与缓解——原因：URL 查询参数易被反向代理、宿主日志记录；建议对含 `token`/`access_token` 的访问日志脱敏，并为仅支持 URL 配置的客户端签发专用低权限分组 Key，严禁复用全局通配管理员凭据
+- 2026-11-15 顶层工作区创建时固定模式（`memory`/`docs`）且不可互转，主界面按当前工作区模式整体切换子应用——理由：两种模式的数据形态、鉴权模型与交互路径完全不同，允许互转需要为每个容器定义跨模式迁移语义，收益不抵复杂度；固定模式让「切换工作区」退化为一次视图分发
+- 2026-11-15 记忆工作区的分组短标识保持全局唯一，记忆查询以工作区入参加以收敛——理由：既有 `memories.group_slug` 外键、Key 的 `scopes` 与无工作区入参的 `/mcp` 工具契约都以 slug 寻址，放开跨工作区重名会引入寻址歧义并破坏零迁移；隔离职责因此落在查询过滤（`ListActiveMemoriesForSearchInWorkspace` / `ListMemoriesForWebInWorkspace`），而非标识符命名空间
+- 2026-11-15 存量数据库迁移在 `connect()`（管理命令）与 `serve` 启动前置阶段执行 `db.MigrateIfInitialized`（建表 + 补列 + 索引 + 预置默认记忆工作区），未初始化库不隐式升级——理由：容器镜像升级即可自愈存量库，且 `/healthz` 对未执行 `capsa init` 的库仍返回 503；补列用 `ALTER TABLE ... ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'` 且不带 `REFERENCES`——SQLite 在外键开启时拒绝「带非 NULL 默认值的引用列」
+- 2026-11-15 文档唯一性用两条部分唯一索引（`WHERE category_id IS NULL` 与 `WHERE category_id IS NOT NULL`）而非普通复合唯一——理由：SQLite 视 NULL 互不相等，普通复合唯一会放过同一工作区下的重复公共文档路径
+- 2026-11-15 分类访问 ID 以明文列 `doc_categories.access_id` 存储并建唯一索引——理由：管理台须常驻展示与一键复制完整原值，哈希存储会牺牲可用性；该凭据可由用户在管理台即时轮换，泄露窗口可控，且与 `keys.token_hash` 的传统令牌体系物理分离
+- 2026-11-15 文档局部替换在 `BEGIN IMMEDIATE` 排他事务内完成「读取 + 匹配计数 + 替换 + 回写」——理由：全量覆写是单语句天然原子，局部替换若拆成读改两段会丢失并发编辑
+- 2026-11-15 文档 MCP 为独立路由 `/mcp/docs` 与独立 `auth.VerifyDocAccessID` 守卫，与 `/mcp` 及 `/api` 物理隔离——理由：分类访问 ID 只应解锁单个分类与所在工作区公共区，复用传统守卫会让凭据空间交叉；两个端点的工具集互不出现（`memory_*` 与 `doc_*` 各自 7 个）
+- 2026-11-15 公共文档区对全部文档写原语只读，仅管理台可增删改——理由：公共区是工作区内跨分类共享的规范位，开放给单个分类的访问 ID 等同于把所有分类的写权限放大到工作区级
 
 ## 外部集成
 
@@ -158,6 +174,13 @@ tests/integration_test.go # Go 集成测试：端点状态码、统一信封、M
 - **三态** = 单条记忆相对当前 Key 的三种判定：`authorized` / `forbidden` / `not_found`
 - **三级披露** = 检索（`memory_search`）返回标题与元数据、peek（`memory_peek`）返回摘要、read（`memory_read`）返回正文；边界由工具描述陈述，不作为调用顺序约束
 - **正文兜底检索** = `memory_search` 的 `include_body=True` 可选能力：把正文并入命中判定与打分，权重低于全部元数据字段
+- **工作区** = 顶层容器，创建时固定为记忆模式或文档模式；初始化与存量库自动具备默认记忆工作区 `default`
+- **记忆工作区** = 承载分组与记忆的工作区，分组挂载于所属工作区，跨记忆工作区的分类可见性与记忆查询相互隔离
+- **文档工作区** = 承载两级文档区的工作区，其分类与文档存放在独立数据表，不出现于任何记忆接口
+- **公共文档区** = 文档工作区内跨分类共享的只读区，对所有分类访问 ID 可见、对全部文档写原语只读
+- **分类专属文档区** = 单个文档分类下的读写区，仅该分类的访问 ID 可读写
+- **分类访问 ID** = 形如 `capsa_doc_<32位随机串>` 的高熵凭据，授予单个分类的完整文档读写与所属工作区公共区只读检索
+- **文档逻辑路径** = 两级文档区内的文档唯一键，允许斜杠分层，不受传统记忆短字段长度约束，内容保持工作流中立（不预设文件名或模板）
 
 ## 维护
 

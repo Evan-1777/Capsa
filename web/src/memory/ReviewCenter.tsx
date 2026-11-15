@@ -18,9 +18,12 @@ function extend(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString();
 }
 
-export function ReviewCenter() {
+export function ReviewCenter({ workspaceId }: { workspaceId: string }) {
   const [version, setVersion] = useState(0);
-  const list = useAsync(() => api.memories({ status: "overdue", limit: 100 }), [version]);
+  const list = useAsync(
+    () => api.memories({ workspace_id: workspaceId, status: "overdue", limit: 100 }),
+    [workspaceId, version],
+  );
 
   async function postpone(id: string, days: number) {
     await api.update(id, { review_at: extend(days) });

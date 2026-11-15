@@ -36,6 +36,7 @@ export interface MemoryDetail extends MemoryListItem {
 
 export interface GroupInfo {
   slug: string;
+  workspace_id: string;
   name: string;
   description: string;
   count: number;
@@ -47,6 +48,60 @@ export interface GroupInput {
   slug?: string;
   name?: string;
   description?: string;
+  workspace_id?: string;
+}
+
+export type WorkspaceMode = "memory" | "docs";
+
+export interface WorkspaceInfo {
+  id: string;
+  name: string;
+  description: string;
+  mode: WorkspaceMode;
+  group_count: number;
+  category_count: number;
+  public_doc_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceInput {
+  name?: string;
+  description?: string;
+  mode?: WorkspaceMode;
+}
+
+export type DocScope = "public" | "category";
+
+export interface DocCategory {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string;
+  access_id: string;
+  doc_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocCategoryInput {
+  name?: string;
+  description?: string;
+}
+
+export interface DocumentSummary {
+  id: string;
+  workspace_id: string;
+  scope: DocScope;
+  category_id: string | null;
+  path: string;
+  char_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentDetail extends DocumentSummary {
+  content: string;
 }
 
 export interface KeyInfo {

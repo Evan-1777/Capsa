@@ -26,6 +26,11 @@ func NewHandler() http.Handler {
 	mux.Handle("POST /mcp", mcpHandler)
 	mux.Handle("DELETE /mcp", mcpHandler)
 
+	docsMCPHandler := NewDocsMCPHandler(NewDocsMCPServer())
+	mux.Handle("GET /mcp/docs", docsMCPHandler)
+	mux.Handle("POST /mcp/docs", docsMCPHandler)
+	mux.Handle("DELETE /mcp/docs", docsMCPHandler)
+
 	mux.Handle("/api/", AdminGuard(NewWebHandler()))
 	mux.Handle("/", staticHandler())
 

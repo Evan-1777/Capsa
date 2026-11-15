@@ -1,10 +1,19 @@
 import React, { useCallback, useState } from "react";
 
-import type { KeyInfo } from "../types";
+import type { KeyInfo, WorkspaceInfo } from "../types";
 import { Navigation, type NavItem } from "./Navigation";
 import { TopBar } from "./TopBar";
 
-export interface AppShellProps {
+/** 工作区相关的单向受控属性：由根组件持有状态，外壳与子应用只读取与回调。 */
+export interface WorkspaceShellProps {
+  workspaces?: WorkspaceInfo[];
+  activeWorkspaceId?: string;
+  onSelectWorkspace?: (id: string) => void;
+  settingsActive?: boolean;
+  onOpenSettings?: () => void;
+}
+
+export interface AppShellProps extends WorkspaceShellProps {
   info: KeyInfo;
   theme: "light" | "dark";
   onToggleTheme: () => void;
@@ -29,6 +38,11 @@ export function AppShell({
   navItems,
   activeNavId,
   onSelectNav,
+  workspaces,
+  activeWorkspaceId,
+  onSelectWorkspace,
+  settingsActive,
+  onOpenSettings,
   children,
 }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -56,6 +70,11 @@ export function AppShell({
           onSignOut={onSignOut}
           currentTitle={currentTitle}
           onOpenMobileNav={hasNav ? openMobile : undefined}
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onSelectWorkspace={onSelectWorkspace}
+          settingsActive={settingsActive}
+          onOpenSettings={onOpenSettings}
         />
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</main>
       </div>

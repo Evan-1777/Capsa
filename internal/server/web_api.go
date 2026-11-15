@@ -147,6 +147,7 @@ func NewWebHandler() http.Handler {
 	mux.Handle("POST /api/keys", apiHandler(keyCreate))
 	mux.Handle("POST /api/keys/{id}/revoke", apiHandler(keyRevoke))
 	mux.Handle("DELETE /api/keys/{id}", apiHandler(keyDelete))
+	registerWorkspaceRoutes(mux)
 	return mux
 }
 
@@ -328,10 +329,16 @@ func withDB(fn func(handle *sql.DB) error) error {
 }
 
 func listGroups(w http.ResponseWriter, r *http.Request) error {
+	workspaceID := r.URL.Query().Get("workspace_id")
 	var items []map[string]any
 	if err := withDB(func(handle *sql.DB) error {
+		if workspaceID != "" {
+			if refusal := requireWorkspaceMode(handle, workspaceID, "memory"); refusal != nil {
+				return refusal
+			}
+		}
 		var err error
-		items, err = dal.ListGroupsWithCounts(handle, grantsOf(r))
+		items, err = dal.ListGroupsWithCountsInWorkspace(handle, grantsOf(r), workspaceID)
 		return err
 	}); err != nil {
 		return err
@@ -356,16 +363,25 @@ func groupCreate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	workspaceID, _ := payload["workspace_id"].(string)
+	if workspaceID == "" {
+		workspaceID = db.DefaultWorkspaceID
+	}
 	var created map[string]any
 	if err := withDB(func(handle *sql.DB) error {
-		inserted, err := dal.AddGroup(handle, slug, name, description)
+		status, err := dal.AddGroupInWorkspace(handle, workspaceID, slug, name, description)
 		if err != nil {
 			return err
 		}
-		if !inserted {
+		switch status {
+		case "workspace_not_found":
+			return fail(CodeNotFound, fmt.Sprintf("工作区 %s 不存在", workspaceID), 404)
+		case "wrong_mode":
+			return validation(fmt.Sprintf("工作区 %s 不是记忆工作区", workspaceID))
+		case "duplicate":
 			return validation(fmt.Sprintf("分组 %s 已存在", slug))
 		}
-		groups, err := dal.ListGroupsWithCounts(handle, map[string]string{slug: "rw"})
+		groups, err := dal.ListGroupsWithCountsInWorkspace(handle, map[string]string{slug: "rw"}, workspaceID)
 		if err != nil || len(groups) == 0 {
 			return err
 		}
@@ -469,12 +485,18 @@ func memoriesList(w http.ResponseWriter, r *http.Request) error {
 	if keyword != "" && status != "active" {
 		return validation("关键词检索只作用于活跃条目，status 需为 active")
 	}
+	workspaceID := query.Get("workspace_id")
 	grants := grantsOf(r)
 	var rows []map[string]any
 	var total int
 	if err := withDB(func(handle *sql.DB) error {
+		if workspaceID != "" {
+			if refusal := requireWorkspaceMode(handle, workspaceID, "memory"); refusal != nil {
+				return refusal
+			}
+		}
 		if keyword != "" {
-			candidates, err := dal.ListActiveMemoriesForSearch(handle, grants, group, false)
+			candidates, err := dal.ListActiveMemoriesForSearchInWorkspace(handle, grants, workspaceID, group, false)
 			if err != nil {
 				return err
 			}
@@ -492,7 +514,7 @@ func memoriesList(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		}
 		var err error
-		rows, total, err = dal.ListMemoriesForWeb(handle, grants, status, group, offset, limit)
+		rows, total, err = dal.ListMemoriesForWebInWorkspace(handle, grants, workspaceID, status, group, offset, limit)
 		return err
 	}); err != nil {
 		return err

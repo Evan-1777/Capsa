@@ -11,10 +11,13 @@ import {
 } from "../components/ui";
 import { useAsync } from "../useAsync";
 
-export function RecycleBin() {
+export function RecycleBin({ workspaceId }: { workspaceId: string }) {
   const [version, setVersion] = useState(0);
   const [failure, setFailure] = useState<string | null>(null);
-  const list = useAsync(() => api.memories({ status: "deleted", limit: 100 }), [version]);
+  const list = useAsync(
+    () => api.memories({ workspace_id: workspaceId, status: "deleted", limit: 100 }),
+    [workspaceId, version],
+  );
 
   async function restore(id: string) {
     setFailure(null);

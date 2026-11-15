@@ -3,8 +3,8 @@ import { BookOpen, Boxes, CalendarClock, KeyRound, Trash2 } from "lucide-react";
 
 import { ApiError, api } from "../api";
 import { ErrorBanner, Skeleton } from "../components/ui";
-import { AppShell, type NavItem } from "../shell";
-import type { GroupInfo, KeyInfo } from "../types";
+import { AppShell, type NavItem, type WorkspaceShellProps } from "../shell";
+import type { GroupInfo, KeyInfo, WorkspaceInfo } from "../types";
 import { GroupManager } from "./GroupManager";
 import { KeyManager } from "./KeyManager";
 import { MemoryWorkspace } from "./MemoryWorkspace";
@@ -27,11 +27,15 @@ export function MemoryApp({
   theme,
   onToggleTheme,
   onSignOut,
+  workspace,
+  shell,
 }: {
   info: KeyInfo;
   theme: "light" | "dark";
   onToggleTheme: () => void;
   onSignOut: () => void;
+  workspace: WorkspaceInfo;
+  shell: WorkspaceShellProps;
 }) {
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,13 +43,14 @@ export function MemoryApp({
   const [view, setView] = useState<MemoryView>("workbench");
 
   const refreshGroups = useCallback(async () => {
-    const listed = await api.groups();
+    const listed = await api.groups(workspace.id);
     setGroups(listed.items);
     setGroupsError(null);
-  }, []);
+  }, [workspace.id]);
 
   const loadGroups = useCallback(async () => {
     setLoading(true);
+    setGroupsError(null);
     try {
       await refreshGroups();
     } catch (error) {
@@ -59,6 +64,8 @@ export function MemoryApp({
   }, [refreshGroups]);
 
   useEffect(() => {
+    // 切换记忆工作区时回到工作台并按新工作区重新拉取分类，杜绝跨区数据残留。
+    setView("workbench");
     void loadGroups();
   }, [loadGroups]);
 
@@ -75,24 +82,35 @@ export function MemoryApp({
       navItems={ready ? MEMORY_NAV_ITEMS : undefined}
       activeNavId={view}
       onSelectNav={(id) => setView(id as MemoryView)}
+      {...shell}
     >
       {loading ? (
         <Skeleton rows={3} />
       ) : groupsError ? (
         <ErrorBanner message={groupsError} onRetry={loadGroups} />
       ) : view === "workbench" ? (
-        <MemoryWorkspace groups={groups} onManageGroups={() => setView("groups")} />
+        <MemoryWorkspace
+          key={workspace.id}
+          workspaceId={workspace.id}
+          groups={groups}
+          onManageGroups={() => setView("groups")}
+        />
       ) : view === "groups" ? (
-        <GroupManager groups={groups} onGroupsChange={refreshGroups} />
+        <GroupManager
+          key={workspace.id}
+          workspaceId={workspace.id}
+          groups={groups}
+          onGroupsChange={refreshGroups}
+        />
       ) : view === "keys" ? (
         <KeyManager groups={groups} currentKeyId={info.key_id} />
       ) : view === "review" ? (
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <ReviewCenter />
+          <ReviewCenter key={workspace.id} workspaceId={workspace.id} />
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <RecycleBin />
+          <RecycleBin key={workspace.id} workspaceId={workspace.id} />
         </div>
       )}
     </AppShell>

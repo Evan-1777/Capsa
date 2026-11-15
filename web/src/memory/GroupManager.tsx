@@ -21,9 +21,11 @@ const DESC_MAX = 200;
 type Editing = { mode: "create" } | { mode: "edit"; group: GroupInfo };
 
 export function GroupManager({
+  workspaceId,
   groups,
   onGroupsChange,
 }: {
+  workspaceId: string;
   groups: GroupInfo[];
   onGroupsChange: () => Promise<void>;
 }) {
@@ -104,6 +106,7 @@ export function GroupManager({
 
       {editing && (
         <GroupDialog
+          workspaceId={workspaceId}
           editing={editing}
           onClose={() => setEditing(null)}
           onSaved={async () => {
@@ -128,10 +131,12 @@ export function GroupManager({
 }
 
 function GroupDialog({
+  workspaceId,
   editing,
   onClose,
   onSaved,
 }: {
+  workspaceId: string;
   editing: Editing;
   onClose: () => void;
   onSaved: () => Promise<void>;
@@ -156,7 +161,7 @@ function GroupDialog({
       if (existing) {
         await api.updateGroup(existing.slug, { name, description });
       } else {
-        await api.createGroup({ slug, name, description });
+        await api.createGroup({ slug, name, description, workspace_id: workspaceId });
       }
       await onSaved();
     } catch (error) {

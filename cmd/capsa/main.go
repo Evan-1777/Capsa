@@ -543,6 +543,17 @@ func cmdServe(args []string) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	// 存量库在监听前置阶段完成幂等迁移：失败即退出，避免半迁移状态对外服务。
+	handle, err := db.Connect()
+	if err != nil {
+		return fail("数据库迁移失败：%v", err)
+	}
+	if err := db.MigrateIfInitialized(handle); err != nil {
+		handle.Close()
+		return fail("数据库迁移失败：%v", err)
+	}
+	handle.Close()
+
 	address := fmt.Sprintf("%s:%d", *host, *port)
 	fmt.Printf("capsa 服务已启动：http://%s\n", address)
 	if err := http.ListenAndServe(address, server.NewHandler()); err != nil {

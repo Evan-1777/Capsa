@@ -333,3 +333,239 @@ test("13. MD3 主题亮暗切换与窄屏模态抽屉导航", async ({ page }) =
   await expect(page.getByRole("heading", { name: "凭据管理" })).toBeVisible();
 });
 
+async function openWorkspaceSettings(page: Page) {
+  await page.getByRole("button", { name: "工作区设置" }).click();
+  await expect(page.getByRole("heading", { name: "工作区设置" })).toBeVisible();
+}
+
+async function createWorkspace(page: Page, name: string, mode: "memory" | "docs") {
+  await page.getByRole("button", { name: "新建工作区" }).first().click();
+  await expect(page.getByRole("heading", { name: "新建工作区" })).toBeVisible();
+  await page.getByLabel("工作区名称").fill(name);
+  await page.getByLabel("工作区模式").selectOption(mode);
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(page.locator("li", { hasText: name })).toBeVisible();
+}
+
+function noHorizontalOverflow(page: Page) {
+  return page.evaluate(
+    () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+  );
+}
+
+test("14. 全局工作区设置：创建记忆与文档工作区、编辑信息、非空删除阻断、空工作区删除与窄屏/焦点校验", async ({ page }) => {
+  const stamp = String(Date.now() % 1000000);
+  const memoryName = "记忆区-" + stamp;
+  const docsName = "文档区-" + stamp;
+  const emptyName = "空区-" + stamp;
+  await signIn(page, keys.admin);
+
+  await openWorkspaceSettings(page);
+
+  // 新建弹窗：焦点落入弹窗内，Escape 可关闭
+  await page.getByRole("button", { name: "新建工作区" }).first().click();
+  await expect(page.getByRole("heading", { name: "新建工作区" })).toBeVisible();
+  expect(
+    await page.evaluate(() => {
+      const dialog = document.querySelector("dialog[open]");
+      return Boolean(dialog && document.activeElement && dialog.contains(document.activeElement));
+    }),
+  ).toBeTruthy();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("heading", { name: "新建工作区" })).toHaveCount(0);
+
+  await createWorkspace(page, memoryName, "memory");
+  await createWorkspace(page, docsName, "docs");
+
+  // 切换至新记忆工作区后，分类与默认记忆工作区严格隔离
+  await page
+    .locator("li", { hasText: memoryName })
+    .getByRole("button", { name: "切换至此工作区" })
+    .click();
+  await expect(page.getByRole("navigation", { name: "主视图" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "项目", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("切换工作区").locator("option:checked")).toHaveText(
+    new RegExp(memoryName),
+  );
+
+  // 编辑工作区名称，模式锁定不可改
+  await openWorkspaceSettings(page);
+  await page.locator("li", { hasText: memoryName }).getByRole("button", { name: "编辑" }).click();
+  await expect(page.getByRole("heading", { name: "编辑工作区" })).toBeVisible();
+  await expect(page.getByLabel("工作区模式")).toBeDisabled();
+  const renamed = memoryName + "-改";
+  await page.getByLabel("工作区名称").fill(renamed);
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect(page.locator("li", { hasText: renamed })).toBeVisible();
+
+  // 当前激活工作区在设置视图内以「当前工作区」呈现，经返回按钮回到主视图
+  await page.getByRole("button", { name: "返回当前工作区" }).click();
+  await expect(page.getByRole("navigation", { name: "主视图" })).toBeVisible();
+
+  // 新工作区内建分类后，删除工作区被原子阻断
+  await page.getByRole("button", { name: "分类管理" }).click();
+  await page.getByRole("button", { name: "新建分类" }).first().click();
+  await page.getByLabel("分类标识").fill("lab" + stamp);
+  await page.getByLabel("分类名称").fill("实验室");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(page.locator("li", { hasText: "lab" + stamp })).toBeVisible();
+
+  await openWorkspaceSettings(page);
+  await page.locator("li", { hasText: renamed }).getByRole("button", { name: "删除" }).click();
+  await expect(page.getByRole("heading", { name: "删除工作区" })).toBeVisible();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByRole("alert")).toContainText("工作区下仍有分类或文档，禁止删除");
+  await page.getByRole("button", { name: "取消" }).click();
+
+  // 空工作区删除成功
+  await createWorkspace(page, emptyName, "memory");
+  await page.locator("li", { hasText: emptyName }).getByRole("button", { name: "删除" }).click();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(page.locator("li", { hasText: emptyName })).toHaveCount(0);
+
+  // 窄屏无横向溢出
+  await page.setViewportSize({ width: 375, height: 667 });
+  expect(await noHorizontalOverflow(page)).toBeTruthy();
+});
+
+test("15. 文档工作区全流程：公共文档与分类导航、分类访问 ID 复制与轮换、文档在线编辑与 375px 窄屏无溢出", async ({
+  page,
+  context,
+}) => {
+  const stamp = String(Date.now() % 1000000);
+  const docsName = "文档全流程-" + stamp;
+  const categoryName = "规范-" + stamp;
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await signIn(page, keys.admin);
+
+  await openWorkspaceSettings(page);
+  await createWorkspace(page, docsName, "docs");
+  await page
+    .locator("li", { hasText: docsName })
+    .getByRole("button", { name: "切换至此工作区" })
+    .click();
+
+  // 传统记忆五视图在文档工作区下完全不出现
+  for (const label of ["记忆工作台", "分类管理", "凭据管理", "时效复核", "回收站"]) {
+    await expect(page.getByRole("button", { name: label, exact: true })).toHaveCount(0);
+  }
+  await expect(page.getByRole("button", { name: /工作区公共文档/ })).toBeVisible();
+
+  // 公共文档：新建、安全渲染
+  await page.getByRole("button", { name: "新建文档" }).first().click();
+  await expect(page.getByRole("heading", { name: "新建文档" })).toBeVisible();
+  await page.getByLabel("文档路径").fill("guides/overview.md");
+  await page
+    .getByLabel("初始正文")
+    .fill("[站点](https://example.com)\n\n<script>window.doc_xss=true</script>");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "guides/overview.md" })).toBeVisible();
+  await expect(page.locator('a[href="https://example.com"]')).toHaveAttribute("target", "_blank");
+  expect(await page.evaluate(() => (window as never as { doc_xss?: boolean }).doc_xss)).toBeUndefined();
+  await expect(page.locator("script", { hasText: "doc_xss" })).toHaveCount(0);
+
+  // 在线编辑保存
+  await page.getByRole("button", { name: "编辑" }).click();
+  await page.getByLabel("文档正文").fill("# 公共规范\n\n- 条目一\n- 条目二");
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect(page.getByRole("article").getByRole("listitem")).toHaveCount(2);
+
+  // 新建分类并进入分类视图
+  await page.getByRole("button", { name: "新建分类" }).click();
+  await expect(page.getByRole("heading", { name: "新建分类" })).toBeVisible();
+  await page.getByLabel("分类名称").fill(categoryName);
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await page.getByRole("button", { name: new RegExp(categoryName) }).first().click();
+  await expect(page.getByText("分类访问 ID")).toBeVisible();
+  await expect(page.locator("code", { hasText: "/mcp/docs?token=" })).toBeVisible();
+
+  const accessCode = page.locator("code", { hasText: "capsa_doc_" }).first();
+  const beforeAccess = ((await accessCode.textContent()) ?? "").trim();
+  expect(beforeAccess.startsWith("capsa_doc_")).toBeTruthy();
+
+  // 复制访问 ID
+  await page.getByRole("button", { name: "复制访问 ID" }).click();
+  await expect(page.getByRole("button", { name: "已复制" })).toBeVisible();
+
+  // 重置轮换：旧访问 ID 立即 401，新访问 ID 立即可用
+  await page.getByRole("button", { name: "重置轮换" }).click();
+  await expect(page.getByRole("heading", { name: "重置分类访问 ID" })).toBeVisible();
+  await page.getByRole("button", { name: "确认轮换" }).click();
+  await expect(page.getByRole("heading", { name: "重置分类访问 ID" })).toHaveCount(0);
+  const afterAccess = (((await page.locator("code", { hasText: "capsa_doc_" }).first().textContent()) ?? "")).trim();
+  expect(afterAccess).not.toBe(beforeAccess);
+  const statuses = await page.evaluate(
+    async (tokens: string[]) => {
+      const handshake = async (token: string) => {
+        const response = await fetch("/mcp/docs?token=" + token, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2024-11-05",
+              capabilities: {},
+              clientInfo: { name: "e2e", version: "1" },
+            },
+          }),
+        });
+        return response.status;
+      };
+      return [await handshake(tokens[0]), await handshake(tokens[1])];
+    },
+    [beforeAccess, afterAccess],
+  );
+  expect(statuses[1]).toBe(200);
+  expect(statuses[0]).toBe(401);
+
+  // 分类下文档新建、筛选、长文本在线编辑、重命名、删除
+  await page.getByRole("button", { name: "新建文档" }).first().click();
+  await page.getByLabel("文档路径").fill("notes.md");
+  await page.getByLabel("初始正文").fill("initial body");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "notes.md" })).toBeVisible();
+
+  await page.getByLabel("筛选文档").fill("notes");
+  await expect(page.getByRole("button", { name: /notes\.md/ }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "编辑" }).click();
+  const longText = Array.from({ length: 400 }, (_, index) => "第 " + index + " 行长文本内容").join("\n");
+  await page.getByLabel("文档正文").fill(longText);
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect(page.getByRole("article")).toContainText("第 399 行长文本内容");
+
+  // 375px 窄屏：单栏切换且无横向溢出
+  await page.setViewportSize({ width: 375, height: 667 });
+  expect(await noHorizontalOverflow(page)).toBeTruthy();
+  await page.getByRole("button", { name: "返回文档列表" }).click();
+  await expect(page.getByLabel("筛选文档")).toBeVisible();
+  expect(await noHorizontalOverflow(page)).toBeTruthy();
+  await page.getByRole("button", { name: /notes\.md/ }).first().click();
+  await expect(page.getByRole("button", { name: "返回文档列表" })).toBeVisible();
+
+  // 宽屏下重命名与删除
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "重命名文档" })).toBeVisible();
+  await page.getByLabel("文档路径").fill("notes-v2.md");
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect(page.getByRole("heading", { name: "notes-v2.md" })).toBeVisible();
+
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "删除文档" })).toBeVisible();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByText("从左侧选择一篇文档查看正文")).toBeVisible();
+
+  // 空分类删除成功
+  await page.getByRole("button", { name: "删除分类" }).click();
+  await expect(page.getByRole("heading", { name: "删除分类" })).toBeVisible();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByRole("button", { name: new RegExp(categoryName) })).toHaveCount(0);
+});
+
+

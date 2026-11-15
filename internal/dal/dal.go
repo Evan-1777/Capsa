@@ -140,6 +140,13 @@ func GetMemoriesBatchForAccess(handle *sql.DB, memoryIDs []string, scopes map[st
 // ListActiveMemoriesForSearch returns active entries inside the authorized
 // groups; body is projected only when includeBody is true.
 func ListActiveMemoriesForSearch(handle *sql.DB, scopes map[string]string, group string, includeBody bool) ([]map[string]any, error) {
+	return ListActiveMemoriesForSearchInWorkspace(handle, scopes, "", group, includeBody)
+}
+
+// ListActiveMemoriesForSearchInWorkspace narrows the result to the groups of
+// one memory workspace when workspaceID is non-empty; an empty workspaceID
+// keeps the workspace-less contract used by /mcp and the CLI.
+func ListActiveMemoriesForSearchInWorkspace(handle *sql.DB, scopes map[string]string, workspaceID, group string, includeBody bool) ([]map[string]any, error) {
 	_, wildcard := scopes["*"]
 	slugs := sortedKeys(scopes)
 	if !wildcard && len(slugs) == 0 {
@@ -153,6 +160,10 @@ func ListActiveMemoriesForSearch(handle *sql.DB, scopes map[string]string, group
 			params = append(params, slug)
 		}
 	}
+	if workspaceID != "" {
+		conditions = append(conditions, "group_slug IN (SELECT slug FROM groups WHERE workspace_id = ?)")
+		params = append(params, workspaceID)
+	}
 	if group != "" {
 		conditions = append(conditions, "group_slug = ?")
 		params = append(params, group)
@@ -165,19 +176,21 @@ func ListActiveMemoriesForSearch(handle *sql.DB, scopes map[string]string, group
 	return queryMaps(handle, sqlText, params...)
 }
 
-// AddGroup inserts a group; false means the slug already exists.
+// AddGroup inserts a group into the default memory workspace; false means the
+// slug already exists.
 func AddGroup(handle *sql.DB, slug, name, description string) (bool, error) {
-	result, err := handle.Exec(
-		"INSERT OR IGNORE INTO groups (slug, name, description, created_at) VALUES (?, ?, ?, ?)",
-		slug, name, description, db.UtcNow())
+	status, err := AddGroupInWorkspace(handle, db.DefaultWorkspaceID, slug, name, description)
 	if err != nil {
 		return false, err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, err
+	switch status {
+	case "inserted":
+		return true, nil
+	case "duplicate":
+		return false, nil
+	default:
+		return false, fmt.Errorf("新增分组 %s 失败：%s", slug, status)
 	}
-	return affected > 0, nil
 }
 
 // UpdateGroup renames a group in place; the slug is immutable.
@@ -239,7 +252,7 @@ func DeleteEmptyGroup(handle *sql.DB, slug string) (string, error) {
 
 // GetGroup fetches a single group, or nil when absent.
 func GetGroup(handle *sql.DB, slug string) (map[string]any, error) {
-	rows, err := queryMaps(handle, "SELECT slug, name, description, created_at FROM groups WHERE slug = ?", slug)
+	rows, err := queryMaps(handle, "SELECT slug, workspace_id, name, description, created_at FROM groups WHERE slug = ?", slug)
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
@@ -248,39 +261,13 @@ func GetGroup(handle *sql.DB, slug string) (map[string]any, error) {
 
 // ListGroups lists every group ordered by slug.
 func ListGroups(handle *sql.DB) ([]map[string]any, error) {
-	return queryMaps(handle, "SELECT slug, name, description FROM groups ORDER BY slug")
+	return ListGroupsInWorkspace(handle, "")
 }
 
 // ListGroupsWithCounts lists groups visible to the scopes with their active
 // memory count and the effective permission.
 func ListGroupsWithCounts(handle *sql.DB, scopes map[string]string) ([]map[string]any, error) {
-	_, wildcard := scopes["*"]
-	slugs := sortedKeys(scopes)
-	if !wildcard && len(slugs) == 0 {
-		return []map[string]any{}, nil
-	}
-	where, params := "", []any{}
-	if !wildcard {
-		where = fmt.Sprintf("WHERE g.slug IN (%s)", placeholders(len(slugs)))
-		for _, slug := range slugs {
-			params = append(params, slug)
-		}
-	}
-	rows, err := queryMaps(handle, fmt.Sprintf(`
-        SELECT g.slug, g.name, g.description,
-               (SELECT COUNT(*) FROM memories m
-                 WHERE m.group_slug = g.slug AND m.deleted_at IS NULL) AS count
-        FROM groups g
-        %s
-        ORDER BY g.slug
-        `, where), params...)
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		row["permission"] = permissions.PermissionFor(scopes, row["slug"].(string))
-	}
-	return rows, nil
+	return ListGroupsWithCountsInWorkspace(handle, scopes, "")
 }
 
 // CreateKey stores a signed key.
@@ -512,6 +499,12 @@ func ListDeletedMemories(handle *sql.DB, groupSlug string) ([]map[string]any, er
 // authorized groups, ordered by (pinned DESC, updated_at DESC, id DESC).
 // Keyword matching is deliberately absent: hits and ordering belong to retrieval.
 func ListMemoriesForWeb(handle *sql.DB, scopes map[string]string, status, group string, offset, limit int) ([]map[string]any, int, error) {
+	return ListMemoriesForWebInWorkspace(handle, scopes, "", status, group, offset, limit)
+}
+
+// ListMemoriesForWebInWorkspace narrows the page to one memory workspace when
+// workspaceID is non-empty. The return triple stays (rows, total, err).
+func ListMemoriesForWebInWorkspace(handle *sql.DB, scopes map[string]string, workspaceID, status, group string, offset, limit int) ([]map[string]any, int, error) {
 	_, wildcard := scopes["*"]
 	slugs := sortedKeys(scopes)
 	if !wildcard && len(slugs) == 0 {
@@ -533,6 +526,10 @@ func ListMemoriesForWeb(handle *sql.DB, scopes map[string]string, status, group 
 		scoped = fmt.Sprintf("group_slug IN (%s) AND ", placeholders(len(slugs)))
 		// 占位符顺序由 scoped 决定，分组 slug 必须排在状态条件之前。
 		params = append(append([]any{}, stringSliceToAny(slugs)...), params...)
+	}
+	if workspaceID != "" {
+		scoped += "group_slug IN (SELECT slug FROM groups WHERE workspace_id = ?) AND "
+		params = append([]any{workspaceID}, params...)
 	}
 	where := scoped + condition
 	if group != "" {

@@ -14,6 +14,10 @@
 | 全权限单管理员 Web 管理台：工作台、分类管理、凭据管理、时效复核、回收站 | 回收站条目的物理清理 |
 | Web 端分类创建、就地编辑与安全删除（仅空分类可删） | 备份的异地对象存储同步 |
 | Web 端凭据深度管理：查看 Key 状态、权限矩阵、在线签发（单次明文披露）、吊销与物理删除 | 环境变量管理员凭据的 Web 化修改（改值重启） |
+| 顶层双模工作区：记忆工作区与文档工作区，创建时固定模式且互不转换 | 工作区创建后的模式互转 |
+| 文档工作区两级容器：工作区公共文档区（跨分类只读共享）+ 分类专属文档区（读写隔离） | 文档版本历史与多人协同冲突合并 |
+| 文档 MCP 端点：通配搜索、关键词/正则检索、全量或按行分段读取、防覆盖新建、全量覆写、原子局部替换与删除 | 文档附件的二进制存储与预览 |
+| 每分类独立高熵访问 ID：管理台内联展示、一键复制与即时轮换 | 分类访问 ID 的哈希存储（管理台需常驻展示原值） |
 | 在线热备与快照回灌 | |
 
 ## 架构
@@ -50,10 +54,11 @@
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid #e5e7eb">
   <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:12px">
-    <div style="font-size:12px;font-weight:600;margin-bottom:6px">容器内的四条路由</div>
+    <div style="font-size:12px;font-weight:600;margin-bottom:6px">容器内的五条路由</div>
     <div style="font-size:11px;color:#52525b;line-height:1.9">
       <code style="background:#f4f4f5;padding:1px 5px;border-radius:3px">/healthz</code> 健康检查<br>
-      <code style="background:#f4f4f5;padding:1px 5px;border-radius:3px">/mcp</code> MCP 工具端点<br>
+      <code style="background:#f4f4f5;padding:1px 5px;border-radius:3px">/mcp</code> 记忆 MCP 工具端点<br>
+      <code style="background:#f4f4f5;padding:1px 5px;border-radius:3px">/mcp/docs</code> 文档 MCP 工具端点<br>
       <code style="background:#f4f4f5;padding:1px 5px;border-radius:3px">/api</code> REST API<br>
       <code style="background:#f4f4f5;padding:1px 5px;border-radius:3px">/</code> 管理台静态页面
     </div>
@@ -157,13 +162,46 @@ Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`mem
 
 `memory_search` 默认匹配标题、标签与摘要，返回结果不含正文；当特定代码片段或配置细节没有出现在这些字段里时，可传 `include_body=True` 把正文并入匹配。正文命中按低权重计分（每词元 0.2 分、封顶 0.8 分），低于摘要单次命中的 1 分，因此同一关键词下标题命中条目始终排在仅正文命中的条目之前。该参数仅在 `query` 非空时生效：空 `query` 是按置顶与更新时间浏览，不会加载正文。
 
+### 文档工作区端点
+
+文档工作区使用独立端点 `https://<你的域名>/mcp/docs`，凭据是**分类访问 ID**（形如 `capsa_doc_<32位随机串>`），在管理台文档工作区的分类视图内直接查看、复制与轮换。它与管理台管理员令牌、`capsa key create` 签发的分组 Key 物理隔离：分类访问 ID 无法访问 `/mcp` 与 `/api`，反向亦然。
+
+```json
+{
+  "mcpServers": {
+    "capsa-docs": {
+      "type": "http",
+      "url": "https://memory.example.com/mcp/docs?token=capsa_doc_<32位随机串>"
+    }
+  }
+}
+```
+
+一个分类访问 ID 只解锁该分类的完整读写，外加所属工作区公共文档区的只读检索，无法触达其他分类、其他文档工作区或任何传统记忆数据。可用工具：
+
+| 工具 | 语义 |
+|---|---|
+| `doc_glob` | 按路径通配或子串列出文档（作用域限 public / category / all） |
+| `doc_grep` | 在正文中按关键词或正则检索，返回文档、行号与行文本 |
+| `doc_read` | 读取单篇正文；省略行区间时返回完整正文，不做字符截断 |
+| `doc_create` | 在当前分类新建文档，同名拒绝覆盖 |
+| `doc_write` | 覆盖当前分类下已存在文档的全部正文 |
+| `doc_edit` | 精确文本替换；命中多处时默认拒绝，`replace_all` 可全量替换 |
+| `doc_delete` | 物理删除当前分类下的文档 |
+
+公共文档区对所有写工具只读，只能由管理台维护。
+
 ## Web 管理台
 
 浏览器打开 `https://<你的域名>/`，粘贴**管理员令牌**登录：要么是 `capsa key create admin --scopes "*:rw"` 签发的通配 Key，要么是服务端 `CAPSA_ADMIN_TOKEN` 的值。凭据只存在 `sessionStorage`，关闭标签页即失效。
 
 管理台采用 Material Design 3（MD3）设计系统打造（标题栏 + 宽屏 Navigation Rail / 窄屏模态导航抽屉的 App Shell、五级色调表面层级与深浅色运行时切换），是服务拥有者的全权限控制台，提供工作台、分类管理、凭据管理、时效复核与回收站五个视图：可浏览、检索、新建、编辑、软删除、延期复核并恢复全库所有分类下的记忆。分类管理支持新建分类、就地编辑名称描述与安全删除空分类；分类标识（slug）创建后不可修改，以保证记忆外键始终有效。凭据管理支持查看 Key 状态、权限矩阵、在线签发（单次明文披露）、吊销与物理删除。新增或编辑分类后，工作台的筛选胶囊与「新建记忆」抽屉的分组选项即时更新。
 
-`/api` 在网关层强制核验管理员权限，普通分组 Key 无论以何种方式发起请求一律返回 403，无法绕过页面直接调用。Agent 侧的 `/mcp` 不受此限：分组 Key 仍按作用域隔离，通配 `*:rw` Key 则拥有全库读写。
+顶栏提供工作区切换器与「工作区设置」入口。工作区设置视图统一管理工作区：新建时固定选择记忆模式或文档模式（创建后不可修改），可编辑名称与描述，空工作区可安全删除、非空工作区删除被阻断，默认记忆工作区常驻不可删。切换工作区时主界面在记忆子应用与文档子应用之间整体切换，两侧数据严格隔离。
+
+文档工作区界面分三栏：左侧是「工作区公共文档」与分类列表（可新建、重命名、删除空分类），中间是文档列表（按路径实时筛选）与新建入口，右侧是 Markdown 安全渲染阅读与在线编辑面板。分类视图顶部内联展示该分类的访问 ID、`/mcp/docs` 接入地址与复制按钮，以及「重置轮换」——轮换后旧访问 ID 立即失效、新访问 ID 立即生效。存在未保存修改时切换文档或离开页面会先要求确认。
+
+`/api` 在网关层强制核验管理员权限，普通分组 Key 无论以何种方式发起请求一律返回 403，无法绕过页面直接调用。Agent 侧的 `/mcp` 与 `/mcp/docs` 不受此限：分组 Key 仍按作用域隔离，通配 `*:rw` Key 则拥有全库读写。
 
 ```bash
 # 为管理台签发通配管理员 Key
@@ -251,16 +289,19 @@ docker compose exec -T capsa capsa restore /backup/capsa-2026-09-16.db
 ```
 cmd/capsa/main.go       单入口：serve 子命令与 13 项管理叶子命令
 internal/
-  db/                   SQLite 连接、幂等建表与固定微秒时间戳
+  db/                   SQLite 连接、幂等建表、存量库工作区迁移与固定微秒时间戳
   dal/                  三态授权数据访问层，唯一 SQL 出口
-  ids/                  CSPRNG 标识符与 SHA-256 令牌哈希
+  ids/                  CSPRNG 标识符（含工作区/文档/分类访问 ID）与 SHA-256 令牌哈希
   permissions/          权限判定单一来源：PermissionFor 与管理级令牌
-  auth/                 令牌校验器与 URL 查询参数鉴权中间件
+  auth/                 令牌校验器（含分类访问 ID）与 URL 查询参数鉴权中间件
   retrieval/            分词、打分排序（含正文低权重兜底）与近似查重
   formatters/           三级披露的纯文本契约
-  server/               根路由装配、MCP 服务、Web REST API 与内嵌 SPA
+  server/               根路由装配、记忆与文档双 MCP 服务、Web REST API 与内嵌 SPA
 web/                     Capsa Studio：Vite + React 18 + TypeScript + Tailwind
-tests/                   Go 集成测试（端点状态码、信封、MCP 握手）
+  src/shell/             全局外壳与工作区设置视图
+  src/memory/            传统记忆子应用（五视图）
+  src/docs/              文档工作区子应用（公共区/分类导航、访问 ID 与在线编辑）
+tests/                   Go 集成测试（端点状态码、信封、双 MCP 握手与权限边界）
 Dockerfile               三阶段构建：Node 产物 → Go 静态二进制 → Alpine
 docker-compose.yml       单服务编排，只拉取镜像
 .github/workflows/       手动触发的镜像构建
@@ -274,3 +315,4 @@ docker-compose.yml       单服务编排，只拉取镜像
 | `.docs/Project.md` | 项目单一事实来源：架构、约定、约束与决策记录 |
 | `.docs/09-13-v3/` | Phase 3 设计与交付归档 |
 | `.docs/09-16-v1/` | 本次部署形态收敛的归档 |
+| `.docs/11-15-v1/` | 顶层双模工作区与文档工作区子系统的规划与交付归档 |
