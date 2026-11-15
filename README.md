@@ -191,6 +191,23 @@ Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`mem
 
 公共文档区对所有写工具只读，只能由管理台维护。
 
+#### 本地 MCP Stdio 代理桥（`capsa-docs-mcp`）
+
+多项目共享同一套全局 AI 工具配置时，可通过仓库内零依赖的 `mcp-bridge/` 将分类访问 ID 隔离在各业务工作区 `.env` 中：
+
+```bash
+# 1. 本机全局链接一次
+cd mcp-bridge && npm link --cache /tmp/npm-cache
+
+# 2. 在 AI 工具全局 MCP 配置中注册固定服务名 capsa-docs（command: "capsa-docs-mcp"）
+
+# 3. 在业务项目根目录写入 .env（自动补齐 .gitignore 的 .env）并校验连通性
+capsa-docs-mcp init "https://memory.evan-ai.xyz/mcp/docs?token=capsa_doc_<32位随机串>"
+capsa-docs-mcp check
+```
+
+代理桥无参启动时从当前目录向上（至 `.git` 根止）读取 `.env` 中的 `CAPSA_DOCS_TOKEN` 与可选 `CAPSA_DOCS_URL`（默认 `https://memory.evan-ai.xyz/mcp/docs`），自动携带 `Authorization: Bearer` 与 `Mcp-Session-Id` 转发 JSON-RPC 请求并处理会话过期重握手；未配置 `CAPSA_DOCS_TOKEN` 的工作区正常响应 `initialize` 且 `tools/list` 返回 `[]`。
+
 ## Web 管理台
 
 浏览器打开 `https://<你的域名>/`，粘贴**管理员令牌**登录：要么是 `capsa key create admin --scopes "*:rw"` 签发的通配 Key，要么是服务端 `CAPSA_ADMIN_TOKEN` 的值。凭据只存在 `sessionStorage`，关闭标签页即失效。
@@ -301,6 +318,7 @@ web/                     Capsa Studio：Vite + React 18 + TypeScript + Tailwind
   src/shell/             全局外壳与工作区设置视图
   src/memory/            传统记忆子应用（五视图）
   src/docs/              文档工作区子应用（公共区/分类导航、访问 ID 与在线编辑）
+mcp-bridge/              零依赖本地 MCP Stdio 代理桥（capsa-docs-mcp：Stdio 转发 / init / check）
 tests/                   Go 集成测试（端点状态码、信封、双 MCP 握手与权限边界）
 Dockerfile               三阶段构建：Node 产物 → Go 静态二进制 → Alpine
 docker-compose.yml       单服务编排，只拉取镜像

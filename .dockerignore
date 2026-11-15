@@ -13,6 +13,7 @@ web/node_modules
 web/test-results
 web/playwright-report
 web/dist
+mcp-bridge
 bin
 internal/server/static
 **/__pycache__

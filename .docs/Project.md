@@ -44,7 +44,7 @@
   - 可选：设置 `CAPSA_ADMIN_TOKEN` 后，该字符串本身即管理台管理员令牌，无需落库；未配置或仅含空白时不启用
   - ★ 管理台（`/api`）只接受通配 `*:rw` 凭据，普通分组 Key 一律被网关拒绝为 403；Agent 侧的 `/mcp` 不受此限
   - ★ 默认数据库路径 `/data/capsa.db` 在本机不存在，本地运行须先设置 `CAPSA_DB_PATH` 指向可写目录；未执行 `capsa init` 时 `/healthz` 返回 503 而非 200
-- **如何测试**：Go 侧 `go test ./...`（含 `tests/` 集成测试与各 `internal/` 单元测试）；前端侧 `cd web && npm run test:e2e`（Playwright 驱动系统 Chrome，经 `web/tests/serve.sh` 起真实 Go 二进制）。两侧全程使用临时数据库，不触碰 `/data`
+- **如何测试**：Go 侧 `go test ./...`（含 `tests/` 集成测试与各 `internal/` 单元测试）；本地代理桥 `node mcp-bridge/test.mjs`（覆盖 `.git` 边界 `.env` 解析、`init`/`check` 子命令、无 Token 降级、404 会话过期重握手及真实二进制联测）；前端侧 `cd web && npm run test:e2e`（Playwright 驱动系统 Chrome，经 `web/tests/serve.sh` 起真实 Go 二进制）。全程使用临时目录与数据库，不触碰 `/data`
   - ★ 本机若配置了 `http_proxy`/`https_proxy`，Playwright 的 webServer 探活会被代理拦截而误报「端口已占用」；运行 E2E 前须清空代理变量，例如 `env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY npm run test:e2e`
 - **如何构建镜像**：仅手动触发。网页在仓库 Actions 页签选 `build-image`，命令行 `gh workflow run build-image.yml -f tag=v0.1.0`；本地等价命令 `docker build -t ghcr.io/evan-1777/capsa:dev .`。私有 GHCR 包需先 `docker login ghcr.io`（PAT 需 `read:packages`）
 - **实测基线**（本机 Linux x86_64）：`go build -ldflags="-s -w"` 产物 13.1 MiB；`capsa serve` 空载常驻 RSS ≈ 13 MB，遇请求后升至约 16–20 MB 且不回落至空载值（重构前 Python 版约 81 MB）。容器镜像为 Alpine + curl + 该静态二进制，构建由 CI 完成（本机无 Docker，镜像体积以 CI 构建为准）
@@ -79,6 +79,7 @@ web/                     # Capsa Studio：Material Design 3 + React 18 + TypeScr
 ├── vite.config.ts       # build.outDir 固定 ../internal/server/static
 ├── playwright.config.ts # channel: "chrome"，webServer 指向 web/tests/serve.sh
 └── tests/e2e.spec.ts    # 浏览器端到端套件（15 条用例）
+mcp-bridge/              # 零依赖本地 MCP Stdio 代理桥（全局指令 capsa-docs-mcp：Stdio 转发 / 无 Token 降级 / init / check）
 README.md                # 定位、架构、部署、宿主反代接入与运维速查
 Dockerfile               # 三阶段构建：Node 产物 → Go 静态二进制 → Alpine
 docker-compose.yml       # 单服务编排，只拉取 GHCR 镜像
@@ -149,6 +150,7 @@ tests/docs_workspace_test.go # 工作区/文档 REST、分类访问 ID 边界与
 - 2026-11-15 文档局部替换在 `BEGIN IMMEDIATE` 排他事务内完成「读取 + 匹配计数 + 替换 + 回写」——理由：全量覆写是单语句天然原子，局部替换若拆成读改两段会丢失并发编辑
 - 2026-11-15 文档 MCP 为独立路由 `/mcp/docs` 与独立 `auth.VerifyDocAccessID` 守卫，与 `/mcp` 及 `/api` 物理隔离——理由：分类访问 ID 只应解锁单个分类与所在工作区公共区，复用传统守卫会让凭据空间交叉；两个端点的工具集互不出现（`memory_*` 与 `doc_*` 各自 7 个）
 - 2026-11-15 公共文档区对全部文档写原语只读，仅管理台可增删改——理由：公共区是工作区内跨分类共享的规范位，开放给单个分类的访问 ID 等同于把所有分类的写权限放大到工作区级
+- 2026-11-15 新增 `mcp-bridge/`（`capsa-docs-mcp`）提供本地 MCP Stdio 代理与 `.env` 初始化工具，并经 `.dockerignore` 与容器构建隔离——理由：各 AI 工具全局注册固定逻辑名 `capsa-docs` 即可跨项目复用字节一致的 `AGENTS.md`，将分类访问 ID 收敛在各业务项目工作区 `.env` 内；未配置 Token 的项目在握手后返回空工具数组 `[]` 实现零报错降级
 
 ## 外部集成
 
@@ -165,6 +167,7 @@ tests/docs_workspace_test.go # 工作区/文档 REST、分类访问 ID 边界与
   3. **验证连通性**：点击连接测试，Claude 完成 initialize 握手并拉取工具列表后即可在对话中读写指定分组记忆。
 - **凭据隔离规范**：仅支持 URL 配置的客户端必须使用专用低权限分组 Key，严禁复用全局通配管理员凭据（`*:rw`）；反代须对含 `token` / `access_token` 的访问日志脱敏。凭据本身不写入文档或代码。
 - **MCP 传输形态差异**：`mcp-go` 对 `POST /mcp` 默认返回单条 `application/json` 响应（MCP Streamable HTTP 允许的响应模式），客户端打开 `GET /mcp` 独立 SSE 流时使用 `text/event-stream` 分帧。Python 版曾对 POST 一律 SSE 分帧，此为传输栈差异，标准 MCP 客户端两者均兼容。
+- **A-Code 工作流本地代理接入（`capsa-docs-mcp`）**：在 `mcp-bridge/` 执行 `npm link --cache /tmp/npm-cache` 暴露全局命令 `capsa-docs-mcp`，各 AI 工具全局配置一次 Stdio 服务 `capsa-docs`；业务项目根目录运行 `capsa-docs-mcp init "<url_or_token>"` 写入 `.env`（`CAPSA_DOCS_TOKEN` 及非默认 `CAPSA_DOCS_URL`）并自动补齐 `.gitignore` 的 `.env`，运行 `capsa-docs-mcp check` 校验远端握手与分类文档数。
 
 ## 术语
 

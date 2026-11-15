@@ -1,0 +1,15 @@
+{
+  "name": "capsa-docs-mcp",
+  "version": "1.0.0",
+  "description": "Local MCP stdio proxy and workspace .env helper for Capsa document workspace",
+  "type": "module",
+  "bin": {
+    "capsa-docs-mcp": "./index.mjs"
+  },
+  "scripts": {
+    "test": "node ./test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
