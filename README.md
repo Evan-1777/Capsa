@@ -206,7 +206,7 @@ capsa-docs-mcp init "https://memory.evan-ai.xyz/mcp/docs?token=capsa_doc_<32位�
 capsa-docs-mcp check
 ```
 
-代理桥无参启动时从当前目录向上（至 `.git` 根止）读取 `.env` 中的 `CAPSA_DOCS_TOKEN` 与可选 `CAPSA_DOCS_URL`（默认 `https://memory.evan-ai.xyz/mcp/docs`），自动携带 `Authorization: Bearer` 与 `Mcp-Session-Id` 转发 JSON-RPC 请求并处理会话过期重握手；未配置 `CAPSA_DOCS_TOKEN` 的工作区正常响应 `initialize` 且 `tools/list` 返回 `[]`。
+代理桥无参启动时本地直接响应 `initialize` 与 `tools/list`（固定返回 7 个 `doc_*` 工具定义，不依赖启动目录是否存在凭据）；执行 `tools/call` 时按调用参数 `cwd`（省略时取代理启动目录）向上至 `.git` 根动态读取 `.env` 中的 `CAPSA_DOCS_TOKEN` 与可选 `CAPSA_DOCS_URL`（默认 `https://memory.evan-ai.xyz/mcp/docs`），按 `(url, token)` 懒握手缓存 `Mcp-Session-Id`、剥离 `cwd` 后转发请求并处理 404 会话过期重握手，缺失凭据时返回工具级 `isError: true`。
 
 ## Web 管理台
 

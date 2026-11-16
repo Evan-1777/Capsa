@@ -3,9 +3,9 @@
  * Self-check for capsa-docs-mcp:
  *   1. Workspace .env upward resolution bounded by .git
  *   2. Subcommand init (full URL, custom URL, bare token, .gitignore idempotency)
- *   3. Stdio degraded mode (no token -> initialize ok + tools/list [])
- *   4. Stdio active proxy (Bearer auth, Mcp-Session-Id, 202 notification silence, 404 session re-handshake, SSE & JSON)
- *   5. Subcommand check against HTTP MCP server + real Capsa binary when built
+ *   3. Decoupled tool discovery (no token & no remote HTTP -> initialize ok + 7 static doc_* tools; tools/call -> isError)
+ *   4. Stdio lazy auth proxy (default cwd + explicit cwd override + cwd stripping, 404 session re-handshake, SSE & JSON)
+ *   5. Subcommand check + end-to-end schema & call verification against real Capsa binary when built
  */
 
 import assert from 'node:assert/strict';
@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_DOCS_URL,
+  DOCS_TOOLS,
   ensureGitignoreHasEnv,
   loadWorkspaceConfig,
   parseInitInput,
@@ -116,28 +117,40 @@ async function main() {
     assert.doesNotMatch(envContent, /CAPSA_DOCS_URL=/);
     assert.match(envContent, /CAPSA_DOCS_TOKEN=capsa_doc_default000000000000000000000000/);
 
-    // 3. Stdio degraded mode (no CAPSA_DOCS_TOKEN)
+    // 3. Decoupled tool discovery without CAPSA_DOCS_TOKEN
     const noTokenDir = path.join(tmpRoot, 'no-token');
     fs.mkdirSync(path.join(noTokenDir, '.git'), { recursive: true });
-    const degraded = await runStdioSession(noTokenDir, [
+    const unauthSession = await runStdioSession(noTokenDir, [
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } },
       { jsonrpc: '2.0', method: 'notifications/initialized' },
       { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'doc_glob', arguments: {} } },
     ]);
-    assert.equal(degraded.responses.length, 2);
-    assert.equal(degraded.responses[0].id, 1);
-    assert.equal(degraded.responses[0].result.serverInfo.name, 'capsa-docs');
-    assert.equal(degraded.responses[1].id, 2);
-    assert.deepEqual(degraded.responses[1].result.tools, []);
+    assert.equal(unauthSession.responses.length, 3);
+    assert.equal(unauthSession.responses[0].id, 1);
+    assert.equal(unauthSession.responses[0].result.serverInfo.name, 'capsa-docs');
+    assert.equal(unauthSession.responses[1].id, 2);
+    assert.equal(unauthSession.responses[1].result.tools.length, 7);
+    assert.deepEqual(
+      unauthSession.responses[1].result.tools.map((t) => t.name),
+      ['doc_glob', 'doc_grep', 'doc_read', 'doc_create', 'doc_write', 'doc_edit', 'doc_delete'],
+    );
+    assert.equal(DOCS_TOOLS.length, 7);
+    assert.equal(unauthSession.responses[2].id, 3);
+    assert.equal(unauthSession.responses[2].result.isError, true);
+    assert.match(unauthSession.responses[2].result.content[0].text, /未检测到 CAPSA_DOCS_TOKEN/);
 
-    // 4. Mock Streamable HTTP MCP server: auth, session expiry (404), 202 notifications, SSE + JSON, check
+    // 4. Mock Streamable HTTP MCP server: lazy auth on tools/call, cwd override & stripping, 404 re-handshake, SSE
     const VALID_TOKEN = 'capsa_doc_mockvalidtoken000000000000000000';
     let sessionSeq = 0;
     let currentValidSession = '';
     let expiredOnce = false;
     let initializedNotifications = 0;
+    let receivedRequests = 0;
+    const forwardedArgs = [];
 
     const server = http.createServer((req, res) => {
+      receivedRequests++;
       if (req.method !== 'POST' || req.url !== '/mcp/docs') {
         res.writeHead(404).end('not found');
         return;
@@ -180,9 +193,10 @@ async function main() {
           return;
         }
 
-        if (msg.method === 'tools/list') {
-          // Simulate server restart / session expiry once before succeeding
-          if (!expiredOnce) {
+        if (msg.method === 'tools/call' && msg.params?.name === 'doc_glob') {
+          forwardedArgs.push(msg.params.arguments);
+          // Simulate server restart / session expiry once on second call
+          if (!expiredOnce && forwardedArgs.length === 2) {
             expiredOnce = true;
             currentValidSession = 'invalidated';
             res.writeHead(404).end('Session terminated');
@@ -193,23 +207,13 @@ async function main() {
           res.end(`event: message\ndata: ${JSON.stringify({
             jsonrpc: '2.0',
             id: msg.id,
-            result: { tools: [{ name: 'doc_read' }, { name: 'doc_glob' }] },
-          })}\n\n`);
-          return;
-        }
-
-        if (msg.method === 'tools/call' && msg.params?.name === 'doc_glob') {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            jsonrpc: '2.0',
-            id: msg.id,
             result: {
               content: [{
                 type: 'text',
                 text: '# 文档匹配: "" | 范围: category | 命中 3 篇\n- [category] SCOPE.md | 120 字符 | 更新 2026-11-15\n- [category] Project.md | 800 字符 | 更新 2026-11-15\n- [category] Plan.md | 450 字符 | 更新 2026-11-15',
               }],
             },
-          }));
+          })}\n\n`);
           return;
         }
 
@@ -231,26 +235,53 @@ async function main() {
       const checkCode = await runCheck(activeDir);
       assert.equal(checkCode, 0);
 
-      // Verify stdio proxy forwarding + notification silence + 404 transparent re-handshake + SSE parsing
-      expiredOnce = false;
-      const proxied = await runStdioSession(
+      // Discovery-only session must make ZERO remote HTTP requests even when .env has a token
+      const reqsBeforeDiscovery = receivedRequests;
+      const discoveryOnly = await runStdioSession(
         activeDir,
         [
-          { jsonrpc: '2.0', id: 10, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'cli', version: '1.0' } } },
+          { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'cli', version: '1.0' } } },
+          { jsonrpc: '2.0', method: 'notifications/initialized' },
+          { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+        ],
+        { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' },
+      );
+      assert.equal(discoveryOnly.responses.length, 2);
+      assert.equal(discoveryOnly.responses[1].result.tools.length, 7);
+      assert.equal(receivedRequests, reqsBeforeDiscovery, 'initialize + tools/list must not hit remote server');
+
+      // Global daemon mode: start proxy in unrelated host directory (no .env), pass cwd per call
+      const daemonHome = path.join(tmpRoot, 'daemon-home');
+      fs.mkdirSync(path.join(daemonHome, '.git'), { recursive: true });
+      expiredOnce = false;
+      initializedNotifications = 0;
+      forwardedArgs.length = 0;
+
+      const daemonProxied = await runStdioSession(
+        daemonHome,
+        [
+          { jsonrpc: '2.0', id: 10, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'dsh', version: '1.0' } } },
           { jsonrpc: '2.0', method: 'notifications/initialized' },
           { jsonrpc: '2.0', id: 11, method: 'tools/list', params: {} },
-          { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'doc_glob', arguments: { scope: 'category' } } },
+          { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'doc_glob', arguments: { scope: 'category', cwd: activeDir } } },
+          { jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'doc_glob', arguments: { scope: 'category', cwd: activeDir } } },
         ],
         { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' },
       );
 
-      assert.equal(proxied.responses.length, 3);
-      assert.equal(proxied.responses[0].id, 10);
-      assert.equal(proxied.responses[1].id, 11);
-      assert.equal(proxied.responses[1].result.tools.length, 2);
-      assert.equal(proxied.responses[2].id, 12);
-      assert.match(proxied.responses[2].result.content[0].text, /命中 3 篇/);
-      assert.ok(initializedNotifications >= 2, 're-handshake should also send notifications/initialized');
+      assert.equal(daemonProxied.responses.length, 4);
+      assert.equal(daemonProxied.responses[0].id, 10);
+      assert.equal(daemonProxied.responses[1].id, 11);
+      assert.equal(daemonProxied.responses[1].result.tools.length, 7);
+      assert.equal(daemonProxied.responses[2].id, 12);
+      assert.match(daemonProxied.responses[2].result.content[0].text, /命中 3 篇/);
+      assert.equal(daemonProxied.responses[3].id, 13);
+      assert.match(daemonProxied.responses[3].result.content[0].text, /命中 3 篇/);
+      assert.ok(initializedNotifications >= 2, 'initial lazy handshake + 404 re-handshake must both send notifications/initialized');
+      for (const argObj of forwardedArgs) {
+        assert.equal(Object.prototype.hasOwnProperty.call(argObj, 'cwd'), false, 'cwd must be stripped before forwarding to remote');
+        assert.equal(argObj.scope, 'category');
+      }
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
@@ -315,7 +346,7 @@ async function main() {
           { jsonrpc: '2.0', method: 'notifications/initialized' },
           { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
           { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'doc_create', arguments: { path: 'SCOPE.md', content: '# Scope\n' } } },
-        ]);
+        ], { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' });
         assert.equal(realStdio.responses.length, 3);
         assert.equal(realStdio.responses[1].result.tools.length, 7);
         assert.ok(realStdio.responses[2].result.content[0].text.includes('已新建文档：SCOPE.md'));

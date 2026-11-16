@@ -3,7 +3,7 @@
  * capsa-docs-mcp — zero-dependency MCP stdio proxy & workspace CLI for Capsa /mcp/docs.
  *
  * Modes:
- *   capsa-docs-mcp                     MCP stdio server (reads .env from cwd up to .git root)
+ *   capsa-docs-mcp                     MCP stdio server (static 7 doc_* tools; per-call .env auth via cwd)
  *   capsa-docs-mcp init <url_or_token> Write/update CAPSA_DOCS_TOKEN (and non-default URL) in ./.env
  *   capsa-docs-mcp check               Verify connectivity and print category document count
  */
@@ -19,6 +19,197 @@ const DEFAULT_INIT_PARAMS = {
   capabilities: {},
   clientInfo: { name: 'capsa-docs-mcp', version: '1.0.0' },
 };
+
+const CWD_PROPERTY = {
+  type: 'string',
+  description: '项目工作区目录路径（用于定位 .env 中的凭据）；省略时使用代理进程启动目录',
+};
+
+/** Static tool definitions decoupled from workspace token authentication. */
+export const DOCS_TOOLS = [
+  {
+    name: 'doc_glob',
+    description: '按路径通配或子串匹配列出文档，返回作用域、路径、字符数与更新日期。',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: '路径模式：省略列出全部；不含 * ? [ 时按大小写不敏感子串匹配；含通配符时按 shell 风格匹配，不含 / 的模式也匹配文件名',
+        },
+        scope: {
+          type: 'string',
+          description: '检索范围：all（默认，公共区与当前分类）、category（仅当前分类）、public（仅公共区）',
+        },
+        cwd: CWD_PROPERTY,
+      },
+    },
+  },
+  {
+    name: 'doc_grep',
+    description: '在文档正文中按关键词或正则检索，返回命中行所在文档、行号与行文本（默认最多 100 行）。',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      required: ['pattern'],
+      properties: {
+        pattern: {
+          type: 'string',
+          description: '检索词；is_regex 为 true 时按 Go 正则表达式解释',
+        },
+        is_regex: {
+          type: 'boolean',
+          default: false,
+          description: '是否按正则表达式检索，默认 false',
+        },
+        scope: {
+          type: 'string',
+          description: '检索范围：all（默认）、category、public',
+        },
+        path: {
+          type: 'string',
+          description: '只检索该路径的单篇文档；省略时检索范围内全部文档',
+        },
+        limit: {
+          type: 'integer',
+          default: 100,
+          description: '返回匹配行上限，取值 1~500',
+        },
+        cwd: CWD_PROPERTY,
+      },
+    },
+  },
+  {
+    name: 'doc_read',
+    description: '读取单篇文档正文。省略 offset 与 limit 时返回完整正文（不做字符截断）；给出其一则按行号区间分段返回并标注行号。',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      required: ['path'],
+      properties: {
+        path: {
+          type: 'string',
+          description: '文档逻辑路径',
+        },
+        scope: {
+          type: 'string',
+          description: '文档作用域：category（默认，当前分类）或 public（所在工作区公共区）',
+        },
+        offset: {
+          type: 'integer',
+          description: '起始行号，1-based；省略表示从首行开始',
+        },
+        limit: {
+          type: 'integer',
+          description: '最多读取的行数；省略表示读到末尾',
+        },
+        cwd: CWD_PROPERTY,
+      },
+    },
+  },
+  {
+    name: 'doc_create',
+    description: '在当前分类新建文档；路径已存在时拒绝覆盖，需改走 doc_write。公共文档区只读。',
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: 'object',
+      required: ['path', 'content'],
+      properties: {
+        path: {
+          type: 'string',
+          description: '新文档的逻辑路径，允许斜杠分层',
+        },
+        content: {
+          type: 'string',
+          description: '初始正文，允许空串',
+        },
+        scope: {
+          type: 'string',
+          description: '仅接受 category；传入 public 会被拒绝',
+        },
+        cwd: CWD_PROPERTY,
+      },
+    },
+  },
+  {
+    name: 'doc_write',
+    description: '对当前分类下已存在的文档执行全量正文覆盖；文档不存在时不会新建。公共文档区只读。',
+    annotations: { idempotentHint: true },
+    inputSchema: {
+      type: 'object',
+      required: ['path', 'content'],
+      properties: {
+        path: {
+          type: 'string',
+          description: '目标文档的逻辑路径',
+        },
+        content: {
+          type: 'string',
+          description: '完整新正文，允许空串',
+        },
+        scope: {
+          type: 'string',
+          description: '仅接受 category；传入 public 会被拒绝',
+        },
+        cwd: CWD_PROPERTY,
+      },
+    },
+  },
+  {
+    name: 'doc_edit',
+    description: '在当前分类下的文档正文中做精确文本替换，命中多处时默认拒绝。公共文档区只读。',
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: 'object',
+      required: ['path', 'old_string', 'new_string'],
+      properties: {
+        path: {
+          type: 'string',
+          description: '目标文档的逻辑路径',
+        },
+        old_string: {
+          type: 'string',
+          description: '待替换的原文，不能为空',
+        },
+        new_string: {
+          type: 'string',
+          description: '替换后的文本，允许空串以删除片段',
+        },
+        replace_all: {
+          type: 'boolean',
+          default: false,
+          description: '是否替换全部匹配，默认 false 仅替换唯一匹配',
+        },
+        scope: {
+          type: 'string',
+          description: '仅接受 category；传入 public 会被拒绝',
+        },
+        cwd: CWD_PROPERTY,
+      },
+    },
+  },
+  {
+    name: 'doc_delete',
+    description: '物理删除当前分类下的指定文档，删除后不可恢复。公共文档区只读。',
+    annotations: { destructiveHint: true },
+    inputSchema: {
+      type: 'object',
+      required: ['path'],
+      properties: {
+        path: {
+          type: 'string',
+          description: '目标文档的逻辑路径',
+        },
+        scope: {
+          type: 'string',
+          description: '仅接受 category；传入 public 会被拒绝',
+        },
+        cwd: CWD_PROPERTY,
+      },
+    },
+  },
+];
 
 /** Parse KEY=VALUE lines from a .env file content. */
 export function parseEnvText(text) {
@@ -308,122 +499,167 @@ function contentTypeToFrames(contentType, rawBody) {
   }
 }
 
-/** Handle one JSON-RPC message when no CAPSA_DOCS_TOKEN is configured. */
-function handleDegradedMessage(msg, emit) {
-  const hasId = msg && typeof msg === 'object' && Object.prototype.hasOwnProperty.call(msg, 'id');
-  if (!hasId || !msg.method) return;
-
-  switch (msg.method) {
-    case 'initialize':
-      emit({
-        jsonrpc: '2.0',
-        id: msg.id,
-        result: {
-          protocolVersion: msg.params?.protocolVersion || '2024-11-05',
-          capabilities: { tools: {} },
-          serverInfo: SERVER_INFO,
-        },
-      });
-      return;
-    case 'ping':
-      emit({ jsonrpc: '2.0', id: msg.id, result: {} });
-      return;
-    case 'tools/list':
-      emit({ jsonrpc: '2.0', id: msg.id, result: { tools: [] } });
-      return;
-    case 'resources/list':
-      emit({ jsonrpc: '2.0', id: msg.id, result: { resources: [] } });
-      return;
-    case 'resources/templates/list':
-      emit({ jsonrpc: '2.0', id: msg.id, result: { resourceTemplates: [] } });
-      return;
-    case 'prompts/list':
-      emit({ jsonrpc: '2.0', id: msg.id, result: { prompts: [] } });
-      return;
-    default:
-      emit({
-        jsonrpc: '2.0',
-        id: msg.id,
-        error: { code: -32601, message: '当前工作区未配置 CAPSA_DOCS_TOKEN，capsa-docs 已降级为空服务' },
-      });
-  }
-}
-
-/** Start the MCP stdio proxy loop. */
-export function startStdioProxy(cwd = process.cwd()) {
-  const cfg = loadWorkspaceConfig(cwd);
-  let sessionId = '';
+/** Start the MCP stdio server: local static tool discovery + per-call workspace token auth. */
+export function startStdioProxy(defaultCwd = process.cwd()) {
+  const sessions = new Map();
   let lastInitParams = DEFAULT_INIT_PARAMS;
 
   const emit = (frame) => {
     process.stdout.write(JSON.stringify(frame) + '\n');
   };
 
-  const rehandshake = async () => {
-    const initRes = await postRemote(cfg.url, cfg.token, '', {
+  const emitRemoteFailure = (id, res) => {
+    const errFrames = contentTypeToFrames(res.contentType, res.rawBody);
+    if (errFrames.length && errFrames[0]?.error) {
+      emit({ jsonrpc: '2.0', id, error: errFrames[0].error });
+      return;
+    }
+    const detail = res.rawBody ? `: ${res.rawBody.trim().slice(0, 200)}` : '';
+    emit({
       jsonrpc: '2.0',
-      id: '__capsa_reinit__',
+      id,
+      error: { code: -32000, message: `Capsa 远端请求失败 (HTTP ${res.status})${detail}` },
+    });
+  };
+
+  const handshakeRemote = async (url, token, sessionKey) => {
+    const initRes = await postRemote(url, token, '', {
+      jsonrpc: '2.0',
+      id: '__capsa_init__',
       method: 'initialize',
       params: lastInitParams,
     });
-    if (initRes.status !== 200) return false;
-    sessionId = initRes.nextSession || '';
-    await postRemote(cfg.url, cfg.token, sessionId, {
+    if (initRes.status !== 200) return { ok: false, res: initRes };
+    const initFrame = contentTypeToFrames(initRes.contentType, initRes.rawBody)[0];
+    if (!initFrame || initFrame.error || !initFrame.result) {
+      return { ok: false, res: initRes };
+    }
+    const nextSession = initRes.nextSession || '';
+    sessions.set(sessionKey, nextSession);
+    await postRemote(url, token, nextSession, {
       jsonrpc: '2.0',
       method: 'notifications/initialized',
     }).catch(() => {});
-    return Boolean(sessionId);
+    return { ok: true, sessionId: nextSession };
   };
 
-  const handleRemoteMessage = async (msg) => {
-    const hasId = msg && typeof msg === 'object' && Object.prototype.hasOwnProperty.call(msg, 'id');
-    const isNotification = !hasId;
+  const handleToolCall = async (msg) => {
+    const rawArgs =
+      msg.params?.arguments && typeof msg.params.arguments === 'object' && !Array.isArray(msg.params.arguments)
+        ? msg.params.arguments
+        : {};
+    const argCwd = typeof rawArgs.cwd === 'string' ? rawArgs.cwd.trim() : '';
+    const targetCwd = argCwd || defaultCwd;
+    const cfg = loadWorkspaceConfig(targetCwd);
 
-    if (msg.method === 'initialize' && msg.params && typeof msg.params === 'object') {
-      lastInitParams = msg.params;
+    if (!cfg.token) {
+      emit({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: `未检测到 CAPSA_DOCS_TOKEN（检索起点：${path.resolve(targetCwd)}）：请在目标项目根目录配置 .env，或在调用参数 cwd 中传入项目目录`,
+            },
+          ],
+          isError: true,
+        },
+      });
+      return;
     }
 
-    try {
-      const targetSession = msg.method === 'initialize' ? '' : sessionId;
-      let res = await postRemote(cfg.url, cfg.token, targetSession, msg);
+    const { cwd: _strippedCwd, ...remoteArgs } = rawArgs;
+    const forwardMsg = {
+      ...msg,
+      params: { ...msg.params, arguments: remoteArgs },
+    };
+    const sessionKey = `${cfg.url}\n${cfg.token}`;
 
-      // Re-handshake transparently if remote session expired or server restarted (HTTP 404).
-      if (msg.method !== 'initialize' && (res.status === 404 || (!targetSession && res.status === 400))) {
-        const ok = await rehandshake();
-        if (ok) {
-          res = await postRemote(cfg.url, cfg.token, sessionId, msg);
+    try {
+      if (!sessions.has(sessionKey)) {
+        const hs = await handshakeRemote(cfg.url, cfg.token, sessionKey);
+        if (!hs.ok) {
+          emitRemoteFailure(msg.id, hs.res);
+          return;
         }
       }
 
-      if (res.nextSession) sessionId = res.nextSession;
+      const sessionId = sessions.get(sessionKey) || '';
+      let res = await postRemote(cfg.url, cfg.token, sessionId, forwardMsg);
 
-      // Notifications and client-to-server empty responses never write back to stdout.
-      if (isNotification || !msg.method) return;
+      // Re-handshake transparently if remote session expired or server restarted (HTTP 404).
+      if (res.status === 404 || (!sessionId && res.status === 400)) {
+        sessions.delete(sessionKey);
+        const hs = await handshakeRemote(cfg.url, cfg.token, sessionKey);
+        if (!hs.ok) {
+          emitRemoteFailure(msg.id, hs.res);
+          return;
+        }
+        res = await postRemote(cfg.url, cfg.token, hs.sessionId, forwardMsg);
+      }
+
+      if (res.nextSession) sessions.set(sessionKey, res.nextSession);
 
       if (res.status >= 400) {
-        const errFrames = contentTypeToFrames(res.contentType, res.rawBody);
-        if (errFrames.length && errFrames[0]?.error) {
-          emit({ jsonrpc: '2.0', id: msg.id, error: errFrames[0].error });
-        } else {
-          const detail = res.rawBody ? `: ${res.rawBody.trim().slice(0, 200)}` : '';
-          emit({
-            jsonrpc: '2.0',
-            id: msg.id,
-            error: { code: -32000, message: `Capsa 远端请求失败 (HTTP ${res.status})${detail}` },
-          });
-        }
+        emitRemoteFailure(msg.id, res);
         return;
       }
 
       const frames = contentTypeToFrames(res.contentType, res.rawBody);
       for (const frame of frames) emit(frame);
     } catch (err) {
-      if (isNotification || !msg.method) return;
       emit({
         jsonrpc: '2.0',
         id: msg.id,
         error: { code: -32000, message: `Capsa 远端不可达：${err?.message || String(err)}` },
       });
+    }
+  };
+
+  const handleMessage = async (msg) => {
+    const hasId = msg && typeof msg === 'object' && Object.prototype.hasOwnProperty.call(msg, 'id');
+    if (!hasId || !msg.method) return;
+
+    switch (msg.method) {
+      case 'initialize':
+        if (msg.params && typeof msg.params === 'object') {
+          lastInitParams = msg.params;
+        }
+        emit({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            protocolVersion: msg.params?.protocolVersion || '2024-11-05',
+            capabilities: { tools: {} },
+            serverInfo: SERVER_INFO,
+          },
+        });
+        return;
+      case 'ping':
+        emit({ jsonrpc: '2.0', id: msg.id, result: {} });
+        return;
+      case 'tools/list':
+        emit({ jsonrpc: '2.0', id: msg.id, result: { tools: DOCS_TOOLS } });
+        return;
+      case 'resources/list':
+        emit({ jsonrpc: '2.0', id: msg.id, result: { resources: [] } });
+        return;
+      case 'resources/templates/list':
+        emit({ jsonrpc: '2.0', id: msg.id, result: { resourceTemplates: [] } });
+        return;
+      case 'prompts/list':
+        emit({ jsonrpc: '2.0', id: msg.id, result: { prompts: [] } });
+        return;
+      case 'tools/call':
+        await handleToolCall(msg);
+        return;
+      default:
+        emit({
+          jsonrpc: '2.0',
+          id: msg.id,
+          error: { code: -32601, message: `Method not found: ${msg.method}` },
+        });
     }
   };
 
@@ -446,11 +682,7 @@ export function startStdioProxy(cwd = process.cwd()) {
           emit({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
           return;
         }
-        if (!cfg.token) {
-          handleDegradedMessage(msg, emit);
-        } else {
-          await handleRemoteMessage(msg);
-        }
+        await handleMessage(msg);
       });
     }
   });
