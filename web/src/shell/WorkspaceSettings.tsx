@@ -55,7 +55,7 @@ export function WorkspaceSettings({
           <div className="space-y-0.5">
             <h1 className="text-headline-small text-on-surface">工作区设置</h1>
             <p className="text-body-medium text-on-surface-variant">
-              工作区模式创建后不可修改，不同工作区的分类与记忆彼此隔离
+              工作区模式创建后不可修改，不同工作区的分类、子项目与文档彼此隔离
             </p>
           </div>
           <Button variant="primary" size="sm" onClick={() => setEditing({ mode: "create" })}>
@@ -101,7 +101,7 @@ export function WorkspaceSettings({
                     </p>
                     <p className="text-label-medium text-on-surface-variant">
                       {workspace.mode === "docs"
-                        ? workspace.category_count + " 个分类 · " + workspace.public_doc_count + " 篇公共文档"
+                        ? workspace.category_count + " 个子项目 · " + workspace.public_doc_count + " 篇公共文档"
                         : workspace.group_count + " 个分类"}
                     </p>
                   </div>

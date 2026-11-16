@@ -214,13 +214,13 @@ func docCategoryCreate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	name, message := requireText(stringValue(payload["name"]), categoryNameMax, "分类名称")
+	name, message := requireText(stringValue(payload["name"]), categoryNameMax, "子项目名称")
 	if message != "" {
 		return validation(message)
 	}
 	description := ""
 	if raw, present := payload["description"]; present {
-		value, err := optionalDescription(raw, "分类描述", categoryDescMax)
+		value, err := optionalDescription(raw, "子项目描述", categoryDescMax)
 		if err != nil {
 			return err
 		}
@@ -235,7 +235,7 @@ func docCategoryCreate(w http.ResponseWriter, r *http.Request) error {
 		created, err = dal.CreateDocCategory(handle, workspaceID, name, description)
 		var duplicate dal.DuplicateDocNameError
 		if errors.As(err, &duplicate) {
-			return validation(fmt.Sprintf("分类名称 %s 已存在", duplicate.Name))
+			return validation(fmt.Sprintf("子项目名称 %s 已存在", duplicate.Name))
 		}
 		return err
 	}); err != nil {
@@ -266,19 +266,19 @@ func docCategoryUpdate(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		if category == nil {
-			return fail(CodeNotFound, fmt.Sprintf("分类 %s 不存在", categoryID), 404)
+			return fail(CodeNotFound, fmt.Sprintf("子项目 %s 不存在", categoryID), 404)
 		}
 		nextName := category["name"].(string)
 		nextDescription := category["description"].(string)
 		if hasName {
-			value, message := requireText(stringValue(payload["name"]), categoryNameMax, "分类名称")
+			value, message := requireText(stringValue(payload["name"]), categoryNameMax, "子项目名称")
 			if message != "" {
 				return validation(message)
 			}
 			nextName = value
 		}
 		if hasDescription {
-			value, err := optionalDescription(payload["description"], "分类描述", categoryDescMax)
+			value, err := optionalDescription(payload["description"], "子项目描述", categoryDescMax)
 			if err != nil {
 				return err
 			}
@@ -290,9 +290,9 @@ func docCategoryUpdate(w http.ResponseWriter, r *http.Request) error {
 		}
 		switch status {
 		case "duplicate_name":
-			return validation(fmt.Sprintf("分类名称 %s 已存在", nextName))
+			return validation(fmt.Sprintf("子项目名称 %s 已存在", nextName))
 		case "not_found":
-			return fail(CodeNotFound, fmt.Sprintf("分类 %s 不存在", categoryID), 404)
+			return fail(CodeNotFound, fmt.Sprintf("子项目 %s 不存在", categoryID), 404)
 		}
 		updated, err = dal.GetDocCategory(handle, workspaceID, categoryID)
 		return err
@@ -318,9 +318,9 @@ func docCategoryDelete(w http.ResponseWriter, r *http.Request) error {
 	}
 	switch status {
 	case "not_found":
-		return fail(CodeNotFound, fmt.Sprintf("分类 %s 不存在", categoryID), 404)
+		return fail(CodeNotFound, fmt.Sprintf("子项目 %s 不存在", categoryID), 404)
 	case "has_documents":
-		return validation("分类下仍有文档，禁止删除")
+		return validation("子项目下仍有文档，禁止删除")
 	}
 	return ok(w, map[string]any{"id": categoryID, "action": "deleted"})
 }
@@ -340,7 +340,7 @@ func docCategoryRotate(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if category == nil {
-		return fail(CodeNotFound, fmt.Sprintf("分类 %s 不存在", categoryID), 404)
+		return fail(CodeNotFound, fmt.Sprintf("子项目 %s 不存在", categoryID), 404)
 	}
 	return ok(w, category)
 }
@@ -362,7 +362,7 @@ func docScopeInput(handle *sql.DB, workspaceID, scope, categoryID string) error 
 		return err
 	}
 	if category == nil {
-		return fail(CodeNotFound, fmt.Sprintf("分类 %s 不存在", categoryID), 404)
+		return fail(CodeNotFound, fmt.Sprintf("子项目 %s 不存在", categoryID), 404)
 	}
 	return nil
 }

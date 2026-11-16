@@ -51,7 +51,7 @@ func NewDocsMCPServer() *mcpserver.MCPServer {
 		mcp.WithDescription("按路径通配或子串匹配列出文档，返回作用域、路径、字符数与更新日期。"),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("pattern", mcp.Description("路径模式：省略列出全部；不含 * ? [ 时按大小写不敏感子串匹配；含通配符时按 shell 风格匹配，不含 / 的模式也匹配文件名")),
-		mcp.WithString("scope", mcp.Description("检索范围：all（默认，公共区与当前分类）、category（仅当前分类）、public（仅公共区）")),
+		mcp.WithString("scope", mcp.Description("检索范围：all（默认，公共区与当前子项目）、category（仅当前子项目）、public（仅公共区）")),
 	), handleDocGlob)
 
 	instance.AddTool(mcp.NewTool("doc_grep",
@@ -68,13 +68,13 @@ func NewDocsMCPServer() *mcpserver.MCPServer {
 		mcp.WithDescription("读取单篇文档正文。省略 offset 与 limit 时返回完整正文（不做字符截断）；给出其一则按行号区间分段返回并标注行号。"),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("path", mcp.Required(), mcp.Description("文档逻辑路径")),
-		mcp.WithString("scope", mcp.Description("文档作用域：category（默认，当前分类）或 public（所在工作区公共区）")),
+		mcp.WithString("scope", mcp.Description("文档作用域：category（默认，当前子项目）或 public（所在工作区公共区）")),
 		mcp.WithInteger("offset", mcp.Description("起始行号，1-based；省略表示从首行开始")),
 		mcp.WithInteger("limit", mcp.Description("最多读取的行数；省略表示读到末尾")),
 	), handleDocRead)
 
 	instance.AddTool(mcp.NewTool("doc_create",
-		mcp.WithDescription("在当前分类新建文档；路径已存在时拒绝覆盖，需改走 doc_write。公共文档区只读。"),
+		mcp.WithDescription("在当前子项目新建文档；路径已存在时拒绝覆盖，需改走 doc_write。公共文档区只读。"),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("path", mcp.Required(), mcp.Description("新文档的逻辑路径，允许斜杠分层")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("初始正文，允许空串")),
@@ -82,7 +82,7 @@ func NewDocsMCPServer() *mcpserver.MCPServer {
 	), handleDocCreate)
 
 	instance.AddTool(mcp.NewTool("doc_write",
-		mcp.WithDescription("对当前分类下已存在的文档执行全量正文覆盖；文档不存在时不会新建。公共文档区只读。"),
+		mcp.WithDescription("对当前子项目下已存在的文档执行全量正文覆盖；文档不存在时不会新建。公共文档区只读。"),
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("path", mcp.Required(), mcp.Description("目标文档的逻辑路径")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("完整新正文，允许空串")),
@@ -90,7 +90,7 @@ func NewDocsMCPServer() *mcpserver.MCPServer {
 	), handleDocWrite)
 
 	instance.AddTool(mcp.NewTool("doc_edit",
-		mcp.WithDescription("在当前分类下的文档正文中做精确文本替换，命中多处时默认拒绝。公共文档区只读。"),
+		mcp.WithDescription("在当前子项目下的文档正文中做精确文本替换，命中多处时默认拒绝。公共文档区只读。"),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("path", mcp.Required(), mcp.Description("目标文档的逻辑路径")),
 		mcp.WithString("old_string", mcp.Required(), mcp.Description("待替换的原文，不能为空")),
@@ -100,7 +100,7 @@ func NewDocsMCPServer() *mcpserver.MCPServer {
 	), handleDocEdit)
 
 	instance.AddTool(mcp.NewTool("doc_delete",
-		mcp.WithDescription("物理删除当前分类下的指定文档，删除后不可恢复。公共文档区只读。"),
+		mcp.WithDescription("物理删除当前子项目下的指定文档，删除后不可恢复。公共文档区只读。"),
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithString("path", mcp.Required(), mcp.Description("目标文档的逻辑路径")),
 		mcp.WithString("scope", mcp.Description("仅接受 category；传入 public 会被拒绝")),
@@ -380,7 +380,7 @@ func handleDocCreate(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 	if status == "duplicate" {
 		return toolError(fmt.Sprintf("文档已存在，拒绝覆盖：%s", documentPath))
 	}
-	return toolText(fmt.Sprintf("已新建文档：%s | 分类 %s", documentPath, identity.CategoryName))
+	return toolText(fmt.Sprintf("已新建文档：%s | 子项目 %s", documentPath, identity.CategoryName))
 }
 
 func handleDocWrite(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -404,7 +404,7 @@ func handleDocWrite(ctx context.Context, request mcp.CallToolRequest) (*mcp.Call
 	if status == "not_found" {
 		return toolError(fmt.Sprintf("文档不存在，请先调用 doc_create：%s", documentPath))
 	}
-	return toolText(fmt.Sprintf("已覆盖文档：%s | 分类 %s", documentPath, identity.CategoryName))
+	return toolText(fmt.Sprintf("已覆盖文档：%s | 子项目 %s", documentPath, identity.CategoryName))
 }
 
 func handleDocEdit(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -464,5 +464,5 @@ func handleDocDelete(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 	if !deleted {
 		return toolError(fmt.Sprintf("文档不存在：%s", documentPath))
 	}
-	return toolText(fmt.Sprintf("已删除文档：%s | 分类 %s", documentPath, identity.CategoryName))
+	return toolText(fmt.Sprintf("已删除文档：%s | 子项目 %s", documentPath, identity.CategoryName))
 }

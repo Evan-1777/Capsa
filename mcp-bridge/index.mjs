@@ -40,7 +40,7 @@ export const DOCS_TOOLS = [
         },
         scope: {
           type: 'string',
-          description: '检索范围：all（默认，公共区与当前分类）、category（仅当前分类）、public（仅公共区）',
+          description: '检索范围：all（默认，公共区与当前子项目）、category（仅当前子项目）、public（仅公共区）',
         },
         cwd: CWD_PROPERTY,
       },
@@ -94,7 +94,7 @@ export const DOCS_TOOLS = [
         },
         scope: {
           type: 'string',
-          description: '文档作用域：category（默认，当前分类）或 public（所在工作区公共区）',
+          description: '文档作用域：category（默认，当前子项目）或 public（所在工作区公共区）',
         },
         offset: {
           type: 'integer',
@@ -110,7 +110,7 @@ export const DOCS_TOOLS = [
   },
   {
     name: 'doc_create',
-    description: '在当前分类新建文档；路径已存在时拒绝覆盖，需改走 doc_write。公共文档区只读。',
+    description: '在当前子项目新建文档；路径已存在时拒绝覆盖，需改走 doc_write。公共文档区只读。',
     annotations: { destructiveHint: false },
     inputSchema: {
       type: 'object',
@@ -134,7 +134,7 @@ export const DOCS_TOOLS = [
   },
   {
     name: 'doc_write',
-    description: '对当前分类下已存在的文档执行全量正文覆盖；文档不存在时不会新建。公共文档区只读。',
+    description: '对当前子项目下已存在的文档执行全量正文覆盖；文档不存在时不会新建。公共文档区只读。',
     annotations: { idempotentHint: true },
     inputSchema: {
       type: 'object',
@@ -158,7 +158,7 @@ export const DOCS_TOOLS = [
   },
   {
     name: 'doc_edit',
-    description: '在当前分类下的文档正文中做精确文本替换，命中多处时默认拒绝。公共文档区只读。',
+    description: '在当前子项目下的文档正文中做精确文本替换，命中多处时默认拒绝。公共文档区只读。',
     annotations: { destructiveHint: false },
     inputSchema: {
       type: 'object',
@@ -191,7 +191,7 @@ export const DOCS_TOOLS = [
   },
   {
     name: 'doc_delete',
-    description: '物理删除当前分类下的指定文档，删除后不可恢复。公共文档区只读。',
+    description: '物理删除当前子项目下的指定文档，删除后不可恢复。公共文档区只读。',
     annotations: { destructiveHint: true },
     inputSchema: {
       type: 'object',
@@ -276,7 +276,7 @@ const isPrintableToken = (value) => typeof value === 'string' && value.length > 
 /** Parse a full /mcp/docs URL (with ?token= or ?access_token=) or a bare category access ID. */
 export function parseInitInput(rawInput) {
   const input = (rawInput || '').trim();
-  if (!input) throw new Error('缺少参数：请提供管理台复制的接入链接或分类访问 ID');
+  if (!input) throw new Error('缺少参数：请提供管理台复制的接入链接或子项目访问 ID');
 
   if (/^https?:\/\//i.test(input)) {
     let parsed;
@@ -480,7 +480,7 @@ export async function runCheck(cwd = process.cwd()) {
       ? Number(countMatch[1])
       : text.split('\n').filter((line) => line.startsWith('- [category]')).length;
 
-    console.log(`连通正常 | 端点: ${cfg.url} | 当前分类文档数: ${docCount}`);
+    console.log(`连通正常 | 端点: ${cfg.url} | 当前子项目文档数: ${docCount}`);
     return 0;
   } catch (err) {
     console.error(`连接异常：${err?.message || String(err)}`);
@@ -694,7 +694,7 @@ function printUsage(stream = process.stdout) {
       'Usage:',
       '  capsa-docs-mcp                       启动 MCP Stdio 代理（自动读取工作区 .env）',
       '  capsa-docs-mcp init <url_or_token>   写入当前目录 .env 并确保 .gitignore 忽略 .env',
-      '  capsa-docs-mcp check                 校验当前工作区 .env 与远端连通性及分类文档数',
+      '  capsa-docs-mcp check                 校验当前工作区 .env 与远端连通性及子项目文档数',
       '',
     ].join('\n'),
   );

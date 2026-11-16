@@ -50,17 +50,17 @@ export function CategoryDialog({
     <Dialog open onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
         <h2 className="text-title-large text-on-surface">
-          {existing ? "重命名分类" : "新建分类"}
+          {existing ? "编辑子项目" : "新建子项目"}
         </h2>
 
         <FormField
-          label="分类名称"
+          label="子项目名称"
           id="doc-category-name"
           counter={{ current: name.length, max: NAME_MAX, over: name.length > NAME_MAX }}
         >
           <Input
             id="doc-category-name"
-            aria-label="分类名称"
+            aria-label="子项目名称"
             value={name}
             invalid={name.length > NAME_MAX}
             onChange={(event) => setName(event.target.value)}
@@ -69,7 +69,7 @@ export function CategoryDialog({
         </FormField>
 
         <FormField
-          label="分类描述"
+          label="子项目描述"
           id="doc-category-desc"
           counter={{
             current: description.length,
@@ -79,7 +79,7 @@ export function CategoryDialog({
         >
           <Textarea
             id="doc-category-desc"
-            aria-label="分类描述"
+            aria-label="子项目描述"
             rows={3}
             value={description}
             invalid={description.length > DESC_MAX}
@@ -142,9 +142,9 @@ export function DeleteCategoryDialog({
   return (
     <Dialog open onClose={onClose} panelClassName="max-w-sm">
       <div className="space-y-4">
-        <h2 className="text-title-large text-on-surface">删除分类</h2>
+        <h2 className="text-title-large text-on-surface">删除子项目</h2>
         <p className="text-body-medium text-on-surface-variant">
-          确认删除分类「{category.name}」吗？仅空分类可删除，此操作不可撤销。
+          确认删除子项目「{category.name}」吗？仅空子项目可删除，此操作不可撤销。
         </p>
 
         {failure && (
@@ -178,16 +178,18 @@ export function DocumentDialog({
   workspaceId,
   scope,
   categoryId,
+  initialDir,
   onClose,
   onCreated,
 }: {
   workspaceId: string;
   scope: DocScope;
   categoryId?: string;
+  initialDir?: string;
   onClose: () => void;
   onCreated: (document: DocumentDetail) => void;
 }) {
-  const [documentPath, setDocumentPath] = useState("");
+  const [documentPath, setDocumentPath] = useState(() => (initialDir ? `${initialDir}/` : ""));
   const [content, setContent] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -218,7 +220,7 @@ export function DocumentDialog({
         <FormField
           label="文档路径"
           id="document-path"
-          hint="允许斜杠分层，例如 guides/overview.md；同名文档不会被覆盖"
+          hint="允许斜杠分层，例如 guides/overview.md；可直接修改前缀以调整所属目录，同名文档不会被覆盖"
         >
           <Input
             id="document-path"
@@ -300,7 +302,11 @@ export function RenameDocumentDialog({
       <form onSubmit={submit} className="space-y-4">
         <h2 className="text-title-large text-on-surface">重命名文档</h2>
 
-        <FormField label="文档路径" id="rename-path" hint="同作用域下路径必须唯一">
+        <FormField
+          label="文档路径"
+          id="rename-path"
+          hint="同作用域下路径必须唯一；修改斜杠目录段即可移动文档所属文件夹"
+        >
           <Input
             id="rename-path"
             aria-label="文档路径"

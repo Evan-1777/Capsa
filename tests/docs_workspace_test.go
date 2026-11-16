@@ -223,6 +223,9 @@ func TestDocCategoryAndDocumentREST(t *testing.T) {
 	status, payload = env.envelope(t, "POST", "/api/workspaces/"+fixture.workspaceID+"/categories",
 		jsonObject(map[string]string{"name": "规范", "description": "重名"}))
 	mustStatus(t, "duplicate category name", status, 422, payload)
+	if errMsg, _ := payload["error"].(map[string]any)["message"].(string); !strings.Contains(errMsg, "子项目名称") {
+		t.Fatalf("duplicate error = %q, want 子项目名称", errMsg)
+	}
 
 	status, payload = env.envelope(t, "GET", "/api/workspaces/"+fixture.workspaceID+"/categories", "")
 	mustStatus(t, "list categories", status, 200, payload)
@@ -280,6 +283,9 @@ func TestDocCategoryAndDocumentREST(t *testing.T) {
 
 	status, payload = env.envelope(t, "DELETE", "/api/workspaces/"+fixture.workspaceID+"/categories/"+fixture.categoryID, "")
 	mustStatus(t, "delete non-empty category", status, 422, payload)
+	if errMsg, _ := payload["error"].(map[string]any)["message"].(string); errMsg != "子项目下仍有文档，禁止删除" {
+		t.Fatalf("non-empty delete error = %q, want 子项目下仍有文档，禁止删除", errMsg)
+	}
 	status, payload = env.envelope(t, "DELETE", "/api/workspaces/"+fixture.workspaceID+"/docs/"+categoryDoc["id"].(string), "")
 	mustStatus(t, "delete category document", status, 200, payload)
 	status, payload = env.envelope(t, "GET", "/api/workspaces/"+fixture.workspaceID+"/docs?scope=category&category_id="+fixture.categoryID, "")
@@ -492,7 +498,7 @@ func TestDocsMCPWriteContract(t *testing.T) {
 
 	created, isError := docsTool(t, env, fixture.accessID, session, "doc_create",
 		jsonObject(map[string]string{"path": "notes.md", "content": "alpha\nbeta\nalpha"}))
-	if isError || !strings.Contains(created, "已新建文档") {
+	if isError || !strings.Contains(created, "已新建文档") || !strings.Contains(created, "| 子项目 ") {
 		t.Fatalf("doc_create = %q %v", created, isError)
 	}
 	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_create",

@@ -1,33 +1,47 @@
-import { ArrowLeft, BookOpenCheck, FileText, FolderTree, Plus, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "../api";
-import {
-  Badge,
-  Button,
-  EmptyState,
-  ErrorBanner,
-  Input,
-  Skeleton,
-  UnauthorizedState,
-} from "../components/ui";
+import { ErrorBanner, Skeleton } from "../components/ui";
 import { AppShell, type WorkspaceShellProps } from "../shell";
 import type { DocCategory, DocScope, DocumentSummary, KeyInfo, WorkspaceInfo } from "../types";
-import { CategoryAccessBar } from "./CategoryAccessBar";
-import { DocumentPane } from "./DocumentPane";
+import { DirectoryView } from "./DirectoryView";
 import {
   CategoryDialog,
   DeleteCategoryDialog,
   DocumentDialog,
   type CategoryEditing,
 } from "./DocsDialogs";
+import { DocumentPane } from "./DocumentPane";
+import { FileExplorer } from "./FileExplorer";
+import { SubprojectAccessDialog } from "./SubprojectAccessDialog";
+import {
+  ancestorDirs,
+  buildFileTree,
+  listDirectoryEntries,
+  parentDir,
+  type TreeNode,
+} from "./fileTree";
 
 type Container = { scope: DocScope; categoryId: string | null };
-type MobilePane = "nav" | "list" | "doc";
+type MobileView = "explorer" | "canvas";
+
+function collectFolderPaths(nodes: TreeNode[]): Set<string> {
+  const paths = new Set<string>();
+  const walk = (items: TreeNode[]) => {
+    for (const item of items) {
+      if (item.kind === "folder") {
+        paths.add(item.path);
+        walk(item.children);
+      }
+    }
+  };
+  walk(nodes);
+  return paths;
+}
 
 /**
- * 文档工作区子应用：公共区与分类导航、分类访问 ID 管理、文档浏览与在线编辑。
- * 与记忆子应用平行复用同一全局外壳，传统五视图在此完全不出现。
+ * 文档工作区子应用：双栏文件浏览器架构，左侧承载公共区/子项目切换与层级目录树，
+ * 右侧主画布承载目录表格浏览与沉浸式 Markdown 读写面板，低频接入配置收敛至独立模态弹层。
  */
 export function DocsApp({
   info,
@@ -54,15 +68,24 @@ export function DocsApp({
   const [docsError, setDocsError] = useState<ApiError | null>(null);
   const [filter, setFilter] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pane, setPane] = useState<MobilePane>("nav");
+  const [currentDir, setCurrentDir] = useState("");
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
+  const [mobileView, setMobileView] = useState<MobileView>("explorer");
+
   const [categoryEditing, setCategoryEditing] = useState<CategoryEditing | null>(null);
   const [deletingCategory, setDeletingCategory] = useState<DocCategory | null>(null);
+  const [accessCategoryId, setAccessCategoryId] = useState<string | null>(null);
   const [creatingDocument, setCreatingDocument] = useState(false);
   const dirtyRef = useRef(false);
 
   const activeCategory = useMemo(
     () => categories.find((item) => item.id === container.categoryId) ?? null,
     [categories, container.categoryId],
+  );
+
+  const accessCategory = useMemo(
+    () => categories.find((item) => item.id === accessCategoryId) ?? null,
+    [categories, accessCategoryId],
   );
 
   const reloadCategories = useCallback(async () => {
@@ -79,7 +102,7 @@ export function DocsApp({
       await reloadCategories();
     } catch (error) {
       if (!(error instanceof ApiError && error.code === "UNAUTHORIZED")) {
-        setCategoriesError(error instanceof Error ? error.message : "分类列表加载失败");
+        setCategoriesError(error instanceof Error ? error.message : "子项目列表加载失败");
       }
     } finally {
       setCategoriesLoading(false);
@@ -112,11 +135,41 @@ export function DocsApp({
     void loadDocs();
   }, [loadDocs]);
 
-  const visibleDocuments = useMemo(() => {
+  const fullTree = useMemo(() => buildFileTree(documents), [documents]);
+
+  const filteredDocuments = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     if (!needle) return documents;
     return documents.filter((item) => item.path.toLowerCase().includes(needle));
   }, [documents, filter]);
+
+  const explorerTree = useMemo(
+    () => (filter.trim() ? buildFileTree(filteredDocuments) : fullTree),
+    [filter, filteredDocuments, fullTree],
+  );
+
+  const effectiveExpandedDirs = useMemo(
+    () => (filter.trim() ? collectFolderPaths(explorerTree) : expandedDirs),
+    [filter, explorerTree, expandedDirs],
+  );
+
+  const { resolvedDir, dirEntries } = useMemo(() => {
+    let candidate = currentDir;
+    while (candidate !== "") {
+      const entries = listDirectoryEntries(fullTree, candidate);
+      if (entries.exists) {
+        return { resolvedDir: candidate, dirEntries: entries };
+      }
+      candidate = parentDir(candidate);
+    }
+    return { resolvedDir: "", dirEntries: listDirectoryEntries(fullTree, "") };
+  }, [fullTree, currentDir]);
+
+  useEffect(() => {
+    if (resolvedDir !== currentDir) {
+      setCurrentDir(resolvedDir);
+    }
+  }, [resolvedDir, currentDir]);
 
   const afterMutation = useCallback(async () => {
     await reloadCategories();
@@ -137,29 +190,81 @@ export function DocsApp({
     return false;
   }, []);
 
-  function selectContainer(next: Container) {
+  function expandPathAncestors(pathToReveal: string, includeSelf = false) {
+    const dirs = ancestorDirs(pathToReveal);
+    if (includeSelf && pathToReveal) dirs.push(pathToReveal);
+    if (dirs.length === 0) return;
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      for (const dir of dirs) next.add(dir);
+      return next;
+    });
+  }
+
+  function selectContainer(scope: DocScope, categoryId: string | null) {
+    if (scope === container.scope && categoryId === container.categoryId) return;
     if (!guardDirty()) return;
-    setContainer(next);
+    setContainer({ scope, categoryId });
     setSelectedId(null);
+    setCurrentDir("");
+    setExpandedDirs(new Set());
     setFilter("");
-    setPane("list");
+  }
+
+  function selectFolder(dirPath: string) {
+    if (!guardDirty()) return;
+    const isAlreadyActive = selectedId === null && resolvedDir === dirPath;
+    setSelectedId(null);
+    setCurrentDir(dirPath);
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(dirPath) && isAlreadyActive) {
+        next.delete(dirPath);
+      } else {
+        for (const ancestor of ancestorDirs(dirPath)) next.add(ancestor);
+        next.add(dirPath);
+      }
+      return next;
+    });
+  }
+
+  function navigateDir(dirPath: string) {
+    if (!guardDirty()) return;
+    setSelectedId(null);
+    setCurrentDir(dirPath);
+    expandPathAncestors(dirPath, true);
+    setMobileView("canvas");
   }
 
   function selectDocument(id: string) {
     if (!guardDirty()) return;
+    const target = documents.find((item) => item.id === id);
+    if (target) {
+      setCurrentDir(parentDir(target.path));
+      expandPathAncestors(target.path);
+    }
     setSelectedId(id);
-    setPane("doc");
+    setMobileView("canvas");
   }
 
   async function handleDocumentDeleted() {
     setSelectedId(null);
-    setPane("list");
     await afterMutation();
   }
 
-  const containerButton = (active: boolean) =>
-    "md-state-layer flex w-full items-center justify-between gap-2 rounded-full px-3 py-2 text-left transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary " +
-    (active ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant");
+  const guardedShell: WorkspaceShellProps = {
+    ...shell,
+    onSelectWorkspace: shell.onSelectWorkspace
+      ? (id) => {
+          if (guardDirty()) shell.onSelectWorkspace?.(id);
+        }
+      : undefined,
+    onOpenSettings: shell.onOpenSettings
+      ? () => {
+          if (guardDirty()) shell.onOpenSettings?.();
+        }
+      : undefined,
+  };
 
   return (
     <AppShell
@@ -168,203 +273,53 @@ export function DocsApp({
       onToggleTheme={onToggleTheme}
       onSignOut={onSignOut}
       currentTitle="文档工作区"
-      {...shell}
+      {...guardedShell}
     >
       {categoriesLoading ? (
         <Skeleton rows={3} />
       ) : categoriesError ? (
         <ErrorBanner message={categoriesError} onRetry={loadCategories} />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface">
-          {activeCategory && (
-            <div className={(pane === "nav" ? "hidden md:block " : "") + "shrink-0"}>
-              <CategoryAccessBar
-                workspaceId={workspace.id}
-                category={activeCategory}
-                onRotated={(updated) => {
-                  setCategories((current) =>
-                    current.map((item) => (item.id === updated.id ? updated : item)),
-                  );
-                }}
-                onRename={() => setCategoryEditing({ mode: "edit", category: activeCategory })}
-                onDelete={() => setDeletingCategory(activeCategory)}
-              />
-            </div>
-          )}
+        <div className="flex min-h-0 flex-1 overflow-hidden bg-surface">
+          <aside
+            aria-label="文件资源管理器"
+            className={
+              (mobileView === "explorer" ? "flex" : "hidden") +
+              " min-h-0 w-full flex-col border-outline-variant md:flex md:w-72 md:shrink-0 md:border-r lg:w-80"
+            }
+          >
+            <FileExplorer
+              categories={categories}
+              publicCount={publicCount}
+              activeScope={container.scope}
+              activeCategoryId={container.categoryId}
+              tree={explorerTree}
+              expandedDirs={effectiveExpandedDirs}
+              currentDir={resolvedDir}
+              selectedId={selectedId}
+              filter={filter}
+              docsLoading={docsLoading}
+              docsError={docsError}
+              onSelectContainer={selectContainer}
+              onCreateCategory={() => setCategoryEditing({ mode: "create" })}
+              onOpenAccess={(category) => setAccessCategoryId(category.id)}
+              onFilterChange={setFilter}
+              onCreateDocument={() => setCreatingDocument(true)}
+              onCollapseAll={() => setExpandedDirs(new Set())}
+              onSelectFolder={selectFolder}
+              onSelectDocument={selectDocument}
+              onRetryDocs={loadDocs}
+            />
+          </aside>
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-            <aside
-              aria-label="文档容器"
-              className={
-                (pane === "nav" ? "flex" : "hidden") +
-                " min-h-0 w-full flex-col overflow-y-auto border-outline-variant md:flex md:w-60 md:shrink-0 md:border-r"
-              }
-            >
-              <div className="space-y-1 p-3">
-                <button
-                  type="button"
-                  onClick={() => selectContainer({ scope: "public", categoryId: null })}
-                  aria-current={container.scope === "public"}
-                  className={containerButton(container.scope === "public")}
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <BookOpenCheck className="h-4 w-4 shrink-0" aria-hidden />
-                    <span className="truncate text-label-large">工作区公共文档</span>
-                  </span>
-                  <Badge variant="neutral">{publicCount}</Badge>
-                </button>
-                <p className="px-3 text-body-small text-on-surface-variant">
-                  跨分类只读共享，仅可在管理台维护
-                </p>
-              </div>
-
-              <div className="flex items-center justify-between gap-2 px-3 pb-1">
-                <span className="text-label-medium text-on-surface-variant">分类</span>
-                <Button
-                  variant="text"
-                  size="sm"
-                  onClick={() => setCategoryEditing({ mode: "create" })}
-                  className="!px-2"
-                >
-                  <Plus className="h-3.5 w-3.5" aria-hidden />
-                  <span>新建分类</span>
-                </Button>
-              </div>
-
-              {categories.length === 0 ? (
-                <p className="px-3 py-2 text-body-small text-on-surface-variant">
-                  暂无分类，创建后即可在其中维护文档
-                </p>
-              ) : (
-                <ul className="space-y-1 p-2">
-                  {categories.map((item) => (
-                    <li key={item.id}>
-                      <button
-                        type="button"
-                        onClick={() => selectContainer({ scope: "category", categoryId: item.id })}
-                        aria-current={container.categoryId === item.id}
-                        className={containerButton(container.categoryId === item.id)}
-                      >
-                        <span className="flex min-w-0 items-center gap-2">
-                          <FolderTree className="h-4 w-4 shrink-0" aria-hidden />
-                          <span className="truncate text-label-large">{item.name}</span>
-                        </span>
-                        <Badge variant="neutral">{item.doc_count}</Badge>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </aside>
-
-            <section
-              aria-label="文档列表"
-              className={
-                (pane === "list" ? "flex" : "hidden") +
-                " min-h-0 w-full flex-col border-outline-variant md:flex md:w-72 md:shrink-0 md:border-r"
-              }
-            >
-              <div className="space-y-2.5 border-b border-outline-variant bg-surface-container px-4 py-3">
-                <Button
-                  variant="text"
-                  size="sm"
-                  onClick={() => setPane("nav")}
-                  className="!px-2 md:hidden"
-                >
-                  <ArrowLeft className="h-4 w-4" aria-hidden />
-                  <span>返回容器列表</span>
-                </Button>
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <Search
-                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant"
-                      aria-hidden
-                    />
-                    <Input
-                      value={filter}
-                      onChange={(event) => setFilter(event.target.value)}
-                      placeholder="筛选文档路径"
-                      aria-label="筛选文档"
-                      className="!rounded-full !border-transparent !bg-surface-container-high pl-9"
-                    />
-                  </div>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => setCreatingDocument(true)}
-                    className="shrink-0"
-                  >
-                    <Plus className="h-4 w-4" aria-hidden />
-                    <span>新建文档</span>
-                  </Button>
-                </div>
-                <p className="text-label-medium text-on-surface-variant">
-                  {container.scope === "public"
-                    ? "工作区公共文档"
-                    : activeCategory?.name ?? "分类"}
-                  {" · "}
-                  {visibleDocuments.length} 篇
-                </p>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                {docsLoading ? (
-                  <Skeleton rows={5} />
-                ) : docsError?.code === "UNAUTHORIZED" ? (
-                  <UnauthorizedState />
-                ) : docsError ? (
-                  <ErrorBanner message={docsError.message} onRetry={loadDocs} />
-                ) : visibleDocuments.length === 0 ? (
-                  <EmptyState
-                    message={filter.trim() ? "没有匹配的文档" : "该容器下暂无文档"}
-                    action={
-                      <Button variant="primary" size="sm" onClick={() => setCreatingDocument(true)}>
-                        新建文档
-                      </Button>
-                    }
-                  />
-                ) : (
-                  <ul>
-                    {visibleDocuments.map((item) => (
-                      <li key={item.id}>
-                        <button
-                          type="button"
-                          onClick={() => selectDocument(item.id)}
-                          aria-current={selectedId === item.id}
-                          className={
-                            "md-state-layer relative flex w-full flex-col gap-1 border-b border-outline-variant px-4 py-3 text-left transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary " +
-                            (selectedId === item.id ? "bg-secondary-container" : "")
-                          }
-                        >
-                          {selectedId === item.id && (
-                            <span className="absolute bottom-0 left-0 top-0 w-1 bg-primary" />
-                          )}
-                          <span className="flex min-w-0 items-center gap-2">
-                            <FileText
-                              className="h-4 w-4 shrink-0 text-on-surface-variant"
-                              aria-hidden
-                            />
-                            <span className="truncate font-mono text-body-medium text-on-surface">
-                              {item.path}
-                            </span>
-                          </span>
-                          <span className="text-label-small text-on-surface-variant">
-                            {item.updated_at.slice(0, 10)} · {item.char_count} 字符
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </section>
-
-            <section
-              aria-label="文档详情"
-              className={
-                (pane === "doc" ? "flex" : "hidden") + " min-h-0 flex-1 flex-col md:flex"
-              }
-            >
+          <section
+            aria-label="文档主画布"
+            className={
+              (mobileView === "canvas" ? "flex" : "hidden") +
+              " min-h-0 min-w-0 flex-1 flex-col md:flex"
+            }
+          >
+            {selectedId ? (
               <DocumentPane
                 workspaceId={workspace.id}
                 scope={container.scope}
@@ -373,11 +328,46 @@ export function DocsApp({
                 onDirtyChange={handleDirtyChange}
                 onChanged={afterMutation}
                 onDeleted={handleDocumentDeleted}
-                onBack={() => setPane("list")}
+                onNavigateDir={navigateDir}
+                onOpenAccess={
+                  activeCategory ? () => setAccessCategoryId(activeCategory.id) : undefined
+                }
+                onBack={() => setMobileView("explorer")}
               />
-            </section>
-          </div>
+            ) : (
+              <DirectoryView
+                scope={container.scope}
+                category={activeCategory}
+                currentDir={resolvedDir}
+                totalDocsInContainer={documents.length}
+                folders={dirEntries.folders}
+                files={dirEntries.files}
+                onNavigateDir={navigateDir}
+                onSelectDocument={selectDocument}
+                onCreateDocument={() => setCreatingDocument(true)}
+                onOpenAccess={
+                  activeCategory ? () => setAccessCategoryId(activeCategory.id) : undefined
+                }
+                onBack={() => setMobileView("explorer")}
+              />
+            )}
+          </section>
         </div>
+      )}
+
+      {accessCategory && (
+        <SubprojectAccessDialog
+          workspaceId={workspace.id}
+          category={accessCategory}
+          onClose={() => setAccessCategoryId(null)}
+          onRotated={(updated) => {
+            setCategories((current) =>
+              current.map((item) => (item.id === updated.id ? updated : item)),
+            );
+          }}
+          onEdit={() => setCategoryEditing({ mode: "edit", category: accessCategory })}
+          onDelete={() => setDeletingCategory(accessCategory)}
+        />
       )}
 
       {categoryEditing && (
@@ -400,10 +390,12 @@ export function DocsApp({
           onDeleted={() => {
             const wasActive = container.categoryId === deletingCategory.id;
             setDeletingCategory(null);
-            setSelectedId(null);
+            setAccessCategoryId(null);
             if (wasActive) {
+              setSelectedId(null);
+              setCurrentDir("");
+              setExpandedDirs(new Set());
               setContainer({ scope: "public", categoryId: null });
-              setPane("list");
             }
             void afterMutation();
           }}
@@ -415,11 +407,14 @@ export function DocsApp({
           workspaceId={workspace.id}
           scope={container.scope}
           categoryId={container.categoryId ?? undefined}
+          initialDir={resolvedDir}
           onClose={() => setCreatingDocument(false)}
           onCreated={(created) => {
             setCreatingDocument(false);
             setSelectedId(created.id);
-            setPane("doc");
+            setCurrentDir(parentDir(created.path));
+            expandPathAncestors(created.path);
+            setMobileView("canvas");
             void afterMutation();
           }}
         />
