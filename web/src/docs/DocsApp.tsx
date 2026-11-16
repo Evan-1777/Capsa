@@ -183,12 +183,12 @@ export function DocsApp({
 
   const guardDirty = useCallback(() => {
     if (!dirtyRef.current) return true;
-    if (window.confirm("当前文档有未保存的修改，确定放弃？")) {
-      dirtyRef.current = false;
-      return true;
-    }
-    return false;
+    return window.confirm("当前文档有未保存的修改，确定放弃？");
   }, []);
+
+  function openCreateDocument() {
+    if (guardDirty()) setCreatingDocument(true);
+  }
 
   function expandPathAncestors(pathToReveal: string, includeSelf = false) {
     const dirs = ancestorDirs(pathToReveal);
@@ -237,6 +237,10 @@ export function DocsApp({
   }
 
   function selectDocument(id: string) {
+    if (id === selectedId) {
+      setMobileView("canvas");
+      return;
+    }
     if (!guardDirty()) return;
     const target = documents.find((item) => item.id === id);
     if (target) {
@@ -271,7 +275,9 @@ export function DocsApp({
       info={info}
       theme={theme}
       onToggleTheme={onToggleTheme}
-      onSignOut={onSignOut}
+      onSignOut={() => {
+        if (guardDirty()) onSignOut();
+      }}
       currentTitle="文档工作区"
       {...guardedShell}
     >
@@ -304,7 +310,7 @@ export function DocsApp({
               onCreateCategory={() => setCategoryEditing({ mode: "create" })}
               onOpenAccess={(category) => setAccessCategoryId(category.id)}
               onFilterChange={setFilter}
-              onCreateDocument={() => setCreatingDocument(true)}
+              onCreateDocument={openCreateDocument}
               onCollapseAll={() => setExpandedDirs(new Set())}
               onSelectFolder={selectFolder}
               onSelectDocument={selectDocument}
@@ -339,12 +345,11 @@ export function DocsApp({
                 scope={container.scope}
                 category={activeCategory}
                 currentDir={resolvedDir}
-                totalDocsInContainer={documents.length}
                 folders={dirEntries.folders}
                 files={dirEntries.files}
                 onNavigateDir={navigateDir}
                 onSelectDocument={selectDocument}
-                onCreateDocument={() => setCreatingDocument(true)}
+                onCreateDocument={openCreateDocument}
                 onOpenAccess={
                   activeCategory ? () => setAccessCategoryId(activeCategory.id) : undefined
                 }

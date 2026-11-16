@@ -414,7 +414,7 @@ test("14. 全局工作区设置：创建记忆与文档工作区、编辑信息�
   await page.locator("li", { hasText: renamed }).getByRole("button", { name: "删除" }).click();
   await expect(page.getByRole("heading", { name: "删除工作区" })).toBeVisible();
   await page.getByRole("button", { name: "确认删除" }).click();
-  await expect(page.getByRole("alert")).toContainText("工作区下仍有分类或文档，禁止删除");
+  await expect(page.getByRole("alert")).toContainText("工作区下仍有内容，禁止删除");
   await page.getByRole("button", { name: "取消" }).click();
 
   // 空工作区删除成功
@@ -694,6 +694,14 @@ test("16. 文档工作区 GFM 渲染、代码块解耦、层级文件树、目�
     window.dispatchEvent(new Event("beforeunload", { cancelable: true })),
   );
   expect(blocked).toBe(false);
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("未保存");
+    await dialog.dismiss();
+  });
+  await explorer.getByRole("button", { name: "新建文档" }).click();
+  await expect(page.getByRole("heading", { name: "新建文档" })).toHaveCount(0);
+  await expect(editor).toHaveValue("# 更新后规范\n\n- [x] 分栏同步");
 
   await editor.press("Control+s");
   await expect(page.getByLabel("文档正文")).toHaveCount(0);

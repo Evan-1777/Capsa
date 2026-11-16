@@ -17,6 +17,7 @@ function stripNode<T extends { node?: unknown }>({ node: _node, ...rest }: T): O
   return rest;
 }
 
+// hast-util-to-jsx-runtime converts HAST `align` on th/td to `style.textAlign` before calling components.
 function cellAlignClass(
   align?: string,
   textAlign?: React.CSSProperties["textAlign"],
@@ -171,16 +172,12 @@ export function Markdown({ children }: { children: string }) {
               />
             );
           },
-          input: ({ type, className = "", ...props }) =>
-            type === "checkbox" ? (
-              <input
-                type="checkbox"
-                className={`mr-2 h-4 w-4 rounded-xs accent-primary align-middle ${className}`}
-                {...stripNode(props)}
-              />
-            ) : (
-              <input type={type} className={className} {...stripNode(props)} />
-            ),
+          input: ({ className = "", ...props }) => (
+            <input
+              className={`mr-2 h-4 w-4 rounded-xs accent-primary align-middle ${className}`}
+              {...stripNode(props)}
+            />
+          ),
           blockquote: ({ className = "", ...props }) => (
             <blockquote
               className={`my-3 rounded-r-sm border-l-4 border-primary bg-surface-container-low px-4 py-2.5 text-on-surface-variant [&>p]:my-1 ${className}`}
@@ -232,16 +229,12 @@ export function Markdown({ children }: { children: string }) {
           ),
           th: ({ className = "", align, style, ...props }) => (
             <th
-              align={align}
-              style={style}
               className={`border-b border-r border-outline-variant px-3 py-2 font-semibold last:border-r-0 ${cellAlignClass(align, style?.textAlign)} ${className}`}
               {...stripNode(props)}
             />
           ),
           td: ({ className = "", align, style, ...props }) => (
             <td
-              align={align}
-              style={style}
               className={`border-b border-r border-outline-variant px-3 py-2 last:border-r-0 ${cellAlignClass(align, style?.textAlign)} ${className}`}
               {...stripNode(props)}
             />

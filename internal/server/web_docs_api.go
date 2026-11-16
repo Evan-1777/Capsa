@@ -185,7 +185,7 @@ func workspaceDelete(w http.ResponseWriter, r *http.Request) error {
 	case "is_default":
 		return validation("默认工作区不可删除")
 	case "not_empty":
-		return validation("工作区下仍有分类或文档，禁止删除")
+		return validation("工作区下仍有内容，禁止删除")
 	case "not_found":
 		return fail(CodeNotFound, fmt.Sprintf("工作区 %s 不存在", workspaceID), 404)
 	}

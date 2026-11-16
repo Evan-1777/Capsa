@@ -5,7 +5,6 @@ import { api } from "../api";
 import {
   Badge,
   Button,
-  EmptyState,
   ErrorBanner,
   Markdown,
   Skeleton,
@@ -38,7 +37,7 @@ export function DocumentPane({
   workspaceId: string;
   scope: DocScope;
   category: DocCategory | null;
-  documentId: string | null;
+  documentId: string;
   onDirtyChange: (dirty: boolean) => void;
   onChanged: () => Promise<void>;
   onDeleted: () => Promise<void>;
@@ -47,7 +46,7 @@ export function DocumentPane({
   onBack: () => void;
 }) {
   const detail = useAsync(
-    () => (documentId ? api.doc(workspaceId, documentId) : Promise.resolve(null)),
+    () => api.doc(workspaceId, documentId),
     [workspaceId, documentId],
   );
   const [draft, setDraft] = useState<string | null>(null);
@@ -122,10 +121,9 @@ export function DocumentPane({
     }
   }
 
-  if (detail.loading) return <Skeleton rows={6} />;
   if (detail.error?.code === "UNAUTHORIZED") return <UnauthorizedState />;
   if (detail.error) return <ErrorBanner message={detail.error.message} onRetry={detail.reload} />;
-  if (!document) return <EmptyState message="当前目录暂无文档" />;
+  if (detail.loading || !document) return <Skeleton rows={6} />;
 
   const rootLabel = scope === "public" ? "公共文档" : category?.name ?? "子项目";
   const crumbs = splitBreadcrumbs(document.path);

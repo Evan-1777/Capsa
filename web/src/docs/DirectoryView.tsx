@@ -24,7 +24,6 @@ export function DirectoryView({
   scope,
   category,
   currentDir,
-  totalDocsInContainer,
   folders,
   files,
   onNavigateDir,
@@ -36,7 +35,6 @@ export function DirectoryView({
   scope: DocScope;
   category: DocCategory | null;
   currentDir: string;
-  totalDocsInContainer: number;
   folders: TreeFolderNode[];
   files: TreeFileNode[];
   onNavigateDir: (dirPath: string) => void;
@@ -47,7 +45,7 @@ export function DirectoryView({
 }) {
   const rootLabel = scope === "public" ? "公共文档" : category?.name ?? "子项目";
   const crumbs = splitBreadcrumbs(currentDir);
-  const empty = totalDocsInContainer === 0 || (folders.length === 0 && files.length === 0);
+  const empty = folders.length === 0 && files.length === 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-surface">
