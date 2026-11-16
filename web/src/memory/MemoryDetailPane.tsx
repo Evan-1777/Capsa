@@ -1,5 +1,5 @@
 import { Pencil, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import {
@@ -10,9 +10,9 @@ import {
   FormField,
   Input,
   Skeleton,
-  Markdown,
   UnauthorizedState,
 } from "../components/ui";
+import { Markdown } from "../components/ui/Markdown";
 import type { MemoryDetail } from "../types";
 import type { AsyncState } from "../useAsync";
 
@@ -30,6 +30,13 @@ export function MemoryDetailPane({
   const [confirming, setConfirming] = useState(false);
   const [reason, setReason] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
+  const currentId = state.data?.id ?? null;
+
+  useEffect(() => {
+    setConfirming(false);
+    setReason("");
+    setFailure(null);
+  }, [currentId]);
 
   if (state.loading) return <Skeleton rows={6} />;
   if (state.error?.code === "UNAUTHORIZED") return <UnauthorizedState />;

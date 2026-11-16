@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no CGO
@@ -103,6 +104,15 @@ CREATE INDEX IF NOT EXISTS idx_groups_workspace ON groups(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_memories_group_order
 ON memories(group_slug, pinned DESC, updated_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_memories_active_global
+ON memories(pinned DESC, updated_at DESC, id DESC) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_memories_overdue
+ON memories(review_at) WHERE deleted_at IS NULL AND review_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_memories_deleted
+ON memories(deleted_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_categories_ws_name
 ON doc_categories(workspace_id, name);
 
@@ -122,11 +132,13 @@ func DBPath() string {
 	return DefaultDBPath
 }
 
-// Connect opens a short-lived handle to the configured database. The WAL
-// journal, foreign key enforcement and a busy timeout are applied through the
-// DSN so every pooled connection inherits them.
-func Connect() (*sql.DB, error) {
-	path := DBPath()
+var (
+	sharedMu     sync.Mutex
+	sharedHandle *sql.DB
+	sharedPath   string
+)
+
+func openHandle(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -134,16 +146,63 @@ func Connect() (*sql.DB, error) {
 	params.Add("_pragma", "journal_mode(WAL)")
 	params.Add("_pragma", "foreign_keys(1)")
 	params.Add("_pragma", "busy_timeout(5000)")
+	// WAL + synchronous(NORMAL) trades OS power-loss durability of the last commit
+	// for substantially lower commit latency on a personal VPS.
+	params.Add("_pragma", "synchronous(NORMAL)")
+	params.Add("_pragma", "temp_store(MEMORY)")
+	params.Add("_pragma", "cache_size(-2000)")
 	dsn := "file:" + path + "?" + params.Encode()
 	handle, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	// A single request runs its statements sequentially; one pooled connection
-	// removes intra-handle contention while the busy timeout absorbs the rare
-	// cross-request overlap.
+	// Intra-process queries serialize through one pooled connection while
+	// busy_timeout(5000) absorbs cross-process backup contention.
 	handle.SetMaxOpenConns(1)
 	return handle, nil
+}
+
+// Connect opens a standalone handle to the configured database for offline CLI
+// tasks or isolated schema callers. Callers own closing the returned handle.
+func Connect() (*sql.DB, error) {
+	return openHandle(DBPath())
+}
+
+// Shared returns the process-wide shared database handle for the active DBPath.
+// When DBPath changes (e.g. via test t.Setenv), the previous handle is closed
+// and replaced automatically so tests stay isolated without per-request opens.
+func Shared() (*sql.DB, error) {
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	current := DBPath()
+	if sharedHandle != nil && sharedPath == current {
+		return sharedHandle, nil
+	}
+	if sharedHandle != nil {
+		_ = sharedHandle.Close()
+		sharedHandle = nil
+		sharedPath = ""
+	}
+	handle, err := openHandle(current)
+	if err != nil {
+		return nil, err
+	}
+	sharedHandle = handle
+	sharedPath = current
+	return sharedHandle, nil
+}
+
+// CloseShared closes and clears the cached process-wide shared handle.
+func CloseShared() error {
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	if sharedHandle == nil {
+		return nil
+	}
+	err := sharedHandle.Close()
+	sharedHandle = nil
+	sharedPath = ""
+	return err
 }
 
 // InitSchema creates the tables, upgrades a legacy groups table with the
@@ -226,11 +285,10 @@ func MigrateIfInitialized(handle *sql.DB) error {
 
 // CheckDBHealth reports whether the database is reachable and initialized.
 func CheckDBHealth() bool {
-	handle, err := Connect()
+	handle, err := Shared()
 	if err != nil {
 		return false
 	}
-	defer handle.Close()
 	var one int
 	err = handle.QueryRow("SELECT 1 FROM groups LIMIT 1").Scan(&one)
 	// An empty groups table is healthy; only a missing table or I/O failure is not.

@@ -137,6 +137,13 @@ func GetMemoriesBatchForAccess(handle *sql.DB, memoryIDs []string, scopes map[st
 	return results, nil
 }
 
+// ListActiveTitlesByGroup projects only id and title for active entries in one
+// group, avoiding full metadata reads during title-similarity checks.
+func ListActiveTitlesByGroup(handle *sql.DB, group string) ([]map[string]any, error) {
+	return queryMaps(handle,
+		"SELECT id, title FROM memories WHERE deleted_at IS NULL AND group_slug = ?", group)
+}
+
 // ListActiveMemoriesForSearch returns active entries inside the authorized
 // groups; body is projected only when includeBody is true.
 func ListActiveMemoriesForSearch(handle *sql.DB, scopes map[string]string, group string, includeBody bool) ([]map[string]any, error) {
@@ -286,7 +293,7 @@ func CreateKey(handle *sql.DB, keyID, name, tokenHash string, scopes map[string]
 // or revoked.
 func FindActiveKeyByHash(handle *sql.DB, tokenHash string) (map[string]any, error) {
 	rows, err := queryMaps(handle,
-		"SELECT id, name, scopes FROM keys WHERE token_hash = ? AND revoked_at IS NULL", tokenHash)
+		"SELECT id, name, scopes, last_used_at FROM keys WHERE token_hash = ? AND revoked_at IS NULL", tokenHash)
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
@@ -366,6 +373,7 @@ func InsertMemory(handle *sql.DB, groupSlug, title, summary, body string, tags [
 		return "", err
 	}
 	candidate := memoryID
+	lastID := ""
 	for attempt := 0; attempt < 3; attempt++ {
 		var current string
 		if candidate != nil {
@@ -373,6 +381,7 @@ func InsertMemory(handle *sql.DB, groupSlug, title, summary, body string, tags [
 		} else {
 			current = ids.NewMemoryID()
 		}
+		lastID = current
 		_, err := handle.Exec(
 			"INSERT INTO memories (id, group_slug, title, summary, body, tags, review_at,"+
 				" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -388,7 +397,7 @@ func InsertMemory(handle *sql.DB, groupSlug, title, summary, body string, tags [
 		}
 		return current, nil
 	}
-	return "", DuplicateMemoryIDError{ID: *candidate}
+	return "", DuplicateMemoryIDError{ID: lastID}
 }
 
 // UpdateMemory updates the whitelisted columns only; an empty mapping is a
@@ -510,42 +519,36 @@ func ListMemoriesForWebInWorkspace(handle *sql.DB, scopes map[string]string, wor
 	if !wildcard && len(slugs) == 0 {
 		return []map[string]any{}, 0, nil
 	}
-	var condition string
+	conditions := []string{}
 	params := []any{}
-	switch status {
-	case "active":
-		condition = "deleted_at IS NULL"
-	case "deleted":
-		condition = "deleted_at IS NOT NULL"
-	default:
-		condition = "deleted_at IS NULL AND review_at IS NOT NULL AND review_at < ?"
-		params = append(params, db.UtcNow())
-	}
-	scoped := ""
 	if !wildcard {
-		scoped = fmt.Sprintf("group_slug IN (%s) AND ", placeholders(len(slugs)))
-		// 占位符顺序由 scoped 决定，分组 slug 必须排在状态条件之前。
-		params = append(append([]any{}, stringSliceToAny(slugs)...), params...)
+		conditions = append(conditions, fmt.Sprintf("group_slug IN (%s)", placeholders(len(slugs))))
+		params = append(params, stringSliceToAny(slugs)...)
 	}
 	if workspaceID != "" {
-		scoped += "group_slug IN (SELECT slug FROM groups WHERE workspace_id = ?) AND "
-		params = append([]any{workspaceID}, params...)
+		conditions = append(conditions, "group_slug IN (SELECT slug FROM groups WHERE workspace_id = ?)")
+		params = append(params, workspaceID)
 	}
-	where := scoped + condition
+	switch status {
+	case "active":
+		conditions = append(conditions, "deleted_at IS NULL")
+	case "deleted":
+		conditions = append(conditions, "deleted_at IS NOT NULL")
+	default:
+		conditions = append(conditions, "deleted_at IS NULL AND review_at IS NOT NULL AND review_at < ?")
+		params = append(params, db.UtcNow())
+	}
 	if group != "" {
-		where += " AND group_slug = ?"
+		conditions = append(conditions, "group_slug = ?")
+		params = append(params, group)
 	}
-	countParams := append([]any{}, params...)
-	if group != "" {
-		countParams = append(countParams, group)
-	}
+	where := strings.Join(conditions, " AND ")
 	var total int
 	if err := handle.QueryRow(
-		fmt.Sprintf("SELECT COUNT(*) FROM memories WHERE %s", where), countParams...).Scan(&total); err != nil {
+		fmt.Sprintf("SELECT COUNT(*) FROM memories WHERE %s", where), params...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	pageParams := append([]any{}, countParams...)
-	pageParams = append(pageParams, limit, offset)
+	pageParams := append(append([]any{}, params...), limit, offset)
 	rows, err := queryMaps(handle,
 		fmt.Sprintf("SELECT %s FROM memories WHERE %s ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ? OFFSET ?",
 			strings.Join(WebListFields, ", "), where), pageParams...)

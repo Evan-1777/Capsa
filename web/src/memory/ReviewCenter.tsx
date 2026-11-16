@@ -20,14 +20,24 @@ function extend(days: number): string {
 
 export function ReviewCenter({ workspaceId }: { workspaceId: string }) {
   const [version, setVersion] = useState(0);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
   const list = useAsync(
-    () => api.memories({ workspace_id: workspaceId, status: "overdue", limit: 100 }),
+    (signal) => api.memories({ workspace_id: workspaceId, status: "overdue", limit: 100 }, signal),
     [workspaceId, version],
   );
 
   async function postpone(id: string, days: number) {
-    await api.update(id, { review_at: extend(days) });
-    setVersion((current) => current + 1);
+    setBusyId(id);
+    setFailure(null);
+    try {
+      await api.update(id, { review_at: extend(days) });
+      setVersion((current) => current + 1);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "延期失败");
+    } finally {
+      setBusyId(null);
+    }
   }
 
   if (list.loading) return <Skeleton rows={4} />;
@@ -48,6 +58,12 @@ export function ReviewCenter({ workspaceId }: { workspaceId: string }) {
         </p>
       </div>
 
+      {failure && (
+        <p role="alert" className="text-body-small text-error">
+          {failure}
+        </p>
+      )}
+
       <Card as="ul" role="list" variant="outlined" className="divide-y divide-outline-variant overflow-hidden">
         {items.map((item) => (
           <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-3">
@@ -66,6 +82,7 @@ export function ReviewCenter({ workspaceId }: { workspaceId: string }) {
                   variant="tonal"
                   size="sm"
                   type="button"
+                  disabled={busyId === item.id}
                   onClick={() => postpone(item.id, days)}
                 >
                   延期 +{days} 天

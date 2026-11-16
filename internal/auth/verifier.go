@@ -1,15 +1,21 @@
 package auth
 
 import (
+	"crypto/subtle"
+	"time"
+
 	"capsa/internal/dal"
 	"capsa/internal/db"
 	"capsa/internal/ids"
 	"capsa/internal/permissions"
 )
 
-// AccessToken is the verified identity of a caller: a key id and its grants.
+const lastUsedTouchInterval = 60 * time.Second
+
+// AccessToken is the verified identity of a caller: a key id, display name and grants.
 type AccessToken struct {
 	KeyID  string
+	Name   string
 	Grants map[string]string
 }
 
@@ -36,11 +42,10 @@ func VerifyDocAccessID(token string) (*DocAccessIdentity, error) {
 	if token == "" {
 		return nil, nil
 	}
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return nil, err
 	}
-	defer handle.Close()
 	category, err := dal.FindDocCategoryByAccessID(handle, token)
 	if err != nil || category == nil {
 		return nil, err
@@ -53,18 +58,29 @@ func VerifyDocAccessID(token string) (*DocAccessIdentity, error) {
 	}, nil
 }
 
-// VerifyToken resolves a plaintext token to an identity. The admin token is
-// checked before the database; otherwise the token hash is looked up on every
-// request so revocation takes effect immediately.
-func VerifyToken(token string) (*AccessToken, error) {
-	if admin := permissions.AdminToken(); admin != "" && token == admin {
-		return &AccessToken{KeyID: permissions.AdminKeyID, Grants: permissions.AdminGrants}, nil
+func shouldTouchLastUsed(lastUsedRaw string, now time.Time) bool {
+	if lastUsedRaw == "" {
+		return true
 	}
-	handle, err := db.Connect()
+	lastUsed, err := db.ParseTimestamp(lastUsedRaw)
+	if err != nil {
+		return true
+	}
+	return now.Sub(lastUsed) >= lastUsedTouchInterval
+}
+
+// VerifyToken resolves a plaintext token to an identity. The admin token is
+// checked in constant time before the database; otherwise the token hash is
+// looked up on every request so revocation takes effect immediately, while
+// last_used_at updates are throttled to once every 60 seconds.
+func VerifyToken(token string) (*AccessToken, error) {
+	if admin := permissions.AdminToken(); admin != "" && subtle.ConstantTimeCompare([]byte(token), []byte(admin)) == 1 {
+		return &AccessToken{KeyID: permissions.AdminKeyID, Name: "Admin", Grants: permissions.AdminGrants}, nil
+	}
+	handle, err := db.Shared()
 	if err != nil {
 		return nil, err
 	}
-	defer handle.Close()
 	key, err := dal.FindActiveKeyByHash(handle, ids.HashToken(token))
 	if err != nil {
 		return nil, err
@@ -73,8 +89,12 @@ func VerifyToken(token string) (*AccessToken, error) {
 		return nil, nil
 	}
 	keyID := key["id"].(string)
-	if err := dal.TouchLastUsedAt(handle, keyID); err != nil {
-		return nil, err
+	keyName, _ := key["name"].(string)
+	lastUsedRaw, _ := key["last_used_at"].(string)
+	if shouldTouchLastUsed(lastUsedRaw, time.Now().UTC()) {
+		if err := dal.TouchLastUsedAt(handle, keyID); err != nil {
+			return nil, err
+		}
 	}
-	return &AccessToken{KeyID: keyID, Grants: key["scopes"].(map[string]string)}, nil
+	return &AccessToken{KeyID: keyID, Name: keyName, Grants: key["scopes"].(map[string]string)}, nil
 }

@@ -218,3 +218,54 @@ func TestAdminVirtualKey(t *testing.T) {
 		t.Fatalf("admin grants wrong: %#v", key["scopes"])
 	}
 }
+
+func TestListMemoriesForWebInWorkspaceNonWildcard(t *testing.T) {
+	handle := newTestDB(t)
+	ws2, err := CreateWorkspace(handle, "ws2", "", "memory")
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	ws2ID := ws2["id"].(string)
+
+	mustAddGroup(t, handle, "proj")
+	if status, err := AddGroupInWorkspace(handle, ws2ID, "other", "other", ""); err != nil || status != "inserted" {
+		t.Fatalf("add group in ws2: %s %v", status, err)
+	}
+
+	mDefault := mustInsertMemory(t, handle, "proj", "in default")
+	mWS2 := mustInsertMemory(t, handle, "other", "in ws2")
+
+	// Non-wildcard scopes combined with explicit workspaceID must bind SQL parameters in order.
+	rows, total, err := ListMemoriesForWebInWorkspace(handle, map[string]string{"proj": "rw", "other": "rw"}, ws2ID, "active", "", 0, 20)
+	if err != nil {
+		t.Fatalf("list in ws2: %v", err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0]["id"] != mWS2 {
+		t.Fatalf("ws2 rows = %v (total=%d), want [%s]", rows, total, mWS2)
+	}
+
+	// Default workspace filter with non-wildcard scope and group filter.
+	rows, total, err = ListMemoriesForWebInWorkspace(handle, map[string]string{"proj": "rw", "other": "r"}, db.DefaultWorkspaceID, "active", "proj", 0, 20)
+	if err != nil {
+		t.Fatalf("list in default: %v", err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0]["id"] != mDefault {
+		t.Fatalf("default rows = %v (total=%d), want [%s]", rows, total, mDefault)
+	}
+
+	// Verify GetWorkspaceMode & ListActiveTitlesByGroup.
+	mode, found, err := GetWorkspaceMode(handle, ws2ID)
+	if err != nil || !found || mode != "memory" {
+		t.Fatalf("GetWorkspaceMode = (%q, %v, %v)", mode, found, err)
+	}
+	if _, found, err := GetWorkspaceMode(handle, "ws_missing"); err != nil || found {
+		t.Fatalf("missing workspace mode = (%v, %v)", found, err)
+	}
+	titles, err := ListActiveTitlesByGroup(handle, "proj")
+	if err != nil || len(titles) != 1 || titles[0]["id"] != mDefault || titles[0]["title"] != "in default" {
+		t.Fatalf("ListActiveTitlesByGroup = %v (%v)", titles, err)
+	}
+	if _, present := titles[0]["summary"]; present {
+		t.Fatal("ListActiveTitlesByGroup must project only id and title")
+	}
+}

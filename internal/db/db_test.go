@@ -106,3 +106,67 @@ func TestParseTimestampNaiveIsUTC(t *testing.T) {
 		t.Fatalf("expected same instant, got %v vs %v", withOffset, naive)
 	}
 }
+
+func TestSharedHandleRotationAndPartialIndexes(t *testing.T) {
+	t.Cleanup(func() { _ = CloseShared() })
+
+	firstPath := filepath.Join(t.TempDir(), "first.db")
+	t.Setenv("CAPSA_DB_PATH", firstPath)
+
+	h1, err := Shared()
+	if err != nil {
+		t.Fatalf("first Shared(): %v", err)
+	}
+	h2, err := Shared()
+	if err != nil {
+		t.Fatalf("second Shared(): %v", err)
+	}
+	if h1 != h2 {
+		t.Fatal("Shared() must return the cached handle when DBPath is unchanged")
+	}
+
+	if err := InitSchema(h1); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	// Verify all three partial indexes exist in sqlite_master.
+	for _, indexName := range []string{
+		"idx_memories_active_global",
+		"idx_memories_overdue",
+		"idx_memories_deleted",
+	} {
+		var found string
+		err := h1.QueryRow("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?", indexName).Scan(&found)
+		if err != nil || found != indexName {
+			t.Fatalf("missing partial index %s: %v", indexName, err)
+		}
+	}
+
+	// Verify tuned PRAGMAs on shared connection.
+	var tempStore, cacheSize int
+	if err := h1.QueryRow("PRAGMA temp_store").Scan(&tempStore); err != nil || tempStore != 2 {
+		t.Fatalf("PRAGMA temp_store = %d (%v), want 2 (MEMORY)", tempStore, err)
+	}
+	if err := h1.QueryRow("PRAGMA cache_size").Scan(&cacheSize); err != nil || cacheSize != -2000 {
+		t.Fatalf("PRAGMA cache_size = %d (%v), want -2000", cacheSize, err)
+	}
+
+	// Switching CAPSA_DB_PATH rotates the shared handle and closes the old one.
+	secondPath := filepath.Join(t.TempDir(), "second.db")
+	t.Setenv("CAPSA_DB_PATH", secondPath)
+	h3, err := Shared()
+	if err != nil {
+		t.Fatalf("rotated Shared(): %v", err)
+	}
+	if h3 == h1 {
+		t.Fatal("Shared() must replace handle when DBPath changes")
+	}
+	if err := h1.Ping(); err == nil {
+		t.Fatal("previous shared handle must be closed after path rotation")
+	}
+	if err := CloseShared(); err != nil {
+		t.Fatalf("CloseShared(): %v", err)
+	}
+	if err := h3.Ping(); err == nil {
+		t.Fatal("CloseShared() must close active shared handle")
+	}
+}

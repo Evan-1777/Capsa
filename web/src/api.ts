@@ -88,10 +88,10 @@ export interface DocListQuery {
 }
 
 export const api = {
-  me: () => request<KeyInfo>("/api/auth/me"),
+  me: (signal?: AbortSignal) => request<KeyInfo>("/api/auth/me", { signal }),
 
-  groups: (workspaceId?: string) =>
-    request<ListData<GroupInfo>>("/api/groups?" + queryString({ workspace_id: workspaceId })),
+  groups: (workspaceId?: string, signal?: AbortSignal) =>
+    request<ListData<GroupInfo>>("/api/groups?" + queryString({ workspace_id: workspaceId }), { signal }),
   createGroup: (payload: GroupInput & { slug: string; name: string }) =>
     request<GroupInfo>("/api/groups", { method: "POST", body: JSON.stringify(payload) }),
   updateGroup: (slug: string, payload: GroupInput) =>
@@ -99,7 +99,7 @@ export const api = {
   deleteGroup: (slug: string) =>
     request<{ slug: string; action: string }>("/api/groups/" + slug, { method: "DELETE" }),
 
-  keys: () => request<ListData<KeyRecord>>("/api/keys"),
+  keys: (signal?: AbortSignal) => request<ListData<KeyRecord>>("/api/keys", { signal }),
   createKey: (payload: CreateKeyInput) =>
     request<CreatedKeyResult>("/api/keys", { method: "POST", body: JSON.stringify(payload) }),
   revokeKey: (id: string) =>
@@ -107,9 +107,9 @@ export const api = {
   deleteKey: (id: string) =>
     request<{ id: string; action: string }>("/api/keys/" + id, { method: "DELETE" }),
 
-  memories: (params: MemoryQuery = {}) =>
-    request<ListData<MemoryListItem>>("/api/memories?" + queryString(params)),
-  memory: (id: string) => request<MemoryDetail>("/api/memories/" + id),
+  memories: (params: MemoryQuery = {}, signal?: AbortSignal) =>
+    request<ListData<MemoryListItem>>("/api/memories?" + queryString(params), { signal }),
+  memory: (id: string, signal?: AbortSignal) => request<MemoryDetail>("/api/memories/" + id, { signal }),
   create: (payload: MemoryInput) =>
     request<{ id: string; similar_items: SimilarItem[] }>("/api/memories", {
       method: "POST",
@@ -128,7 +128,7 @@ export const api = {
   restore: (id: string) =>
     request<{ id: string; action: string }>("/api/memories/" + id + "/restore", { method: "POST" }),
 
-  workspaces: () => request<ListData<WorkspaceInfo>>("/api/workspaces"),
+  workspaces: (signal?: AbortSignal) => request<ListData<WorkspaceInfo>>("/api/workspaces", { signal }),
   createWorkspace: (payload: { name: string; description?: string; mode: WorkspaceMode }) =>
     request<WorkspaceInfo>("/api/workspaces", { method: "POST", body: JSON.stringify(payload) }),
   updateWorkspace: (id: string, payload: WorkspaceInput) =>
@@ -136,8 +136,8 @@ export const api = {
   deleteWorkspace: (id: string) =>
     request<{ id: string; action: string }>("/api/workspaces/" + id, { method: "DELETE" }),
 
-  docCategories: (workspaceId: string) =>
-    request<ListData<DocCategory>>("/api/workspaces/" + workspaceId + "/categories"),
+  docCategories: (workspaceId: string, signal?: AbortSignal) =>
+    request<ListData<DocCategory>>("/api/workspaces/" + workspaceId + "/categories", { signal }),
   createDocCategory: (workspaceId: string, payload: DocCategoryInput & { name: string }) =>
     request<DocCategory>("/api/workspaces/" + workspaceId + "/categories", {
       method: "POST",
@@ -159,12 +159,13 @@ export const api = {
       { method: "POST" },
     ),
 
-  docs: (workspaceId: string, params: DocListQuery) =>
+  docs: (workspaceId: string, params: DocListQuery, signal?: AbortSignal) =>
     request<ListData<DocumentSummary>>(
       "/api/workspaces/" + workspaceId + "/docs?" + queryString(params),
+      { signal },
     ),
-  doc: (workspaceId: string, documentId: string) =>
-    request<DocumentDetail>("/api/workspaces/" + workspaceId + "/docs/" + documentId),
+  doc: (workspaceId: string, documentId: string, signal?: AbortSignal) =>
+    request<DocumentDetail>("/api/workspaces/" + workspaceId + "/docs/" + documentId, { signal }),
   createDoc: (
     workspaceId: string,
     payload: { scope: DocScope; category_id?: string; path: string; content: string },

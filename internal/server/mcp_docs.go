@@ -8,6 +8,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -114,6 +115,7 @@ func NewDocsMCPServer() *mcpserver.MCPServer {
 func NewDocsMCPHandler(instance *mcpserver.MCPServer) http.Handler {
 	streamable := mcpserver.NewStreamableHTTPServer(instance,
 		mcpserver.WithEndpointPath("/mcp/docs"),
+		mcpserver.WithSessionIdleTTL(30*time.Minute),
 		mcpserver.WithDisableLocalhostProtection(true),
 	)
 	return docsBearerGuard(streamable)
@@ -140,14 +142,14 @@ func docsBearerGuard(next http.Handler) http.Handler {
 	})
 }
 
-// docsHandle opens the short-lived handle and resolves the caller. A non-empty
-// message is the tool-level failure to return.
+// docsHandle returns the shared database handle and resolves the caller. A
+// non-empty message is the tool-level failure to return.
 func docsHandle(ctx context.Context) (*sql.DB, *auth.DocAccessIdentity, string) {
 	identity := docIdentityFrom(ctx)
 	if identity == nil {
 		return nil, nil, "服务内部错误"
 	}
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return nil, nil, "服务内部错误"
 	}
@@ -202,7 +204,6 @@ func handleDocGlob(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallT
 	if message != "" {
 		return toolError(message)
 	}
-	defer handle.Close()
 	documents, err := dal.QueryDocuments(handle, dal.DocQuery{
 		WorkspaceID: identity.WorkspaceID,
 		ScopeFilter: scope,
@@ -254,7 +255,6 @@ func handleDocGrep(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallT
 	if message != "" {
 		return toolError(message)
 	}
-	defer handle.Close()
 	documents, err := dal.QueryDocuments(handle, dal.DocQuery{
 		WorkspaceID:    identity.WorkspaceID,
 		ScopeFilter:    scope,
@@ -272,20 +272,27 @@ func handleDocGrep(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallT
 		if content == "" {
 			continue
 		}
-		for index, text := range strings.Split(content, "\n") {
+		rest := content
+		lineNo := 1
+		for {
+			text, after, hasNewline := strings.Cut(rest, "\n")
 			hit := strings.Contains(text, pattern)
 			if matcher != nil {
 				hit = matcher.MatchString(text)
 			}
-			if !hit {
-				continue
+			if hit {
+				if len(lines) >= limit {
+					truncated = true
+					break
+				}
+				lines = append(lines, fmt.Sprintf("[%v] %v:%d: %s",
+					document["scope"], document["path"], lineNo, text))
 			}
-			if len(lines) >= limit {
-				truncated = true
+			if !hasNewline {
 				break
 			}
-			lines = append(lines, fmt.Sprintf("[%v] %v:%d: %s",
-				document["scope"], document["path"], index+1, text))
+			rest = after
+			lineNo++
 		}
 		if truncated {
 			break
@@ -313,7 +320,6 @@ func handleDocRead(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallT
 	if message != "" {
 		return toolError(message)
 	}
-	defer handle.Close()
 	categoryID := ""
 	if scope == "category" {
 		categoryID = identity.CategoryID
@@ -328,8 +334,7 @@ func handleDocRead(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallT
 	content, _ := document["content"].(string)
 	header := fmt.Sprintf("===== [%s] %s | %d 字符 | 更新 %s =====",
 		scope, documentPath, utf8.RuneCountInString(content), docDate(document["updated_at"]))
-	allLines := strings.Split(content, "\n")
-	total := len(allLines)
+	total := strings.Count(content, "\n") + 1
 	offset := request.GetInt("offset", 0)
 	limit := request.GetInt("limit", 0)
 	if offset == 0 && limit == 0 {
@@ -352,8 +357,16 @@ func handleDocRead(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallT
 		end = start + limit - 1
 	}
 	numbered := make([]string, 0, end-start+1)
-	for lineNumber := start; lineNumber <= end; lineNumber++ {
-		numbered = append(numbered, fmt.Sprintf("%d: %s", lineNumber, allLines[lineNumber-1]))
+	rest := content
+	for lineNumber := 1; lineNumber <= end; lineNumber++ {
+		lineText, after, hasNewline := strings.Cut(rest, "\n")
+		if lineNumber >= start {
+			numbered = append(numbered, fmt.Sprintf("%d: %s", lineNumber, lineText))
+		}
+		if !hasNewline {
+			break
+		}
+		rest = after
 	}
 	return toolText(strings.Join(append([]string{header,
 		fmt.Sprintf("第 %d~%d 行 / 共 %d 行", start, end, total)}, numbered...), "\n"))
@@ -371,7 +384,6 @@ func handleDocCreate(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 	if message != "" {
 		return toolError(message)
 	}
-	defer handle.Close()
 	_, status, err := dal.CreateDocument(handle, identity.WorkspaceID, "category",
 		identity.CategoryID, documentPath, request.GetString("content", ""))
 	if err != nil {
@@ -395,7 +407,6 @@ func handleDocWrite(ctx context.Context, request mcp.CallToolRequest) (*mcp.Call
 	if message != "" {
 		return toolError(message)
 	}
-	defer handle.Close()
 	_, status, err := dal.OverwriteDocumentByPath(handle, identity.WorkspaceID,
 		identity.CategoryID, documentPath, request.GetString("content", ""))
 	if err != nil {
@@ -427,7 +438,6 @@ func handleDocEdit(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallT
 	if message != "" {
 		return toolError(message)
 	}
-	defer handle.Close()
 	count, status, err := dal.EditDocumentByPath(handle, identity.WorkspaceID, identity.CategoryID,
 		documentPath, oldString, newString, request.GetBool("replace_all", false))
 	if err != nil {
@@ -456,7 +466,6 @@ func handleDocDelete(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 	if message != "" {
 		return toolError(message)
 	}
-	defer handle.Close()
 	deleted, err := dal.DeleteDocumentByPath(handle, identity.WorkspaceID, identity.CategoryID, documentPath)
 	if err != nil {
 		return toolError("服务内部错误")

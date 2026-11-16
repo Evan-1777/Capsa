@@ -29,9 +29,13 @@ func isCJK(r rune) bool {
 	return r >= '\u4e00' && r <= '\u9fff'
 }
 
-// Normalize applies NFC normalization and lowercases the text.
+// Normalize applies NFC normalization (skipping already-NFC input) and
+// lowercases the text.
 func Normalize(text string) string {
-	return strings.ToLower(norm.NFC.String(text))
+	if !norm.NFC.IsNormalString(text) {
+		text = norm.NFC.String(text)
+	}
+	return strings.ToLower(text)
 }
 
 // words splits text into runs of alphanumeric characters.
@@ -160,27 +164,37 @@ func IsExpired(reviewAt *string, now time.Time) bool {
 
 // Score computes the weighted score of a memory for a token set.
 func Score(memory map[string]any, terms map[string]struct{}, now time.Time, includeBody bool) float64 {
+	score, _ := scoreMemory(memory, terms, now, includeBody)
+	return score
+}
+
+func scoreMemory(memory map[string]any, terms map[string]struct{}, now time.Time, includeBody bool) (float64, bool) {
 	title := Normalize(stringField(memory, "title"))
 	summary := Normalize(stringField(memory, "summary"))
-	tags := []string{}
-	for _, tag := range tagsOf(memory) {
-		tags = append(tags, Normalize(tag))
+	rawTags := tagsOf(memory)
+	tags := make([]string, len(rawTags))
+	for i, tag := range rawTags {
+		tags[i] = Normalize(tag)
 	}
+	matched := false
 	total := 0.0
 	for term := range terms {
 		if strings.Contains(title, term) {
 			total += 4
+			matched = true
 		}
 	}
 	for term := range terms {
 		if strings.Contains(summary, term) {
 			total += 1
+			matched = true
 		}
 	}
 	for term := range terms {
 		for _, tag := range tags {
 			if strings.Contains(tag, term) {
 				total += 2
+				matched = true
 				break
 			}
 		}
@@ -191,6 +205,7 @@ func Score(memory map[string]any, terms map[string]struct{}, now time.Time, incl
 		for term := range terms {
 			if strings.Contains(body, term) {
 				bodyScore += BodyHitWeight
+				matched = true
 			}
 		}
 		total += math.Min(bodyScore, BodyScoreCap)
@@ -201,83 +216,78 @@ func Score(memory map[string]any, terms map[string]struct{}, now time.Time, incl
 	if IsExpired(stringPtrField(memory, "review_at"), now) {
 		total -= 2
 	}
-	return round2(total)
+	return round2(total), matched
 }
 
-// hits reports whether any term matches a searchable field. Pinned and expiry
-// are ranking weights, not hits.
-func hits(memory map[string]any, terms map[string]struct{}, includeBody bool) bool {
-	fields := []string{Normalize(stringField(memory, "title")), Normalize(stringField(memory, "summary"))}
-	for _, tag := range tagsOf(memory) {
-		fields = append(fields, Normalize(tag))
-	}
-	if includeBody {
-		fields = append(fields, Normalize(stringField(memory, "body")))
-	}
-	for term := range terms {
-		for _, field := range fields {
-			if strings.Contains(field, term) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// RankMemories returns a ranked copy of the input. Two stable passes fix the
-// descending id tie-breaker first, then order by score, pinned flag and update time.
-func RankMemories(memories []map[string]any, query string, now time.Time, includeBody bool) []map[string]any {
-	ranked := make([]map[string]any, len(memories))
-	copy(ranked, memories)
-	sort.SliceStable(ranked, func(i, j int) bool {
-		return stringField(ranked[i], "id") > stringField(ranked[j], "id")
-	})
-	terms := Tokenize(query)
-	if len(terms) == 0 {
-		sort.SliceStable(ranked, func(i, j int) bool {
-			return browseKey(ranked[i]).after(browseKey(ranked[j]))
-		})
-		return ranked
-	}
-	filtered := make([]map[string]any, 0, len(ranked))
-	for _, memory := range ranked {
-		if hits(memory, terms, includeBody) {
-			filtered = append(filtered, memory)
-		}
-	}
-	scores := make(map[string]float64, len(filtered))
-	for _, memory := range filtered {
-		scores[stringField(memory, "id")] = Score(memory, terms, now, includeBody)
-	}
-	sort.SliceStable(filtered, func(i, j int) bool {
-		left, right := filtered[i], filtered[j]
-		leftScore, rightScore := scores[stringField(left, "id")], scores[stringField(right, "id")]
-		if leftScore != rightScore {
-			return leftScore > rightScore
-		}
-		leftPinned, rightPinned := pinnedOf(left), pinnedOf(right)
-		if leftPinned != rightPinned {
-			return leftPinned
-		}
-		return epochOf(left) > epochOf(right)
-	})
-	return filtered
-}
-
-type browseOrder struct {
+type rankedEntry struct {
+	memory map[string]any
+	id     string
 	pinned bool
 	epoch  float64
+	score  float64
 }
 
-func (o browseOrder) after(other browseOrder) bool {
-	if o.pinned != other.pinned {
-		return o.pinned
+// RankMemories returns a ranked copy of the input ordered by score (when query
+// has tokens), pinned flag, update time and descending id tie-breaker.
+func RankMemories(memories []map[string]any, query string, now time.Time, includeBody bool) []map[string]any {
+	terms := Tokenize(query)
+	if len(terms) == 0 {
+		entries := make([]rankedEntry, len(memories))
+		for i, memory := range memories {
+			entries[i] = rankedEntry{
+				memory: memory,
+				id:     stringField(memory, "id"),
+				pinned: pinnedOf(memory),
+				epoch:  epochOf(memory),
+			}
+		}
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].pinned != entries[j].pinned {
+				return entries[i].pinned
+			}
+			if entries[i].epoch != entries[j].epoch {
+				return entries[i].epoch > entries[j].epoch
+			}
+			return entries[i].id > entries[j].id
+		})
+		out := make([]map[string]any, len(entries))
+		for i, entry := range entries {
+			out[i] = entry.memory
+		}
+		return out
 	}
-	return o.epoch > other.epoch
-}
 
-func browseKey(memory map[string]any) browseOrder {
-	return browseOrder{pinned: pinnedOf(memory), epoch: epochOf(memory)}
+	entries := make([]rankedEntry, 0, len(memories))
+	for _, memory := range memories {
+		score, hit := scoreMemory(memory, terms, now, includeBody)
+		if !hit {
+			continue
+		}
+		entries = append(entries, rankedEntry{
+			memory: memory,
+			id:     stringField(memory, "id"),
+			pinned: pinnedOf(memory),
+			epoch:  epochOf(memory),
+			score:  score,
+		})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].score != entries[j].score {
+			return entries[i].score > entries[j].score
+		}
+		if entries[i].pinned != entries[j].pinned {
+			return entries[i].pinned
+		}
+		if entries[i].epoch != entries[j].epoch {
+			return entries[i].epoch > entries[j].epoch
+		}
+		return entries[i].id > entries[j].id
+	})
+	out := make([]map[string]any, len(entries))
+	for i, entry := range entries {
+		out[i] = entry.memory
+	}
+	return out
 }
 
 func epochOf(memory map[string]any) float64 {
@@ -323,10 +333,10 @@ func pinnedOf(memory map[string]any) bool {
 	}
 }
 
-// tagsOf decodes the tags field, which the DAL returns as a raw JSON string but
-// a transport layer may already have decoded into a slice.
-func tagsOf(memory map[string]any) []string {
-	switch value := memory["tags"].(type) {
+// DecodeTags decodes a tags field from a JSON string or an already-decoded
+// string/any slice.
+func DecodeTags(raw any) []string {
+	switch value := raw.(type) {
 	case []string:
 		return value
 	case []any:
@@ -347,4 +357,8 @@ func tagsOf(memory map[string]any) []string {
 	default:
 		return []string{}
 	}
+}
+
+func tagsOf(memory map[string]any) []string {
+	return DecodeTags(memory["tags"])
 }

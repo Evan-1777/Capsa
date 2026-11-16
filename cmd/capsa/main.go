@@ -3,15 +3,19 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"capsa/internal/auth"
@@ -409,6 +413,9 @@ func cmdReview(args []string) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	if *limit <= 0 {
+		return fail("limit 必须为正整数，本次传入 %d", *limit)
+	}
 	handle, err := connect()
 	if err != nil {
 		return fail("连接数据库失败：%v", err)
@@ -436,8 +443,11 @@ func cmdReview(args []string) int {
 		return 0
 	}
 	for index, item := range ranked {
-		updated := item["updated_at"].(string)
-		fmt.Printf("[%d] %s | %s | %s | %s\n", index+1, item["id"], item["group_slug"], updated[:10], item["title"])
+		updated, _ := item["updated_at"].(string)
+		if len(updated) > 10 {
+			updated = updated[:10]
+		}
+		fmt.Printf("[%d] %s | %s | %s | %s\n", index+1, item["id"], item["group_slug"], updated, item["title"])
 	}
 	return 0
 }
@@ -463,14 +473,20 @@ func cmdBackup(args []string) int {
 		return fail("创建备份目录失败：%v", err)
 	}
 	snapshot := filepath.Join(targetDir, backupPrefix+db.UtcNow()[:10]+".db")
-	_ = os.Remove(snapshot)
+	tmpSnapshot := fmt.Sprintf("%s.tmp.%d.%d", snapshot, os.Getpid(), time.Now().UnixNano())
+	_ = os.Remove(tmpSnapshot)
 	handle, err := db.Connect()
 	if err != nil {
 		return fail("连接数据库失败：%v", err)
 	}
 	defer handle.Close()
-	if _, err := handle.Exec("VACUUM INTO ?", snapshot); err != nil {
+	if _, err := handle.Exec("VACUUM INTO ?", tmpSnapshot); err != nil {
+		_ = os.Remove(tmpSnapshot)
 		return fail("生成快照失败：%v", err)
+	}
+	if err := os.Rename(tmpSnapshot, snapshot); err != nil {
+		_ = os.Remove(tmpSnapshot)
+		return fail("替换快照失败：%v", err)
 	}
 	fmt.Printf("已生成快照：%s\n", snapshot)
 
@@ -555,9 +571,46 @@ func cmdServe(args []string) int {
 	handle.Close()
 
 	address := fmt.Sprintf("%s:%d", *host, *port)
-	fmt.Printf("capsa 服务已启动：http://%s\n", address)
-	if err := http.ListenAndServe(address, server.NewHandler()); err != nil {
-		return fail("服务启动失败：%v", err)
+	srv := &http.Server{
+		Addr:              address,
+		Handler:           server.NewHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
-	return 0
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := srv.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	fmt.Printf("capsa 服务已启动：http://%s\n", address)
+	select {
+	case err := <-errCh:
+		_ = db.CloseShared()
+		if err != nil {
+			return fail("服务启动失败：%v", err)
+		}
+		return 0
+	case <-ctx.Done():
+		stop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		shutdownErr := srv.Shutdown(shutdownCtx)
+		listenErr := <-errCh
+		_ = db.CloseShared()
+		if shutdownErr != nil {
+			return fail("服务停机失败：%v", shutdownErr)
+		}
+		if listenErr != nil {
+			return fail("服务异常退出：%v", listenErr)
+		}
+		return 0
+	}
 }

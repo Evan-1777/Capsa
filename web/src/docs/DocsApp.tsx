@@ -88,51 +88,81 @@ export function DocsApp({
     [categories, accessCategoryId],
   );
 
-  const reloadCategories = useCallback(async () => {
-    const listed = await api.docCategories(workspace.id);
+  const catsAbortRef = useRef<AbortController | null>(null);
+  const docsAbortRef = useRef<AbortController | null>(null);
+
+  const reloadCategories = useCallback(async (signal?: AbortSignal) => {
+    const listed = await api.docCategories(workspace.id, signal);
+    if (signal?.aborted) return;
     setCategories(listed.items);
     setCategoriesError(null);
-    const publicDocs = await api.docs(workspace.id, { scope: "public" });
-    setPublicCount(publicDocs.total);
   }, [workspace.id]);
 
   const loadCategories = useCallback(async () => {
+    catsAbortRef.current?.abort();
+    const controller = new AbortController();
+    catsAbortRef.current = controller;
     setCategoriesLoading(true);
     try {
-      await reloadCategories();
+      await reloadCategories(controller.signal);
     } catch (error) {
+      if (controller.signal.aborted || catsAbortRef.current !== controller) return;
+      if (error instanceof DOMException && error.name === "AbortError") return;
       if (!(error instanceof ApiError && error.code === "UNAUTHORIZED")) {
         setCategoriesError(error instanceof Error ? error.message : "子项目列表加载失败");
       }
     } finally {
-      setCategoriesLoading(false);
+      if (!controller.signal.aborted && catsAbortRef.current === controller) {
+        setCategoriesLoading(false);
+      }
     }
   }, [reloadCategories]);
 
   useEffect(() => {
     void loadCategories();
+    return () => {
+      catsAbortRef.current?.abort();
+    };
   }, [loadCategories]);
 
   const loadDocs = useCallback(async () => {
+    docsAbortRef.current?.abort();
+    const controller = new AbortController();
+    docsAbortRef.current = controller;
     setDocsLoading(true);
     try {
-      const listed = await api.docs(workspace.id, {
-        scope: container.scope,
-        category_id: container.categoryId ?? undefined,
-      });
+      const listed = await api.docs(
+        workspace.id,
+        {
+          scope: container.scope,
+          category_id: container.categoryId ?? undefined,
+        },
+        controller.signal,
+      );
+      if (controller.signal.aborted || docsAbortRef.current !== controller) return;
       setDocuments(listed.items);
+      if (container.scope === "public") {
+        setPublicCount(listed.total);
+      }
       setDocsError(null);
     } catch (error) {
+      if (controller.signal.aborted || docsAbortRef.current !== controller) return;
+      if (error instanceof DOMException && error.name === "AbortError") return;
       setDocsError(
         error instanceof ApiError ? error : new ApiError("INTERNAL_ERROR", "文档列表加载失败", 0),
       );
     } finally {
-      setDocsLoading(false);
+      if (!controller.signal.aborted && docsAbortRef.current === controller) {
+        setDocsLoading(false);
+      }
     }
   }, [workspace.id, container.scope, container.categoryId]);
 
   useEffect(() => {
     void loadDocs();
+    return () => {
+      docsAbortRef.current?.abort();
+    };
   }, [loadDocs]);
 
   const fullTree = useMemo(() => buildFileTree(documents), [documents]);
@@ -172,8 +202,7 @@ export function DocsApp({
   }, [resolvedDir, currentDir]);
 
   const afterMutation = useCallback(async () => {
-    await reloadCategories();
-    await loadDocs();
+    await Promise.all([reloadCategories(), loadDocs()]);
   }, [reloadCategories, loadDocs]);
 
   // ponytail: 脏状态用 ref 承载，切换判据只在事件回调里读一次，避免为一个瞬时判断引入额外渲染。

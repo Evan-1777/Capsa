@@ -1,21 +1,39 @@
 import React, { useEffect, useRef } from "react";
 
-/** 原生 <dialog> 的模态生命周期：打开时 showModal，卸载时把焦点还原到触发点。 */
+/** 原生 <dialog> 的模态生命周期：打开时 showModal，关闭或卸载时把焦点还原到触发点。 */
 function useModalDialog(open: boolean) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const prevFocusedRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (dialog && open && !dialog.open) {
-      prevFocusedRef.current = document.activeElement as HTMLElement | null;
-      dialog.showModal();
+    if (open) {
+      if (!wasOpenRef.current) {
+        prevFocusedRef.current = document.activeElement as HTMLElement | null;
+      }
+      wasOpenRef.current = true;
+      if (dialog && !dialog.open) {
+        dialog.showModal();
+      }
+      return;
+    }
+    if (wasOpenRef.current) {
+      wasOpenRef.current = false;
+      const target = prevFocusedRef.current;
+      prevFocusedRef.current = null;
+      target?.focus?.();
     }
   }, [open]);
 
   useEffect(() => {
     return () => {
-      prevFocusedRef.current?.focus?.();
+      if (wasOpenRef.current) {
+        wasOpenRef.current = false;
+        const target = prevFocusedRef.current;
+        prevFocusedRef.current = null;
+        target?.focus?.();
+      }
     };
   }, []);
 

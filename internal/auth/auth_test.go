@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"capsa/internal/dal"
 	"capsa/internal/db"
@@ -57,12 +58,13 @@ func TestVerifyTokenAdmin(t *testing.T) {
 	if err != nil || token == nil {
 		t.Fatalf("admin verify: %v %v", token, err)
 	}
-	if token.KeyID != "admin" || token.Grants["*"] != "rw" {
+	if token.KeyID != "admin" || token.Name != "Admin" || token.Grants["*"] != "rw" {
 		t.Fatalf("unexpected admin identity: %#v", token)
 	}
 }
 
 func TestVerifyTokenDatabaseKey(t *testing.T) {
+	t.Cleanup(func() { _ = db.CloseShared() })
 	t.Setenv("CAPSA_DB_PATH", filepath.Join(t.TempDir(), "capsa.db"))
 	t.Setenv("CAPSA_ADMIN_TOKEN", "")
 	handle, err := db.Connect()
@@ -82,7 +84,7 @@ func TestVerifyTokenDatabaseKey(t *testing.T) {
 	if err != nil || token == nil {
 		t.Fatalf("verify: %v %v", token, err)
 	}
-	if token.KeyID != "deadbeef" || token.Grants["proj"] != "rw" {
+	if token.KeyID != "deadbeef" || token.Name != "name" || token.Grants["proj"] != "rw" {
 		t.Fatalf("unexpected identity: %#v", token)
 	}
 
@@ -91,8 +93,37 @@ func TestVerifyTokenDatabaseKey(t *testing.T) {
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("list keys: %v %v", keys, err)
 	}
-	if keys[0]["last_used_at"] == nil {
+	firstTouch, _ := keys[0]["last_used_at"].(string)
+	if firstTouch == "" {
 		t.Fatal("last_used_at must be set after verification")
+	}
+
+	// Second verification within 60 seconds must throttle last_used_at write.
+	if _, err := VerifyToken(plain); err != nil {
+		t.Fatalf("second verify: %v", err)
+	}
+	keys, err = dal.ListKeys(handle)
+	if err != nil {
+		t.Fatalf("list keys after second verify: %v", err)
+	}
+	if secondTouch, _ := keys[0]["last_used_at"].(string); secondTouch != firstTouch {
+		t.Fatalf("last_used_at updated within 60s window: %q -> %q", firstTouch, secondTouch)
+	}
+
+	// Backdate last_used_at past 60s and confirm next verification refreshes it.
+	stale := time.Now().UTC().Add(-65 * time.Second).Format("2006-01-02T15:04:05.000000-07:00")
+	if _, err := handle.Exec("UPDATE keys SET last_used_at = ? WHERE id = ?", stale, "deadbeef"); err != nil {
+		t.Fatalf("backdate last_used_at: %v", err)
+	}
+	if _, err := VerifyToken(plain); err != nil {
+		t.Fatalf("verify after stale window: %v", err)
+	}
+	keys, err = dal.ListKeys(handle)
+	if err != nil {
+		t.Fatalf("list keys after stale verify: %v", err)
+	}
+	if refreshed, _ := keys[0]["last_used_at"].(string); refreshed == "" || refreshed == stale {
+		t.Fatalf("last_used_at must refresh once >= 60s elapsed, got %q", refreshed)
 	}
 
 	unknown, err := VerifyToken("capsa_nope_nope")

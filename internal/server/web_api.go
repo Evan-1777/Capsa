@@ -163,7 +163,7 @@ func listItem(row map[string]any, grants map[string]string) map[string]any {
 	for _, field := range dal.WebListFields {
 		item[field] = row[field]
 	}
-	item["tags"] = decodeTags(item["tags"])
+	item["tags"] = retrieval.DecodeTags(item["tags"])
 	item["permission"] = permissions.PermissionFor(grants, row["group_slug"].(string))
 	item["is_overdue"] = retrieval.IsExpired(reviewAtOf(row), nowUTC())
 	return item
@@ -174,20 +174,10 @@ func detailItem(row map[string]any, grants map[string]string) map[string]any {
 	for _, field := range dal.WebItemFields {
 		item[field] = row[field]
 	}
-	item["tags"] = decodeTags(item["tags"])
+	item["tags"] = retrieval.DecodeTags(item["tags"])
 	item["permission"] = permissions.PermissionFor(grants, row["group_slug"].(string))
 	item["is_overdue"] = retrieval.IsExpired(reviewAtOf(row), nowUTC())
 	return item
-}
-
-func decodeTags(raw any) []string {
-	text, _ := raw.(string)
-	out := []string{}
-	if text == "" {
-		return out
-	}
-	_ = json.Unmarshal([]byte(text), &out)
-	return out
 }
 
 func reviewAtOf(row map[string]any) *string {
@@ -300,31 +290,17 @@ func toInt(value any) (int, bool) {
 
 func authMe(w http.ResponseWriter, r *http.Request) error {
 	token := AccessTokenFrom(r.Context())
-	keyID := ""
-	if token != nil {
-		keyID = token.KeyID
-	}
-	handle, err := db.Connect()
-	if err != nil {
-		return err
-	}
-	defer handle.Close()
-	key, err := dal.GetKey(handle, keyID)
-	if err != nil {
-		return err
-	}
-	if key == nil {
+	if token == nil {
 		return fail(CodeUnauthorized, "凭据无效或已被吊销", 401)
 	}
-	return ok(w, map[string]any{"key_id": key["id"], "name": key["name"], "scopes": key["scopes"]})
+	return ok(w, map[string]any{"key_id": token.KeyID, "name": token.Name, "scopes": token.Grants})
 }
 
 func withDB(fn func(handle *sql.DB) error) error {
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return err
 	}
-	defer handle.Close()
 	return fn(handle)
 }
 
@@ -578,7 +554,7 @@ func memoryCreate(w http.ResponseWriter, r *http.Request) error {
 	var memoryID string
 	var similar []map[string]any
 	if err := withDB(func(handle *sql.DB) error {
-		candidates, err := dal.ListActiveMemoriesForSearch(handle, map[string]string{group: "rw"}, group, false)
+		candidates, err := dal.ListActiveTitlesByGroup(handle, group)
 		if err != nil {
 			return err
 		}

@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApiError, api, clearKey, getKey, setUnauthorizedHandler } from "./api";
 import { ErrorBanner, Skeleton, UnauthorizedState } from "./components/ui";
-import { DocsApp } from "./docs/DocsApp";
-import { MemoryApp } from "./memory/MemoryApp";
-import { AppShell, Login, WorkspaceSettings, type WorkspaceShellProps } from "./shell";
+import { AppShell, Login, type WorkspaceShellProps } from "./shell";
 import type { KeyInfo, WorkspaceInfo } from "./types";
+
+const MemoryApp = lazy(() =>
+  import("./memory/MemoryApp").then((m) => ({ default: m.MemoryApp })),
+);
+const DocsApp = lazy(() =>
+  import("./docs/DocsApp").then((m) => ({ default: m.DocsApp })),
+);
+const WorkspaceSettings = lazy(() =>
+  import("./shell/WorkspaceSettings").then((m) => ({ default: m.WorkspaceSettings })),
+);
 
 const WORKSPACE_STORAGE = "capsa_workspace_id";
 
@@ -14,6 +22,8 @@ export default function App() {
   const [info, setInfo] = useState<KeyInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [expired, setExpired] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authAttempt, setAuthAttempt] = useState(0);
 
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[] | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -53,26 +63,34 @@ export default function App() {
       setLoading(false);
       return;
     }
-    let active = true;
+    const controller = new AbortController();
+    setLoading(true);
+    setAuthError(null);
     (async () => {
       try {
-        const me = await api.me();
-        if (!active) return;
+        const me = await api.me(controller.signal);
+        if (controller.signal.aborted) return;
         setInfo(me);
         setExpired(false);
+        setAuthError(null);
       } catch (error) {
-        // 401 已由 api 层清空凭据并触发 unauthorized 处理器，此处只兜住其余失败。
-        if (active && error instanceof ApiError && error.code !== "UNAUTHORIZED") {
+        if (controller.signal.aborted) return;
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        // 401 已由 api 层清空凭据；403 非管理员凭据清理；其余 5xx/网络抖动保留凭据允许重试。
+        if (error instanceof ApiError && error.code === "UNAUTHORIZED") return;
+        if (error instanceof ApiError && error.code === "FORBIDDEN") {
           clearKey();
+          return;
         }
+        setAuthError(error instanceof Error ? error.message : "会话校验失败，请重试");
       } finally {
-        if (active) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     })();
     return () => {
-      active = false;
+      controller.abort();
     };
-  }, []);
+  }, [authAttempt]);
 
   // 登录前不发起任何业务请求：工作区列表只在凭据核验通过后加载。
   useEffect(() => {
@@ -116,12 +134,14 @@ export default function App() {
 
   function connect(_key: string, me: KeyInfo) {
     setExpired(false);
+    setAuthError(null);
     setInfo(me);
   }
 
   function signOut() {
     clearKey();
     setInfo(null);
+    setAuthError(null);
     setSettingsOpen(false);
     setWorkspaces(null);
   }
@@ -154,6 +174,15 @@ export default function App() {
   }
 
   if (!info) {
+    if (authError) {
+      return (
+        <main className="mx-auto flex min-h-screen max-w-xl items-center px-4">
+          <div className="w-full">
+            <ErrorBanner message={authError} onRetry={() => setAuthAttempt((n) => n + 1)} />
+          </div>
+        </main>
+      );
+    }
     return expired ? (
       <main className="grid min-h-screen place-items-center bg-surface px-4">
         <UnauthorizedState />
@@ -173,13 +202,15 @@ export default function App() {
         currentTitle="工作区设置"
         {...shell}
       >
-        <WorkspaceSettings
-          workspaces={workspaces ?? []}
-          activeWorkspaceId={activeWorkspace?.id}
-          onReload={reloadWorkspaces}
-          onSelect={selectWorkspace}
-          onBack={() => setSettingsOpen(false)}
-        />
+        <Suspense fallback={<Skeleton rows={3} />}>
+          <WorkspaceSettings
+            workspaces={workspaces ?? []}
+            activeWorkspaceId={activeWorkspace?.id}
+            onReload={reloadWorkspaces}
+            onSelect={selectWorkspace}
+            onBack={() => setSettingsOpen(false)}
+          />
+        </Suspense>
       </AppShell>
     );
   }
@@ -204,7 +235,23 @@ export default function App() {
 
   if (activeWorkspace.mode === "docs") {
     return (
-      <DocsApp
+      <Suspense fallback={<Skeleton rows={3} />}>
+        <DocsApp
+          key={activeWorkspace.id}
+          info={info}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onSignOut={signOut}
+          workspace={activeWorkspace}
+          shell={shell}
+        />
+      </Suspense>
+    );
+  }
+
+  return (
+    <Suspense fallback={<Skeleton rows={3} />}>
+      <MemoryApp
         key={activeWorkspace.id}
         info={info}
         theme={theme}
@@ -213,18 +260,6 @@ export default function App() {
         workspace={activeWorkspace}
         shell={shell}
       />
-    );
-  }
-
-  return (
-    <MemoryApp
-      key={activeWorkspace.id}
-      info={info}
-      theme={theme}
-      onToggleTheme={toggleTheme}
-      onSignOut={signOut}
-      workspace={activeWorkspace}
-      shell={shell}
-    />
+    </Suspense>
   );
 }

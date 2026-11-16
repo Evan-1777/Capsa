@@ -1,12 +1,14 @@
 package integration
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -122,8 +124,26 @@ func TestWebAuthGates(t *testing.T) {
 		t.Fatalf("admin status = %d", admin.StatusCode)
 	}
 	data, _ := decodeEnvelope(t, admin)["data"].(map[string]any)
-	if data["key_id"] != "admin" {
+	if data["key_id"] != "admin" || data["name"] != "Admin" {
 		t.Fatalf("admin identity = %v", data)
+	}
+
+	// Database-backed wildcard admin key must also carry its name in /api/auth/me.
+	handle, err := db.Shared()
+	if err != nil {
+		t.Fatalf("db.Shared: %v", err)
+	}
+	dbAdminID, dbAdminToken := auth.IssueKey()
+	if err := dal.CreateKey(handle, dbAdminID, "db-admin", ids.HashToken(dbAdminToken), map[string]string{"*": "rw"}); err != nil {
+		t.Fatalf("seed db admin key: %v", err)
+	}
+	dbAdminResp := env.request(t, "GET", "/api/auth/me", dbAdminToken, "")
+	if dbAdminResp.StatusCode != 200 {
+		t.Fatalf("db admin status = %d", dbAdminResp.StatusCode)
+	}
+	dbData, _ := decodeEnvelope(t, dbAdminResp)["data"].(map[string]any)
+	if dbData["key_id"] != dbAdminID || dbData["name"] != "db-admin" {
+		t.Fatalf("db admin identity = %v", dbData)
 	}
 }
 
@@ -140,6 +160,12 @@ func TestMCPRequiresBearer(t *testing.T) {
 	body, _ := io.ReadAll(response.Body)
 	if len(body) != 0 {
 		t.Fatalf("401 body must be empty, got %q", body)
+	}
+
+	blank := env.request(t, "POST", "/mcp", "   \t ", "{}")
+	defer blank.Body.Close()
+	if blank.StatusCode != 401 {
+		t.Fatalf("whitespace bearer status = %d, want 401", blank.StatusCode)
 	}
 }
 
@@ -405,5 +431,127 @@ func TestMCPUpdateNullTagsAndFieldOrder(t *testing.T) {
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_update","arguments":{"id":%q,"tags":[]}}}`, memoryID))
 	if tags := tagsOf(); len(tags) != 0 {
 		t.Fatalf("tags:[] must clear, got %v", tags)
+	}
+}
+
+func readGzipBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", resp.Header.Get("Content-Encoding"))
+	}
+	reader, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer reader.Close()
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read gunzipped body: %v", err)
+	}
+	return string(raw)
+}
+
+func TestStaticCacheAndGzipIsolatedFromMCP(t *testing.T) {
+	env := setup(t)
+	// Disable transparent auto-decompression on Transport so we inspect wire Content-Encoding.
+	rawClient := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+
+	// 1. Index HTML carries no-cache and on-demand gzip.
+	reqIndex, _ := http.NewRequest("GET", env.server.URL+"/", nil)
+	reqIndex.Header.Set("Accept-Encoding", "gzip")
+	indexResp, err := rawClient.Do(reqIndex)
+	if err != nil {
+		t.Fatalf("get /: %v", err)
+	}
+	if indexResp.StatusCode != 200 {
+		t.Fatalf("/ status = %d", indexResp.StatusCode)
+	}
+	if cc := indexResp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("/ Cache-Control = %q, want no-cache", cc)
+	}
+	indexHTML := readGzipBody(t, indexResp)
+
+	// SPA fallback route also serves no-cache + gzip.
+	reqFallback, _ := http.NewRequest("GET", env.server.URL+"/workspaces/nonexistent", nil)
+	reqFallback.Header.Set("Accept-Encoding", "gzip")
+	fbResp, err := rawClient.Do(reqFallback)
+	if err != nil {
+		t.Fatalf("get fallback: %v", err)
+	}
+	if cc := fbResp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("fallback Cache-Control = %q, want no-cache", cc)
+	}
+	_ = readGzipBody(t, fbResp)
+
+	// 2. Hashed /assets/* JS bundle carries immutable Cache-Control and gzip.
+	assetMatch := regexp.MustCompile(`/assets/[^"'\s>]+\.js`).FindString(indexHTML)
+	if assetMatch == "" {
+		t.Fatalf("could not locate /assets/*.js reference in index.html: %s", indexHTML)
+	}
+	reqAsset, _ := http.NewRequest("GET", env.server.URL+assetMatch, nil)
+	reqAsset.Header.Set("Accept-Encoding", "gzip")
+	assetResp, err := rawClient.Do(reqAsset)
+	if err != nil {
+		t.Fatalf("get %s: %v", assetMatch, err)
+	}
+	if assetResp.StatusCode != 200 {
+		t.Fatalf("asset status = %d", assetResp.StatusCode)
+	}
+	if cc := assetResp.Header.Get("Cache-Control"); !strings.Contains(cc, "immutable") || !strings.Contains(cc, "max-age=31536000") {
+		t.Fatalf("asset Cache-Control = %q, want immutable + max-age=31536000", cc)
+	}
+	if !strings.Contains(assetResp.Header.Get("Vary"), "Accept-Encoding") {
+		t.Fatalf("asset Vary = %q, want Accept-Encoding", assetResp.Header.Get("Vary"))
+	}
+	if jsBody := readGzipBody(t, assetResp); len(jsBody) == 0 {
+		t.Fatal("asset gunzipped body must not be empty")
+	}
+
+	// 3. /mcp and /mcp/docs stay uncompressed and preserve streaming headers even with Accept-Encoding: gzip.
+	handle, err := db.Shared()
+	if err != nil {
+		t.Fatalf("db.Shared: %v", err)
+	}
+	ws, err := dal.CreateWorkspace(handle, "docs-ws", "", "docs")
+	if err != nil {
+		t.Fatalf("create docs workspace: %v", err)
+	}
+	cat, err := dal.CreateDocCategory(handle, ws["id"].(string), "cat", "")
+	if err != nil {
+		t.Fatalf("create doc category: %v", err)
+	}
+	docAccessID := cat["access_id"].(string)
+
+	for _, ep := range []struct {
+		path  string
+		token string
+	}{
+		{"/mcp", adminToken},
+		{"/mcp/docs", docAccessID},
+	} {
+		reqMCP, _ := http.NewRequest("POST", env.server.URL+ep.path,
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`))
+		reqMCP.Header.Set("Authorization", "Bearer "+ep.token)
+		reqMCP.Header.Set("Content-Type", "application/json")
+		reqMCP.Header.Set("Accept", "application/json, text/event-stream")
+		reqMCP.Header.Set("Accept-Encoding", "gzip")
+		mcpResp, err := rawClient.Do(reqMCP)
+		if err != nil {
+			t.Fatalf("post %s: %v", ep.path, err)
+		}
+		mcpResp.Body.Close()
+		if mcpResp.StatusCode != 200 {
+			t.Fatalf("%s status = %d", ep.path, mcpResp.StatusCode)
+		}
+		if ce := mcpResp.Header.Get("Content-Encoding"); ce != "" {
+			t.Fatalf("%s Content-Encoding = %q, want empty (uncompressed)", ep.path, ce)
+		}
+		if mcpResp.Header.Get("X-Accel-Buffering") != "no" {
+			t.Fatalf("%s X-Accel-Buffering = %q, want no", ep.path, mcpResp.Header.Get("X-Accel-Buffering"))
+		}
+		if !strings.Contains(mcpResp.Header.Get("Cache-Control"), "no-transform") {
+			t.Fatalf("%s Cache-Control = %q, want no-transform", ep.path, mcpResp.Header.Get("Cache-Control"))
+		}
 	}
 }

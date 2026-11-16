@@ -1,16 +1,16 @@
 import { ArrowLeft, ChevronRight, Pencil, Settings2, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useState } from "react";
 
 import { api } from "../api";
 import {
   Badge,
   Button,
   ErrorBanner,
-  Markdown,
   Skeleton,
   Textarea,
   UnauthorizedState,
 } from "../components/ui";
+import { Markdown } from "../components/ui/Markdown";
 import type { DocCategory, DocScope, DocumentDetail } from "../types";
 import { useAsync } from "../useAsync";
 import { DeleteDocumentDialog, RenameDocumentDialog } from "./DocsDialogs";
@@ -46,10 +46,11 @@ export function DocumentPane({
   onBack: () => void;
 }) {
   const detail = useAsync(
-    () => api.doc(workspaceId, documentId),
+    (signal) => api.doc(workspaceId, documentId, signal),
     [workspaceId, documentId],
   );
   const [draft, setDraft] = useState<string | null>(null);
+  const deferredDraft = useDeferredValue(draft ?? "");
   const [editMode, setEditMode] = useState<EditMode>("split");
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -100,9 +101,9 @@ export function DocumentPane({
     setBusy(true);
     setFailure(null);
     try {
-      await api.updateDoc(workspaceId, document.id, { content: draft });
+      const updated = await api.updateDoc(workspaceId, document.id, { content: draft });
       setDraft(null);
-      detail.reload();
+      detail.setData(updated);
       await onChanged();
     } catch (error) {
       setFailure(error instanceof Error ? error.message : "保存失败");
@@ -308,10 +309,10 @@ export function DocumentPane({
             />
           </div>
           <div className="hidden min-h-0 overflow-y-auto px-5 py-5 md:block">
-            {draft.trim() === "" ? (
+            {deferredDraft.trim() === "" ? (
               <p className="text-body-medium text-on-surface-variant">（空文档）</p>
             ) : (
-              <Markdown>{draft}</Markdown>
+              <Markdown>{deferredDraft}</Markdown>
             )}
           </div>
         </div>

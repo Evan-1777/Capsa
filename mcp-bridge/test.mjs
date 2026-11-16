@@ -12,6 +12,8 @@ import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,15 +21,22 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_DOCS_URL,
   DOCS_TOOLS,
+  READ_ONLY_TOOLS,
+  closeAgentPool,
   ensureGitignoreHasEnv,
+  formatNetworkError,
   loadWorkspaceConfig,
+  matchesNoProxy,
   parseInitInput,
+  postRemote,
   runCheck,
   runInit,
 } from './index.mjs';
 
 const BRIDGE_ENTRY = fileURLToPath(new URL('./index.mjs', import.meta.url));
 const CAPSA_ROOT = path.resolve(path.dirname(BRIDGE_ENTRY), '..');
+
+const byId = (responses, id) => responses.find((frame) => frame && frame.id === id);
 
 function runStdioSession(cwd, frames, envOverrides = {}) {
   return new Promise((resolve, reject) => {
@@ -127,18 +136,18 @@ async function main() {
       { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'doc_glob', arguments: {} } },
     ]);
     assert.equal(unauthSession.responses.length, 3);
-    assert.equal(unauthSession.responses[0].id, 1);
-    assert.equal(unauthSession.responses[0].result.serverInfo.name, 'capsa-docs');
-    assert.equal(unauthSession.responses[1].id, 2);
-    assert.equal(unauthSession.responses[1].result.tools.length, 7);
+    assert.equal(byId(unauthSession.responses, 1)?.result.serverInfo.name, 'capsa-docs');
+    const unauthTools = byId(unauthSession.responses, 2);
+    assert.equal(unauthTools?.result.tools.length, 7);
     assert.deepEqual(
-      unauthSession.responses[1].result.tools.map((t) => t.name),
+      unauthTools.result.tools.map((t) => t.name),
       ['doc_glob', 'doc_grep', 'doc_read', 'doc_create', 'doc_write', 'doc_edit', 'doc_delete'],
     );
     assert.equal(DOCS_TOOLS.length, 7);
-    assert.equal(unauthSession.responses[2].id, 3);
-    assert.equal(unauthSession.responses[2].result.isError, true);
-    assert.match(unauthSession.responses[2].result.content[0].text, /未检测到 CAPSA_DOCS_TOKEN/);
+    assert.deepEqual([...READ_ONLY_TOOLS].sort(), ['doc_glob', 'doc_grep', 'doc_read']);
+    const unauthCall = byId(unauthSession.responses, 3);
+    assert.equal(unauthCall?.result.isError, true);
+    assert.match(unauthCall.result.content[0].text, /未检测到 CAPSA_DOCS_TOKEN/);
 
     // 4. Mock Streamable HTTP MCP server: lazy auth on tools/call, cwd override & stripping, 404 re-handshake, SSE
     const VALID_TOKEN = 'capsa_doc_mockvalidtoken000000000000000000';
@@ -247,7 +256,7 @@ async function main() {
         { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' },
       );
       assert.equal(discoveryOnly.responses.length, 2);
-      assert.equal(discoveryOnly.responses[1].result.tools.length, 7);
+      assert.equal(byId(discoveryOnly.responses, 2)?.result.tools.length, 7);
       assert.equal(receivedRequests, reqsBeforeDiscovery, 'initialize + tools/list must not hit remote server');
 
       // Global daemon mode: start proxy in unrelated host directory (no .env), pass cwd per call
@@ -270,13 +279,10 @@ async function main() {
       );
 
       assert.equal(daemonProxied.responses.length, 4);
-      assert.equal(daemonProxied.responses[0].id, 10);
-      assert.equal(daemonProxied.responses[1].id, 11);
-      assert.equal(daemonProxied.responses[1].result.tools.length, 7);
-      assert.equal(daemonProxied.responses[2].id, 12);
-      assert.match(daemonProxied.responses[2].result.content[0].text, /命中 3 篇/);
-      assert.equal(daemonProxied.responses[3].id, 13);
-      assert.match(daemonProxied.responses[3].result.content[0].text, /命中 3 篇/);
+      assert.ok(byId(daemonProxied.responses, 10)?.result?.serverInfo);
+      assert.equal(byId(daemonProxied.responses, 11)?.result.tools.length, 7);
+      assert.match(byId(daemonProxied.responses, 12)?.result.content[0].text || '', /命中 3 篇/);
+      assert.match(byId(daemonProxied.responses, 13)?.result.content[0].text || '', /命中 3 篇/);
       assert.ok(initializedNotifications >= 2, 'initial lazy handshake + 404 re-handshake must both send notifications/initialized');
       for (const argObj of forwardedArgs) {
         assert.equal(Object.prototype.hasOwnProperty.call(argObj, 'cwd'), false, 'cwd must be stripped before forwarding to remote');
@@ -284,6 +290,365 @@ async function main() {
       }
     } finally {
       await new Promise((resolve) => server.close(resolve));
+    }
+
+    // 4b. Proxy routing (HTTP_PROXY + HTTPS CONNECT tunnel), NO_PROXY bypass, timeout & error cause chain
+    {
+      const prevNoProxy = process.env.NO_PROXY;
+      try {
+        process.env.NO_PROXY = 'localhost,127.*,example.com:8443,.internal.local,<local>';
+        assert.equal(matchesNoProxy(new URL('http://127.0.0.1:8000/mcp/docs')), true);
+        assert.equal(matchesNoProxy(new URL('http://intranet:8000/mcp/docs')), true);
+        assert.equal(matchesNoProxy(new URL('https://example.com:8443/mcp/docs')), true);
+        assert.equal(matchesNoProxy(new URL('https://example.com:9443/mcp/docs')), false);
+        assert.equal(matchesNoProxy(new URL('https://sub.internal.local/mcp/docs')), true);
+        assert.equal(matchesNoProxy(new URL('https://public.remote.org/mcp/docs')), false);
+      } finally {
+        if (prevNoProxy === undefined) delete process.env.NO_PROXY;
+        else process.env.NO_PROXY = prevNoProxy;
+      }
+
+      const aggErr = new AggregateError(
+        [
+          Object.assign(new Error('connect ECONNREFUSED ::1:9999'), { code: 'ECONNREFUSED', syscall: 'connect', address: '::1', port: 9999 }),
+          Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9999'), { code: 'ECONNREFUSED', syscall: 'connect', address: '127.0.0.1', port: 9999 }),
+        ],
+        '',
+      );
+      const formattedAgg = formatNetworkError(new Error('fetch failed', { cause: aggErr }));
+      assert.match(formattedAgg, /ECONNREFUSED/);
+      assert.match(formattedAgg, /127\.0\.0\.1:9999/);
+      assert.match(formattedAgg, /::1:9999/);
+
+      const prevAllProxy = process.env.ALL_PROXY;
+      const prevNoProxySock = process.env.NO_PROXY;
+      try {
+        delete process.env.NO_PROXY;
+        process.env.ALL_PROXY = 'socks5://127.0.0.1:1080';
+        await assert.rejects(
+          () => postRemote('http://remote.invalid:8000/mcp/docs', 't', '', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'doc_create' } }),
+          /不支持的代理协议：socks5:/,
+        );
+      } finally {
+        if (prevAllProxy === undefined) delete process.env.ALL_PROXY;
+        else process.env.ALL_PROXY = prevAllProxy;
+        if (prevNoProxySock === undefined) delete process.env.NO_PROXY;
+        else process.env.NO_PROXY = prevNoProxySock;
+        closeAgentPool();
+      }
+
+      // Generate ephemeral self-signed cert for HTTPS CONNECT tunnel test
+      const certDir = path.join(tmpRoot, 'certs');
+      fs.mkdirSync(certDir, { recursive: true });
+      const keyFile = path.join(certDir, 'key.pem');
+      const certFile = path.join(certDir, 'cert.pem');
+      const genCert = child_process.spawnSync(
+        'openssl',
+        [
+          'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+          '-keyout', keyFile, '-out', certFile, '-days', '1',
+          '-subj', '/CN=127.0.0.1',
+          '-addext', 'subjectAltName=IP:127.0.0.1,DNS:localhost',
+        ],
+        { encoding: 'utf8' },
+      );
+      assert.equal(genCert.status, 0, `openssl failed: ${genCert.stderr}`);
+
+      let httpTargetHits = 0;
+      let httpsTargetHits = 0;
+      let proxyForwardHits = 0;
+      let proxyConnectHits = 0;
+      const proxyAuthSeen = [];
+
+      const httpTarget = http.createServer((req, res) => {
+        httpTargetHits++;
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+          const msg = JSON.parse(body);
+          if (msg.method === 'initialize') {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'p-http-1' });
+            res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'capsa-docs', version: '1.0.0' } } }));
+            return;
+          }
+          if (!Object.prototype.hasOwnProperty.call(msg, 'id')) {
+            res.writeHead(202).end();
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'via-http-ok' }] } }));
+        });
+      });
+
+      const httpsTarget = https.createServer(
+        { key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) },
+        (req, res) => {
+          httpsTargetHits++;
+          let body = '';
+          req.on('data', (c) => { body += c; });
+          req.on('end', () => {
+            const msg = JSON.parse(body);
+            if (msg.method === 'initialize') {
+              res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'p-https-1' });
+              res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'capsa-docs', version: '1.0.0' } } }));
+              return;
+            }
+            if (!Object.prototype.hasOwnProperty.call(msg, 'id')) {
+              res.writeHead(202).end();
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'via-https-tunnel-ok' }] } }));
+          });
+        },
+      );
+
+      const proxyServer = http.createServer((req, res) => {
+        proxyForwardHits++;
+        if (req.headers['proxy-authorization']) proxyAuthSeen.push(req.headers['proxy-authorization']);
+        const target = new URL(req.url);
+        const upstream = http.request(
+          {
+            hostname: target.hostname,
+            port: target.port,
+            path: `${target.pathname}${target.search}`,
+            method: req.method,
+            headers: req.headers,
+          },
+          (upRes) => {
+            res.writeHead(upRes.statusCode || 502, upRes.headers);
+            upRes.pipe(res);
+          },
+        );
+        req.pipe(upstream);
+      });
+      proxyServer.on('connect', (req, clientSocket, head) => {
+        proxyConnectHits++;
+        if (req.headers['proxy-authorization']) proxyAuthSeen.push(req.headers['proxy-authorization']);
+        const [host, portStr] = req.url.split(':');
+        const serverSocket = net.connect(Number(portStr) || 443, host, () => {
+          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          if (head?.length) serverSocket.write(head);
+          serverSocket.pipe(clientSocket);
+          clientSocket.pipe(serverSocket);
+        });
+        serverSocket.on('error', () => clientSocket.destroy());
+      });
+
+      await Promise.all([
+        new Promise((r) => httpTarget.listen(0, '127.0.0.1', r)),
+        new Promise((r) => httpsTarget.listen(0, '127.0.0.1', r)),
+        new Promise((r) => proxyServer.listen(0, '127.0.0.1', r)),
+      ]);
+
+      try {
+        const proxyUrl = `http://alice:s3cr3t@127.0.0.1:${proxyServer.address().port}`;
+        const httpProj = path.join(tmpRoot, 'proxy-http-proj');
+        fs.mkdirSync(path.join(httpProj, '.git'), { recursive: true });
+        runInit(`http://127.0.0.1:${httpTarget.address().port}/mcp/docs?token=capsa_doc_proxyhttp00000000000000000000000`, httpProj);
+
+        const proxiedHttpSession = await runStdioSession(
+          httpProj,
+          [{ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'doc_glob', arguments: {} } }],
+          { HTTP_PROXY: proxyUrl, NO_PROXY: '' },
+        );
+        assert.match(byId(proxiedHttpSession.responses, 1)?.result.content[0].text || '', /via-http-ok/);
+        assert.ok(proxyForwardHits >= 3, 'HTTP_PROXY should forward initialize + initialized + tool call');
+        assert.ok(httpTargetHits >= 3);
+
+        // NO_PROXY bypasses proxy completely
+        const hitsBeforeBypass = proxyForwardHits;
+        const bypassedSession = await runStdioSession(
+          httpProj,
+          [{ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'doc_glob', arguments: {} } }],
+          { HTTP_PROXY: proxyUrl, NO_PROXY: '127.*' },
+        );
+        assert.match(byId(bypassedSession.responses, 2)?.result.content[0].text || '', /via-http-ok/);
+        assert.equal(proxyForwardHits, hitsBeforeBypass, 'NO_PROXY=127.* must bypass HTTP_PROXY');
+
+        // HTTPS via CONNECT tunnel + Basic Proxy-Authorization
+        const httpsProj = path.join(tmpRoot, 'proxy-https-proj');
+        fs.mkdirSync(path.join(httpsProj, '.git'), { recursive: true });
+        runInit(`https://127.0.0.1:${httpsTarget.address().port}/mcp/docs?token=capsa_doc_proxyhttps0000000000000000000000`, httpsProj);
+
+        const proxiedHttpsSession = await runStdioSession(
+          httpsProj,
+          [{ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'doc_glob', arguments: {} } }],
+          { HTTPS_PROXY: proxyUrl, NO_PROXY: '', NODE_EXTRA_CA_CERTS: certFile },
+        );
+        assert.match(byId(proxiedHttpsSession.responses, 3)?.result.content[0].text || '', /via-https-tunnel-ok/);
+        assert.ok(proxyConnectHits >= 1, 'HTTPS_PROXY should establish CONNECT tunnel');
+        assert.ok(httpsTargetHits >= 3);
+        const expectedBasic = `Basic ${Buffer.from('alice:s3cr3t').toString('base64')}`;
+        assert.ok(proxyAuthSeen.includes(expectedBasic), 'Proxy-Authorization Basic header must be sent');
+      } finally {
+        await Promise.all([
+          new Promise((r) => httpTarget.close(r)),
+          new Promise((r) => httpsTarget.close(r)),
+          new Promise((r) => proxyServer.close(r)),
+        ]);
+      }
+
+      // Timeout enforcement on stalled endpoint
+      const stallServer = http.createServer(() => { /* intentionally never respond */ });
+      await new Promise((r) => stallServer.listen(0, '127.0.0.1', r));
+      try {
+        await assert.rejects(
+          () => postRemote(
+            `http://127.0.0.1:${stallServer.address().port}/mcp/docs`,
+            'capsa_doc_t',
+            '',
+            { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'doc_create', arguments: {} } },
+            { timeoutMs: 80 },
+          ),
+          (err) => err?.code === 'ETIMEDOUT',
+        );
+      } finally {
+        closeAgentPool();
+        await new Promise((r) => stallServer.close(r));
+      }
+    }
+
+    // 4c. Stale reused socket recovery, non-idempotent safety, concurrent handshake dedup, empty 200 fallback, ECONNREFUSED chain
+    {
+      let initCalls = 0;
+      let globCalls = 0;
+      let createCalls = 0;
+      let firstKeepAliveSocket = null;
+      let resetDone = false;
+
+      const flakyServer = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+          const msg = JSON.parse(body);
+          if (msg.method === 'initialize') {
+            initCalls++;
+            setTimeout(() => {
+              res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'flaky-sess-1' });
+              res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'capsa-docs', version: '1.0.0' } } }));
+            }, 40);
+            return;
+          }
+          if (!Object.prototype.hasOwnProperty.call(msg, 'id')) {
+            res.writeHead(202).end();
+            return;
+          }
+          if (msg.method === 'tools/call' && msg.params?.name === 'doc_glob') {
+            globCalls++;
+            if (msg.params.arguments?.pattern === 'empty-200') {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end('');
+              return;
+            }
+            if (msg.params.arguments?.pattern === 'stale-test') {
+              if (!resetDone && req.socket === firstKeepAliveSocket) {
+                resetDone = true;
+                req.socket.resetAndDestroy();
+                return;
+              }
+              firstKeepAliveSocket ||= req.socket;
+            }
+            const delay = msg.params.arguments?.pattern === 'slow' ? 50 : msg.params.arguments?.pattern === 'fast' ? 10 : 25;
+            setTimeout(() => {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                id: msg.id,
+                result: { content: [{ type: 'text', text: `glob:${msg.params.arguments?.pattern || ''}` }] },
+              }));
+            }, delay);
+            return;
+          }
+          if (msg.method === 'tools/call' && msg.params?.name === 'doc_create') {
+            createCalls++;
+            if (msg.params.arguments?.path === 'stale-write.md') {
+              if (!resetDone && req.socket === firstKeepAliveSocket) {
+                resetDone = true;
+                req.socket.resetAndDestroy();
+                return;
+              }
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'created-after-reset' }] } }));
+              return;
+            }
+            req.socket.resetAndDestroy();
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }));
+        });
+      });
+      flakyServer.keepAliveTimeout = 60_000;
+      await new Promise((r) => flakyServer.listen(0, '127.0.0.1', r));
+
+      try {
+        const flakyUrl = `http://127.0.0.1:${flakyServer.address().port}/mcp/docs`;
+
+        // Stale reused Keep-Alive socket ECONNRESET triggers transparent retry even for non-idempotent doc_create
+        const r1 = await postRemote(flakyUrl, 'tok', 's', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'doc_glob', arguments: { pattern: 'stale-test' } } });
+        assert.equal(r1.status, 200);
+        assert.ok(firstKeepAliveSocket !== null);
+        // Second call reuses the socket and server resets it before response; retry recovers on fresh socket
+        const r2 = await postRemote(flakyUrl, 'tok', 's', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'doc_create', arguments: { path: 'stale-write.md', content: 'x' } } });
+        assert.equal(r2.status, 200);
+        assert.match(r2.rawBody, /created-after-reset/);
+        assert.equal(resetDone, true);
+        assert.equal(createCalls, 2, 'failed reused-socket write + 1 transparent retry');
+        closeAgentPool();
+
+        // Non-idempotent doc_create on a fresh socket must NOT retry on reset
+        createCalls = 0;
+        await assert.rejects(
+          () => postRemote(flakyUrl, 'tok', 's', { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'doc_create', arguments: { path: 'fresh-write.md', content: 'x' } } }),
+        );
+        assert.equal(createCalls, 1, 'non-idempotent write on fresh socket must not retry');
+        closeAgentPool();
+
+        // Concurrent tools/call in single stdio session: 3 concurrent calls trigger only 1 initialize + out-of-order ID safety
+        initCalls = 0;
+        const concurrentDir = path.join(tmpRoot, 'concurrent-proj');
+        fs.mkdirSync(path.join(concurrentDir, '.git'), { recursive: true });
+        runInit(`${flakyUrl}?token=capsa_doc_concur000000000000000000000000`, concurrentDir);
+
+        const concurrentSession = await runStdioSession(
+          concurrentDir,
+          [
+            { jsonrpc: '2.0', id: 101, method: 'tools/call', params: { name: 'doc_glob', arguments: { pattern: 'slow' } } },
+            { jsonrpc: '2.0', id: 102, method: 'tools/call', params: { name: 'doc_glob', arguments: { pattern: 'fast' } } },
+            { jsonrpc: '2.0', id: 103, method: 'tools/call', params: { name: 'doc_glob', arguments: { pattern: 'mid' } } },
+            { jsonrpc: '2.0', id: 104, method: 'tools/call', params: { name: 'doc_glob', arguments: { pattern: 'empty-200' } } },
+          ],
+          { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' },
+        );
+        assert.equal(initCalls, 1, 'concurrent tools/call without cached session must deduplicate initialize to 1');
+        assert.match(byId(concurrentSession.responses, 101)?.result.content[0].text || '', /glob:slow/);
+        assert.match(byId(concurrentSession.responses, 102)?.result.content[0].text || '', /glob:fast/);
+        assert.match(byId(concurrentSession.responses, 103)?.result.content[0].text || '', /glob:mid/);
+        assert.equal(byId(concurrentSession.responses, 104)?.error?.code, -32000, 'HTTP 200 empty body must emit -32000 error frame');
+      } finally {
+        closeAgentPool();
+        await new Promise((r) => flakyServer.close(r));
+      }
+
+      // Unreachable port error preserves ECONNREFUSED + port in diagnostic message
+      const probePortSrv = http.createServer();
+      await new Promise((r) => probePortSrv.listen(0, '127.0.0.1', r));
+      const deadPort = probePortSrv.address().port;
+      await new Promise((r) => probePortSrv.close(r));
+
+      const deadDir = path.join(tmpRoot, 'dead-proj');
+      fs.mkdirSync(path.join(deadDir, '.git'), { recursive: true });
+      runInit(`http://127.0.0.1:${deadPort}/mcp/docs?token=capsa_doc_dead00000000000000000000000000`, deadDir);
+      const deadSession = await runStdioSession(
+        deadDir,
+        [{ jsonrpc: '2.0', id: 201, method: 'tools/call', params: { name: 'doc_glob', arguments: {} } }],
+        { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' },
+      );
+      const deadErr = byId(deadSession.responses, 201)?.error;
+      assert.equal(deadErr?.code, -32000);
+      assert.match(deadErr?.message || '', /ECONNREFUSED/);
+      assert.ok((deadErr?.message || '').includes(String(deadPort)), `error message should contain port ${deadPort}: ${deadErr?.message}`);
     }
 
     // 5. Optional end-to-end verification against real Go Capsa binary if present
@@ -348,8 +713,8 @@ async function main() {
           { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'doc_create', arguments: { path: 'SCOPE.md', content: '# Scope\n' } } },
         ], { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' });
         assert.equal(realStdio.responses.length, 3);
-        assert.equal(realStdio.responses[1].result.tools.length, 7);
-        assert.ok(realStdio.responses[2].result.content[0].text.includes('已新建文档：SCOPE.md'));
+        assert.equal(byId(realStdio.responses, 2)?.result.tools.length, 7);
+        assert.ok((byId(realStdio.responses, 3)?.result.content[0].text || '').includes('已新建文档：SCOPE.md'));
 
         const realCheckCode = await runCheck(realProjDir);
         assert.equal(realCheckCode, 0);

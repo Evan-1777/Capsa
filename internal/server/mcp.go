@@ -130,6 +130,7 @@ func NewMCPServer() *mcpserver.MCPServer {
 func NewMCPHandler(instance *mcpserver.MCPServer) http.Handler {
 	streamable := mcpserver.NewStreamableHTTPServer(instance,
 		mcpserver.WithEndpointPath("/mcp"),
+		mcpserver.WithSessionIdleTTL(30*time.Minute),
 		// Capsa authenticates every MCP request with a bearer token; DNS-rebinding
 		// protection would otherwise reject legitimate reverse-proxy traffic whose
 		// Host header is not localhost.
@@ -162,7 +163,7 @@ func bearerToken(r *http.Request) string {
 	header := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if len(header) >= len(prefix) && strings.EqualFold(header[:len(prefix)], prefix) {
-		return header[len(prefix):]
+		return strings.TrimSpace(header[len(prefix):])
 	}
 	return ""
 }
@@ -265,11 +266,10 @@ func locateWritable(handle *sql.DB, memoryID string, grants map[string]string) (
 }
 
 func handleGroups(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return toolError("服务内部错误")
 	}
-	defer handle.Close()
 	groups, err := dal.ListGroupsWithCounts(handle, GrantsFrom(ctx))
 	if err != nil {
 		return toolError("服务内部错误")
@@ -288,11 +288,10 @@ func handleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 	// 空 query 是浏览而非检索：正文只服务于关键词兜底，浏览一律不投影正文。
 	loadBody := includeBody && strings.TrimSpace(query) != ""
 	scopes := GrantsFrom(ctx)
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return toolError("服务内部错误")
 	}
-	defer handle.Close()
 	memories, err := dal.ListActiveMemoriesForSearch(handle, scopes, group, loadBody)
 	if err != nil {
 		return toolError("服务内部错误")
@@ -309,11 +308,10 @@ func handlePeek(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 	if message := rejectOverLimit(ids, PeekLimit); message != "" {
 		return toolError(message)
 	}
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return toolError("服务内部错误")
 	}
-	defer handle.Close()
 	items, err := dal.GetMemoriesBatchForAccess(handle, ids, GrantsFrom(ctx))
 	if err != nil {
 		return toolError("服务内部错误")
@@ -327,11 +325,10 @@ func handleRead(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 		return toolError(message)
 	}
 	offset := request.GetInt("offset", 0)
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return toolError("服务内部错误")
 	}
-	defer handle.Close()
 	items, err := dal.GetMemoriesBatchForAccess(handle, ids, GrantsFrom(ctx))
 	if err != nil {
 		return toolError("服务内部错误")
@@ -366,12 +363,11 @@ func handleSave(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 		stamp = &normalized
 	}
 	tags := request.GetStringSlice("tags", nil)
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return toolError("服务内部错误")
 	}
-	defer handle.Close()
-	candidates, err := dal.ListActiveMemoriesForSearch(handle, map[string]string{group: "rw"}, group, false)
+	candidates, err := dal.ListActiveTitlesByGroup(handle, group)
 	if err != nil {
 		return toolError("服务内部错误")
 	}
@@ -401,11 +397,10 @@ func handleUpdate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 		}
 	}
 	memoryID := request.GetString("id", "")
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return toolError("服务内部错误")
 	}
-	defer handle.Close()
 	if _, message := locateWritable(handle, memoryID, GrantsFrom(ctx)); message != "" {
 		return toolError(message)
 	}
@@ -469,11 +464,10 @@ func handleUpdate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 
 func handleForget(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	memoryID := request.GetString("id", "")
-	handle, err := db.Connect()
+	handle, err := db.Shared()
 	if err != nil {
 		return toolError("服务内部错误")
 	}
-	defer handle.Close()
 	if _, message := locateWritable(handle, memoryID, GrantsFrom(ctx)); message != "" {
 		return toolError(message)
 	}

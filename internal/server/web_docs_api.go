@@ -44,14 +44,14 @@ func registerWorkspaceRoutes(mux *http.ServeMux) {
 // workspace answers 404, the other mode answers 422. Cross-workspace requests
 // therefore never reach a document query.
 func requireWorkspaceMode(handle *sql.DB, workspaceID, mode string) error {
-	workspace, err := dal.GetWorkspace(handle, workspaceID)
+	actual, found, err := dal.GetWorkspaceMode(handle, workspaceID)
 	if err != nil {
 		return err
 	}
-	if workspace == nil {
+	if !found {
 		return fail(CodeNotFound, fmt.Sprintf("工作区 %s 不存在", workspaceID), 404)
 	}
-	if workspace["mode"] != mode {
+	if actual != mode {
 		label := "记忆"
 		if mode == "docs" {
 			label = "文档"

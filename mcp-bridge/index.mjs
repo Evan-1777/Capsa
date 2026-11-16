@@ -9,10 +9,20 @@
  */
 
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
+import tls from 'node:tls';
 
 export const DEFAULT_DOCS_URL = 'https://memory.evan-ai.xyz/mcp/docs';
+const REQUEST_TIMEOUT_MS = 30_000;
+const IDLE_SOCKET_TIMEOUT_MS = 20_000;
+const CONNECT_FAMILY_TIMEOUT_MS = 1_500;
+const RETRY_DELAY_MS = 150;
+const STALE_SOCKET_CODES = new Set(['ECONNRESET', 'EPIPE']);
+const TRANSIENT_NET_CODES = new Set(['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNABORTED']);
 const SERVER_INFO = { name: 'capsa-docs', version: '1.0.0' };
 const DEFAULT_INIT_PARAMS = {
   protocolVersion: '2024-11-05',
@@ -211,6 +221,11 @@ export const DOCS_TOOLS = [
   },
 ];
 
+/** Read-only tool names derived from static tool annotations (single source of truth). */
+export const READ_ONLY_TOOLS = new Set(
+  DOCS_TOOLS.filter((tool) => tool.annotations?.readOnlyHint === true).map((tool) => tool.name),
+);
+
 /** Parse KEY=VALUE lines from a .env file content. */
 export function parseEnvText(text) {
   const out = {};
@@ -242,22 +257,18 @@ export function loadWorkspaceConfig(startDir = process.cwd()) {
 
   while (true) {
     const candidate = path.join(dir, '.env');
-    if (fs.existsSync(candidate)) {
-      try {
-        const stat = fs.statSync(candidate);
-        if (stat.isFile()) {
-          const parsed = parseEnvText(fs.readFileSync(candidate, 'utf8'));
-          if (!token && parsed.CAPSA_DOCS_TOKEN) {
-            token = parsed.CAPSA_DOCS_TOKEN.trim();
-            envPath ||= candidate;
-          }
-          if (!url && parsed.CAPSA_DOCS_URL) {
-            url = parsed.CAPSA_DOCS_URL.trim();
-            envPath ||= candidate;
-          }
-        }
-      } catch {}
-    }
+    try {
+      const parsed = parseEnvText(fs.readFileSync(candidate, 'utf8'));
+      if (!token && parsed.CAPSA_DOCS_TOKEN) {
+        token = parsed.CAPSA_DOCS_TOKEN.trim();
+        envPath ||= candidate;
+      }
+      if (!url && parsed.CAPSA_DOCS_URL) {
+        url = parsed.CAPSA_DOCS_URL.trim();
+        envPath ||= candidate;
+      }
+      if (token && url) break;
+    } catch {}
     if (fs.existsSync(path.join(dir, '.git'))) break;
     const parent = path.dirname(dir);
     if (parent === dir) break;
@@ -397,24 +408,436 @@ function parseSSEPayloads(rawText) {
   return frames;
 }
 
-/** Forward a single JSON-RPC payload to the remote Streamable HTTP endpoint. */
-async function postRemote(url, token, sessionId, payload) {
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    Accept: 'application/json, text/event-stream',
-  };
-  if (sessionId) headers['Mcp-Session-Id'] = sessionId;
+const stripIPv6Brackets = (host) => (host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host);
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
+function parseNoProxyEntry(raw) {
+  const entry = raw.trim().toLowerCase();
+  if (!entry) return null;
+  if (entry === '*' || entry === '<local>') return { special: entry };
+  if (entry.startsWith('[')) {
+    const m = entry.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    if (!m) return null;
+    return { host: m[1], port: m[2] || '' };
+  }
+  const colonIdx = entry.indexOf(':');
+  if (colonIdx !== -1 && entry.indexOf(':', colonIdx + 1) === -1) {
+    const port = entry.slice(colonIdx + 1);
+    if (/^\d+$/.test(port)) {
+      return { host: entry.slice(0, colonIdx), port };
+    }
+  }
+  return { host: entry, port: '' };
+}
+
+/** Check whether targetUrl should bypass configured HTTP(S)_PROXY via NO_PROXY/no_proxy. */
+export function matchesNoProxy(targetUrl) {
+  const raw = process.env.NO_PROXY || process.env.no_proxy || '';
+  if (!raw.trim()) return false;
+  const host = stripIPv6Brackets(targetUrl.hostname).toLowerCase();
+  const port = targetUrl.port || (targetUrl.protocol === 'https:' ? '443' : '80');
+
+  for (const part of raw.split(',')) {
+    const rule = parseNoProxyEntry(part);
+    if (!rule) continue;
+    if (rule.special === '*') return true;
+    if (rule.special === '<local>') {
+      if (!host.includes('.')) return true;
+      continue;
+    }
+    if (rule.port && rule.port !== port) continue;
+    if (rule.host.includes('*')) {
+      const pattern = new RegExp(`^${escapeRegex(rule.host).replace(/\\\*/g, '.*')}$`);
+      if (pattern.test(host)) return true;
+      continue;
+    }
+    if (rule.host.startsWith('.')) {
+      if (host === rule.host.slice(1) || host.endsWith(rule.host)) return true;
+      continue;
+    }
+    if (host === rule.host || host.endsWith(`.${rule.host}`)) return true;
+  }
+  return false;
+}
+
+function resolveProxyForTarget(targetUrl) {
+  if (matchesNoProxy(targetUrl)) return null;
+  const env = process.env;
+  const raw =
+    targetUrl.protocol === 'https:'
+      ? env.HTTPS_PROXY?.trim() || env.https_proxy?.trim() || env.ALL_PROXY?.trim() || env.all_proxy?.trim() || ''
+      : env.HTTP_PROXY?.trim() || env.http_proxy?.trim() || env.ALL_PROXY?.trim() || env.all_proxy?.trim() || '';
+  if (!raw) return null;
+
+  let proxyUrl;
+  try {
+    proxyUrl = new URL(raw);
+  } catch {
+    throw new Error(`代理地址格式非法：${raw}`);
+  }
+  if (proxyUrl.protocol !== 'http:' && proxyUrl.protocol !== 'https:') {
+    throw new Error(`不支持的代理协议：${proxyUrl.protocol}（仅支持 http:// 与 https:// 代理，proxy=${proxyUrl.protocol}//${proxyUrl.host}）`);
+  }
+  return proxyUrl;
+}
+
+function basicProxyAuth(proxyUrl) {
+  if (!proxyUrl.username && !proxyUrl.password) return '';
+  const creds = `${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`;
+  return `Basic ${Buffer.from(creds).toString('base64')}`;
+}
+
+/** HTTPS agent that establishes an HTTP CONNECT tunnel through an upstream proxy. */
+class TunnelAgent extends https.Agent {
+  constructor(proxyUrl) {
+    super({
+      keepAlive: true,
+      maxSockets: 8,
+      timeout: IDLE_SOCKET_TIMEOUT_MS,
+      autoSelectFamily: true,
+      autoSelectFamilyAttemptTimeout: CONNECT_FAMILY_TIMEOUT_MS,
+    });
+    this.proxyUrl = proxyUrl;
+    this.proxyLabel = `${proxyUrl.protocol}//${proxyUrl.host}`;
+  }
+
+  createConnection(options, cb) {
+    const targetHost = stripIPv6Brackets(options.host || options.hostname || '');
+    const targetPort = Number(options.port) || 443;
+    const authority = net.isIPv6(targetHost) ? `[${targetHost}]:${targetPort}` : `${targetHost}:${targetPort}`;
+    const proxyAuth = basicProxyAuth(this.proxyUrl);
+    const proxyPort = Number(this.proxyUrl.port) || (this.proxyUrl.protocol === 'https:' ? 443 : 80);
+    const transport = this.proxyUrl.protocol === 'https:' ? https : http;
+    const connectTimeout = options.timeout || REQUEST_TIMEOUT_MS;
+
+    let done = false;
+    const finish = (err, socket) => {
+      if (done) return;
+      done = true;
+      cb(err, socket);
+    };
+
+    const connectReq = transport.request({
+      hostname: stripIPv6Brackets(this.proxyUrl.hostname),
+      port: proxyPort,
+      method: 'CONNECT',
+      path: authority,
+      headers: {
+        Host: authority,
+        ...(proxyAuth ? { 'Proxy-Authorization': proxyAuth } : {}),
+      },
+      agent: false,
+      timeout: connectTimeout,
+      autoSelectFamily: true,
+      autoSelectFamilyAttemptTimeout: CONNECT_FAMILY_TIMEOUT_MS,
+    });
+
+    connectReq.on('timeout', () => {
+      const err = new Error(`代理 CONNECT 隧道超时 (${connectTimeout}ms)`);
+      err.code = 'ETIMEDOUT';
+      err.proxy = this.proxyLabel;
+      connectReq.destroy(err);
+    });
+    connectReq.on('error', (err) => {
+      if (err && typeof err === 'object' && !err.proxy) err.proxy = this.proxyLabel;
+      finish(err);
+    });
+    connectReq.on('response', (res) => {
+      res.resume();
+      const err = new Error(`代理拒绝 CONNECT 隧道 (HTTP ${res.statusCode})`);
+      err.proxy = this.proxyLabel;
+      finish(err);
+    });
+    connectReq.on('connect', (res, socket, head) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        res.resume?.();
+        const err = new Error(`代理 CONNECT 隧道失败 (HTTP ${res.statusCode})`);
+        err.proxy = this.proxyLabel;
+        finish(err);
+        return;
+      }
+      if (head?.length) socket.unshift(head);
+      const tlsOptions = {
+        ...options,
+        socket,
+        servername: options.servername || (net.isIP(targetHost) ? undefined : targetHost),
+      };
+      delete tlsOptions.host;
+      delete tlsOptions.port;
+      delete tlsOptions.hostname;
+      delete tlsOptions.path;
+      const tlsSocket = tls.connect(tlsOptions);
+      finish(null, tlsSocket);
+    });
+    connectReq.end();
+  }
+}
+
+let directHttpAgent = null;
+let directHttpsAgent = null;
+const proxyAgents = new Map();
+
+function makeAgentOptions() {
+  return {
+    keepAlive: true,
+    maxSockets: 8,
+    timeout: IDLE_SOCKET_TIMEOUT_MS,
+    autoSelectFamily: true,
+    autoSelectFamilyAttemptTimeout: CONNECT_FAMILY_TIMEOUT_MS,
+  };
+}
+
+function getAgentForRequest(targetUrl, proxyUrl) {
+  if (!proxyUrl) {
+    if (targetUrl.protocol === 'https:') {
+      directHttpsAgent ||= new https.Agent(makeAgentOptions());
+      return directHttpsAgent;
+    }
+    directHttpAgent ||= new http.Agent(makeAgentOptions());
+    return directHttpAgent;
+  }
+  const proxyOrigin = `${proxyUrl.protocol}//${proxyUrl.username ? `${proxyUrl.username}@` : ''}${proxyUrl.host}`;
+  if (targetUrl.protocol === 'https:') {
+    const key = `tunnel:${proxyOrigin}`;
+    let agent = proxyAgents.get(key);
+    if (!agent) {
+      agent = new TunnelAgent(proxyUrl);
+      proxyAgents.set(key, agent);
+    }
+    return agent;
+  }
+  const key = `forward:${proxyOrigin}`;
+  let agent = proxyAgents.get(key);
+  if (!agent) {
+    const AgentCtor = proxyUrl.protocol === 'https:' ? https.Agent : http.Agent;
+    agent = new AgentCtor(makeAgentOptions());
+    proxyAgents.set(key, agent);
+  }
+  return agent;
+}
+
+/** Destroy all pooled HTTP/HTTPS/Tunnel agents and release idle sockets. */
+export function closeAgentPool() {
+  directHttpAgent?.destroy();
+  directHttpAgent = null;
+  directHttpsAgent?.destroy();
+  directHttpsAgent = null;
+  for (const agent of proxyAgents.values()) {
+    agent.destroy();
+  }
+  proxyAgents.clear();
+}
+
+/** Recursively format err.cause and AggregateError.errors into a diagnostic chain. */
+export function formatNetworkError(err) {
+  if (!err) return '未知错误';
+  const seen = new Set();
+  const parts = [];
+
+  const describe = (node) => {
+    if (!node || typeof node !== 'object') {
+      const text = String(node || '').trim();
+      if (text && !parts.includes(text)) parts.push(text);
+      return;
+    }
+    if (seen.has(node)) return;
+    seen.add(node);
+
+    const msg = typeof node.message === 'string' ? node.message.trim() : '';
+    const code = typeof node.code === 'string' ? node.code : '';
+    const syscall = typeof node.syscall === 'string' ? node.syscall : '';
+    const addr = typeof node.address === 'string' ? node.address : '';
+    const port = node.port !== undefined && node.port !== null ? String(node.port) : '';
+    const proxy = typeof node.proxy === 'string' ? node.proxy : '';
+
+    const meta = [];
+    if (code && !msg.includes(code)) meta.push(code);
+    if (syscall && !msg.includes(syscall)) meta.push(syscall);
+    if (addr) {
+      const endpoint = port ? `${addr}:${port}` : addr;
+      if (!msg.includes(endpoint)) meta.push(endpoint);
+    } else if (port && !msg.includes(`:${port}`)) {
+      meta.push(`port=${port}`);
+    }
+    if (proxy && !msg.includes(proxy)) meta.push(`proxy=${proxy}`);
+
+    let segment = msg;
+    if (meta.length) {
+      segment = segment ? `${segment} (${meta.join(' ')})` : meta.join(' ');
+    }
+    if (segment && !parts.includes(segment)) {
+      parts.push(segment);
+    }
+
+    if (Array.isArray(node.errors)) {
+      for (const inner of node.errors) describe(inner);
+    }
+    if (node.cause) {
+      describe(node.cause);
+    }
+  };
+
+  describe(err);
+  return parts.join(' <- ') || String(err);
+}
+
+function hasAnyErrorCode(err, codeSet) {
+  const seen = new Set();
+  const walk = (node) => {
+    if (!node || typeof node !== 'object' || seen.has(node)) return false;
+    seen.add(node);
+    if (typeof node.code === 'string' && codeSet.has(node.code)) return true;
+    if (Array.isArray(node.errors) && node.errors.some(walk)) return true;
+    return node.cause ? walk(node.cause) : false;
+  };
+  return walk(err);
+}
+
+function isSafeIdempotentPayload(payload) {
+  const method = payload?.method;
+  if (method === 'initialize' || method === 'notifications/initialized' || method === 'tools/list') {
+    return true;
+  }
+  if (method === 'tools/call') {
+    return READ_ONLY_TOOLS.has(payload?.params?.name);
+  }
+  return false;
+}
+
+function shouldRetryRequest(err, payload) {
+  if (err?.reusedSocket === true && err?.beforeResponse !== false && hasAnyErrorCode(err, STALE_SOCKET_CODES)) {
+    return true;
+  }
+  if (isSafeIdempotentPayload(payload) && hasAnyErrorCode(err, TRANSIENT_NET_CODES)) {
+    return true;
+  }
+  return false;
+}
+
+function postRemoteOnce(url, token, sessionId, payload, { timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  return new Promise((resolve, reject) => {
+    const targetUrl = new URL(url);
+    const proxyUrl = resolveProxyForTarget(targetUrl);
+    const proxyLabel = proxyUrl ? `${proxyUrl.protocol}//${proxyUrl.host}` : '';
+    const agent = getAgentForRequest(targetUrl, proxyUrl);
+    const body = JSON.stringify(payload);
+
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      'Content-Length': Buffer.byteLength(body),
+    };
+    if (sessionId) headers['Mcp-Session-Id'] = sessionId;
+
+    const isHttpViaProxy = Boolean(proxyUrl && targetUrl.protocol === 'http:');
+    const transport = isHttpViaProxy
+      ? (proxyUrl.protocol === 'https:' ? https : http)
+      : (targetUrl.protocol === 'https:' ? https : http);
+
+    const reqOptions = isHttpViaProxy
+      ? {
+          hostname: stripIPv6Brackets(proxyUrl.hostname),
+          port: Number(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80),
+          method: 'POST',
+          path: targetUrl.toString(),
+          headers: {
+            ...headers,
+            Host: targetUrl.host,
+            ...(basicProxyAuth(proxyUrl) ? { 'Proxy-Authorization': basicProxyAuth(proxyUrl) } : {}),
+          },
+          agent,
+          timeout: timeoutMs,
+          autoSelectFamily: true,
+          autoSelectFamilyAttemptTimeout: CONNECT_FAMILY_TIMEOUT_MS,
+        }
+      : {
+          hostname: stripIPv6Brackets(targetUrl.hostname),
+          port: Number(targetUrl.port) || (targetUrl.protocol === 'https:' ? 443 : 80),
+          method: 'POST',
+          path: `${targetUrl.pathname}${targetUrl.search}`,
+          headers,
+          agent,
+          timeout: timeoutMs,
+          autoSelectFamily: true,
+          autoSelectFamilyAttemptTimeout: CONNECT_FAMILY_TIMEOUT_MS,
+        };
+
+    let settled = false;
+    let responseStarted = false;
+    const resolveOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const rejectOnce = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
+    const req = transport.request(reqOptions, (res) => {
+      responseStarted = true;
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const nextSession = typeof res.headers['mcp-session-id'] === 'string' ? res.headers['mcp-session-id'] : '';
+        const contentType = typeof res.headers['content-type'] === 'string' ? res.headers['content-type'].toLowerCase() : '';
+        const rawBody = Buffer.concat(chunks).toString('utf8');
+        resolveOnce({ status: res.statusCode || 0, nextSession, contentType, rawBody });
+      });
+      res.on('error', (err) => {
+        if (err && typeof err === 'object') {
+          err.reusedSocket = Boolean(req.reusedSocket);
+          err.beforeResponse = false;
+          if (proxyLabel && !err.proxy) err.proxy = proxyLabel;
+        }
+        rejectOnce(err);
+      });
+      res.on('close', () => {
+        if (!settled && !res.complete) {
+          const err = new Error('远端响应流提前中断');
+          err.code = 'ECONNRESET';
+          err.reusedSocket = Boolean(req.reusedSocket);
+          err.beforeResponse = false;
+          if (proxyLabel) err.proxy = proxyLabel;
+          rejectOnce(err);
+        }
+      });
+    });
+
+    req.on('timeout', () => {
+      const err = new Error(`请求超时 (${timeoutMs}ms)`);
+      err.code = 'ETIMEDOUT';
+      err.reusedSocket = Boolean(req.reusedSocket);
+      err.beforeResponse = !responseStarted;
+      if (proxyLabel) err.proxy = proxyLabel;
+      req.destroy(err);
+    });
+
+    req.on('error', (err) => {
+      if (err && typeof err === 'object') {
+        if (err.reusedSocket === undefined) err.reusedSocket = Boolean(req.reusedSocket);
+        if (err.beforeResponse === undefined) err.beforeResponse = !responseStarted;
+        if (proxyLabel && !err.proxy) err.proxy = proxyLabel;
+      }
+      rejectOnce(err);
+    });
+
+    req.end(body);
   });
-  const nextSession = res.headers.get('mcp-session-id') || '';
-  const contentType = (res.headers.get('content-type') || '').toLowerCase();
-  const rawBody = await res.text();
-  return { status: res.status, nextSession, contentType, rawBody };
+}
+
+/** Forward a single JSON-RPC payload to the remote Streamable HTTP endpoint with bounded safe retry. */
+export async function postRemote(url, token, sessionId, payload, options = {}) {
+  try {
+    return await postRemoteOnce(url, token, sessionId, payload, options);
+  } catch (err) {
+    if (!shouldRetryRequest(err, payload)) throw err;
+    await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+    return postRemoteOnce(url, token, sessionId, payload, options);
+  }
 }
 
 /** Run CLI subcommand: init. */
@@ -483,8 +906,10 @@ export async function runCheck(cwd = process.cwd()) {
     console.log(`连通正常 | 端点: ${cfg.url} | 当前子项目文档数: ${docCount}`);
     return 0;
   } catch (err) {
-    console.error(`连接异常：${err?.message || String(err)}`);
+    console.error(`连接异常：${formatNetworkError(err)}`);
     return 1;
+  } finally {
+    closeAgentPool();
   }
 }
 
@@ -502,6 +927,7 @@ function contentTypeToFrames(contentType, rawBody) {
 /** Start the MCP stdio server: local static tool discovery + per-call workspace token auth. */
 export function startStdioProxy(defaultCwd = process.cwd()) {
   const sessions = new Map();
+  const inflightHandshakes = new Map();
   let lastInitParams = DEFAULT_INIT_PARAMS;
 
   const emit = (frame) => {
@@ -543,6 +969,36 @@ export function startStdioProxy(defaultCwd = process.cwd()) {
     return { ok: true, sessionId: nextSession };
   };
 
+  // Deduplicate concurrent handshakes / re-handshakes for the same credential + failed session ID.
+  const ensureSession = async (url, token, sessionKey, failedSessionId = null) => {
+    if (failedSessionId === null) {
+      if (sessions.has(sessionKey)) {
+        return { ok: true, sessionId: sessions.get(sessionKey) || '' };
+      }
+    } else {
+      const current = sessions.get(sessionKey);
+      if (current && current !== failedSessionId) {
+        return { ok: true, sessionId: current };
+      }
+      if (sessions.get(sessionKey) === failedSessionId) {
+        sessions.delete(sessionKey);
+      }
+    }
+
+    const existing = inflightHandshakes.get(sessionKey);
+    if (existing && (failedSessionId === null || existing.failedSessionId === failedSessionId || existing.failedSessionId === null)) {
+      return existing.promise;
+    }
+
+    const promise = handshakeRemote(url, token, sessionKey).finally(() => {
+      if (inflightHandshakes.get(sessionKey)?.promise === promise) {
+        inflightHandshakes.delete(sessionKey);
+      }
+    });
+    inflightHandshakes.set(sessionKey, { failedSessionId, promise });
+    return promise;
+  };
+
   const handleToolCall = async (msg) => {
     const rawArgs =
       msg.params?.arguments && typeof msg.params.arguments === 'object' && !Array.isArray(msg.params.arguments)
@@ -577,21 +1033,23 @@ export function startStdioProxy(defaultCwd = process.cwd()) {
     const sessionKey = `${cfg.url}\n${cfg.token}`;
 
     try {
+      let sessionId = sessions.get(sessionKey);
       if (!sessions.has(sessionKey)) {
-        const hs = await handshakeRemote(cfg.url, cfg.token, sessionKey);
+        const hs = await ensureSession(cfg.url, cfg.token, sessionKey, null);
         if (!hs.ok) {
           emitRemoteFailure(msg.id, hs.res);
           return;
         }
+        sessionId = hs.sessionId;
+      } else {
+        sessionId = sessionId || '';
       }
 
-      const sessionId = sessions.get(sessionKey) || '';
       let res = await postRemote(cfg.url, cfg.token, sessionId, forwardMsg);
 
       // Re-handshake transparently if remote session expired or server restarted (HTTP 404).
       if (res.status === 404 || (!sessionId && res.status === 400)) {
-        sessions.delete(sessionKey);
-        const hs = await handshakeRemote(cfg.url, cfg.token, sessionKey);
+        const hs = await ensureSession(cfg.url, cfg.token, sessionKey, sessionId);
         if (!hs.ok) {
           emitRemoteFailure(msg.id, hs.res);
           return;
@@ -607,12 +1065,29 @@ export function startStdioProxy(defaultCwd = process.cwd()) {
       }
 
       const frames = contentTypeToFrames(res.contentType, res.rawBody);
-      for (const frame of frames) emit(frame);
+      let matched = false;
+      for (const frame of frames) {
+        if (frame && typeof frame === 'object' && Object.prototype.hasOwnProperty.call(frame, 'id') && frame.id === msg.id) {
+          matched = true;
+        }
+        emit(frame);
+      }
+      if (!matched) {
+        const preview = res.rawBody ? `: ${res.rawBody.trim().slice(0, 200)}` : '（响应体为空）';
+        emit({
+          jsonrpc: '2.0',
+          id: msg.id,
+          error: {
+            code: -32000,
+            message: `Capsa 远端返回无效响应 (HTTP ${res.status})${preview}`,
+          },
+        });
+      }
     } catch (err) {
       emit({
         jsonrpc: '2.0',
         id: msg.id,
-        error: { code: -32000, message: `Capsa 远端不可达：${err?.message || String(err)}` },
+        error: { code: -32000, message: `Capsa 远端不可达：${formatNetworkError(err)}` },
       });
     }
   };
@@ -663,28 +1138,62 @@ export function startStdioProxy(defaultCwd = process.cwd()) {
     }
   };
 
-  let queue = Promise.resolve();
+  const inflight = new Set();
+  let stdinEnded = false;
   let buffer = '';
+
+  const maybeClosePool = () => {
+    if (stdinEnded && inflight.size === 0) {
+      closeAgentPool();
+    }
+  };
+
+  const dispatchLine = (rawLine) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      emit({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
+      return;
+    }
+    const task = Promise.resolve()
+      .then(() => handleMessage(msg))
+      .catch((err) => {
+        if (msg && typeof msg === 'object' && Object.prototype.hasOwnProperty.call(msg, 'id')) {
+          emit({
+            jsonrpc: '2.0',
+            id: msg.id,
+            error: { code: -32000, message: `Capsa 代理异常：${formatNetworkError(err)}` },
+          });
+        }
+      })
+      .finally(() => {
+        inflight.delete(task);
+        maybeClosePool();
+      });
+    inflight.add(task);
+  };
 
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => {
     buffer += chunk;
     let nlIdx;
     while ((nlIdx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, nlIdx).trim();
+      const line = buffer.slice(0, nlIdx);
       buffer = buffer.slice(nlIdx + 1);
-      if (!line) continue;
-      queue = queue.then(async () => {
-        let msg;
-        try {
-          msg = JSON.parse(line);
-        } catch {
-          emit({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
-          return;
-        }
-        await handleMessage(msg);
-      });
+      dispatchLine(line);
     }
+  });
+  process.stdin.on('end', () => {
+    if (buffer.trim()) {
+      const tail = buffer;
+      buffer = '';
+      dispatchLine(tail);
+    }
+    stdinEnded = true;
+    maybeClosePool();
   });
 }
 

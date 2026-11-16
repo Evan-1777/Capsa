@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"capsa/internal/retrieval"
 )
@@ -38,21 +39,7 @@ func date(value any) string {
 }
 
 func tagsLiteral(raw any) string {
-	tags := []string{}
-	switch value := raw.(type) {
-	case string:
-		if value != "" {
-			_ = json.Unmarshal([]byte(value), &tags)
-		}
-	case []string:
-		tags = value
-	case []any:
-		for _, item := range value {
-			if text, ok := item.(string); ok {
-				tags = append(tags, text)
-			}
-		}
-	}
+	tags := retrieval.DecodeTags(raw)
 	if len(tags) == 0 {
 		return "-"
 	}
@@ -145,6 +132,30 @@ func FormatPeek(items []map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
+func sliceRunes(s string, offset, limit int) (string, int) {
+	startByte := len(s)
+	endByte := len(s)
+	runeIdx := 0
+	for i := 0; i < len(s); {
+		if runeIdx == offset {
+			startByte = i
+		}
+		if limit >= 0 && runeIdx == offset+limit {
+			endByte = i
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		runeIdx++
+	}
+	if runeIdx <= offset {
+		return "", runeIdx
+	}
+	if endByte < startByte {
+		endByte = len(s)
+	}
+	return s[startByte:endByte], runeIdx
+}
+
 // FormatRead renders full bodies with per-entry and per-call truncation. Offsets
 // and lengths are counted in characters (runes), matching the Python contract.
 func FormatRead(items []map[string]any, offset int) string {
@@ -167,13 +178,11 @@ func FormatRead(items []map[string]any, offset int) string {
 		if consumed >= MaxResponseChars {
 			break
 		}
-		body := []rune(stringOf(item, "body"))
-		start := offset
-		if start > len(body) {
-			start = len(body)
-		}
-		available := len(body) - start
-		take := min(MaxBodyChars, available, MaxResponseChars-consumed)
+		maxTake := min(MaxBodyChars, MaxResponseChars-consumed)
+		section, totalRunes := sliceRunes(stringOf(item, "body"), offset, maxTake)
+		start := min(offset, totalRunes)
+		available := totalRunes - start
+		take := min(maxTake, available)
 		consumed += take
 		header := fmt.Sprintf("===== %s | %s | 更新 %s =====",
 			stringOf(item, "id"), stringOf(item, "group_slug"), date(item["updated_at"]))
@@ -184,7 +193,6 @@ func FormatRead(items []map[string]any, offset int) string {
 		lines = append(lines, header)
 		lines = append(lines, fmt.Sprintf("# %s", stringOf(item, "title")))
 		lines = append(lines, "")
-		section := string(body[start : start+take])
 		if section == "" {
 			section = "（正文已到结尾，无更多内容）"
 		}

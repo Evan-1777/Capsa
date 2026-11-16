@@ -1,5 +1,5 @@
 import { Pin, Plus, Search, Settings2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import {
@@ -28,23 +28,36 @@ export function MemoryWorkspace({
 }) {
   const [group, setGroup] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<MemoryDetail | "new" | null>(null);
   const [version, setVersion] = useState(0);
 
+  useEffect(() => {
+    if (query === "") {
+      setDebouncedQuery("");
+      return;
+    }
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 150);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
   const list = useAsync(
-    () =>
-      api.memories({
-        workspace_id: workspaceId,
-        group: group ?? undefined,
-        query: query || undefined,
-        limit: 100,
-      }),
-    [workspaceId, group, query, version],
+    (signal) =>
+      api.memories(
+        {
+          workspace_id: workspaceId,
+          group: group ?? undefined,
+          query: debouncedQuery || undefined,
+          limit: 100,
+        },
+        signal,
+      ),
+    [workspaceId, group, debouncedQuery, version],
   );
   const detail = useAsync(
-    () => (selected ? api.memory(selected) : Promise.resolve(null)),
+    (signal) => (selected ? api.memory(selected, signal) : Promise.resolve(null)),
     [selected, version],
   );
 

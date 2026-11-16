@@ -316,9 +316,16 @@ test("13. MD3 主题亮暗切换与窄屏模态抽屉导航", async ({ page }) =
     ),
   ).not.toBe("");
 
-  // 2. 窄屏唤起模态导航抽屉并完成跳转
+  // 2. 窄屏唤起模态导航抽屉、关闭后还原焦点并完成跳转
   await page.setViewportSize({ width: 375, height: 667 });
-  await page.getByRole("button", { name: "打开导航菜单" }).click();
+  const navTrigger = page.getByRole("button", { name: "打开导航菜单" });
+  await navTrigger.click();
+  await expect(page.getByRole("button", { name: "关闭导航菜单" })).toBeVisible();
+  await page.getByRole("button", { name: "关闭导航菜单" }).click();
+  await expect(page.getByRole("button", { name: "关闭导航菜单" })).toHaveCount(0);
+  await expect(navTrigger).toBeFocused();
+
+  await navTrigger.click();
   await expect(page.getByRole("button", { name: "关闭导航菜单" })).toBeVisible();
   await page.getByRole("button", { name: "分类管理" }).click();
   await expect(page.getByRole("heading", { name: "分类管理" })).toBeVisible();

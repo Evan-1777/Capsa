@@ -26,6 +26,20 @@ func ListWorkspaces(handle *sql.DB) ([]map[string]any, error) {
 	return queryMaps(handle, fmt.Sprintf("SELECT %s FROM workspaces w %s", workspaceFields, workspaceOrder))
 }
 
+// GetWorkspaceMode fetches only the mode column of one workspace without
+// evaluating container counter subqueries.
+func GetWorkspaceMode(handle *sql.DB, workspaceID string) (string, bool, error) {
+	var mode string
+	err := handle.QueryRow("SELECT mode FROM workspaces WHERE id = ?", workspaceID).Scan(&mode)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return mode, true, nil
+}
+
 // GetWorkspace fetches one workspace, or nil when absent.
 func GetWorkspace(handle *sql.DB, workspaceID string) (map[string]any, error) {
 	rows, err := queryMaps(handle,
