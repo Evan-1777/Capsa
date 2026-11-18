@@ -28,7 +28,7 @@ Prefer `capsa-docs` MCP read-only tools (`doc_read`, `doc_glob`, `doc_grep`; def
 
 ## Guardrails
 
-- Read-only: NO file edits, NO writes, NO `doc_create` / `doc_write` / `doc_edit` / `doc_move` / `doc_delete`, NO bash modifications
+- Read-only: NO file edits, NO writes, NO `doc_create` / `doc_write` / `doc_edit` / `doc_delete`, NO bash modifications
 - No subagents: single-layer task, finish within this session
 - Prefer dedicated `doc_*` and grep/find/read tools over bash ls/cat
 - Return structured findings, not raw output

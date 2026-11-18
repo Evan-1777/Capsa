@@ -23,7 +23,7 @@ Execute → Test → Document Maintenance → Archive → Git Commit
 
 - **Execute**: update completed Task status to `DONE` via `doc_edit` on `Tasks.md` (fallback: local file edit).
 - **Document Maintenance**: update `Project.md` via `doc_edit` / `doc_write` (or `doc_create` if absent; fallback: local `.docs/Project.md`).
-- **Archive**: query `doc_glob(pattern="archive/MM-DD-v*", scope="category")` for next `vN`, then `doc_move` active `Plan.md` & `Tasks.md` to `archive/MM-DD-vN/Plan.md` & `archive/MM-DD-vN/Tasks.md` (fallback: move root `Plan.md` / `Tasks.md` into `.docs/MM-DD-vN/`).
+- **Archive**: query `doc_glob(pattern="archive/MM-DD-v*", scope="category")` for next `vN`, then `doc_read` active `Plan.md` / `Tasks.md` → `doc_create` `archive/MM-DD-vN/Plan.md` & `archive/MM-DD-vN/Tasks.md` → `doc_delete` active `Plan.md` & `Tasks.md` (fallback: move root `Plan.md` / `Tasks.md` into `.docs/MM-DD-vN/`).
 - **Git Commit**: commit code/config changes only; never stage or commit `.env` or credentials.
 
 ## Boundaries

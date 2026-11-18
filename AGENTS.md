@@ -12,7 +12,7 @@
 
 `capsa-docs` 工具契约：
 - 只读：`doc_glob(pattern?, scope?)`、`doc_grep(pattern, is_regex?, scope?, path?, limit?)`、`doc_read(path, scope?, offset?, limit?)`
-- 写入（仅限 `scope="category"`）：`doc_create(path, content)`（防覆盖新建）、`doc_write(path, content)`（全量覆写已有文档）、`doc_edit(path, old_string, new_string, replace_all?)`（原子局部替换）、`doc_move(path, new_path, overwrite?, recursive?)`（移动或重命名文档及目录前缀）、`doc_delete(path)`
+- 写入（仅限 `scope="category"`）：`doc_create(path, content)`（防覆盖新建）、`doc_write(path, content)`（全量覆写已有文档）、`doc_edit(path, old_string, new_string, replace_all?)`（原子局部替换）、`doc_delete(path)`
 - 工作区定位：所有 `doc_*` 调用须显式传公共参数 `cwd` 为当前项目工作区绝对路径。代理桥以独立进程运行，自身工作目录与会话工作区相互独立；传入 `cwd` 方可自目标项目向上检索 `.env`，省略时回退至代理进程工作目录，导致工作区凭据漏读或错配。
 
 **进入任何阶段前，先读 SCOPE.md 与 Project.md 建立上下文；代码库变更后，须同步维护 Project.md。**
@@ -117,7 +117,7 @@
     - `MM-DD`：当前日期（月、日各两位，前导零）
     - `vN`：当天递增版本号，从 `v1` 开始；通过 `doc_glob(pattern="archive/MM-DD-v*", scope="category")` 查询同日前缀归档（降级时查询本地 `.docs/` 下同日前缀目录），取最大 N 加 1
   2. 归档迁移：
-    - `capsa-docs` 模式：通过 `doc_move` 将活跃 `Plan.md` 与 `Tasks.md` 移动归档至 `archive/<归档目录名>/Plan.md` 与 `archive/<归档目录名>/Tasks.md`
+    - `capsa-docs` 模式：`doc_read` 读取活跃 `Plan.md` 与 `Tasks.md` → `doc_create` 写入 `archive/<归档目录名>/Plan.md` 与 `archive/<归档目录名>/Tasks.md` → `doc_delete` 移除活跃 `Plan.md` 与 `Tasks.md`
     - 本地降级模式：将根目录 `Plan.md` 与 `Tasks.md` 移入 `.docs/<归档目录名>/`
   3. 校验：归档目录同时含 `Plan.md` 与 `Tasks.md`，活跃区无残留 `Plan.md` / `Tasks.md`
 - **约束**：
