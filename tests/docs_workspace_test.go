@@ -376,6 +376,10 @@ func TestDocsMCPAccessBoundary(t *testing.T) {
 		jsonObject(map[string]string{"path": "sibling.md"})); !isError {
 		t.Fatalf("cross-category delete must fail: %q %v", text, isError)
 	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		jsonObject(map[string]string{"path": "sibling.md", "new_path": "stolen.md"})); !isError {
+		t.Fatalf("cross-category move must fail: %q %v", text, isError)
+	}
 	if text, _ := docsTool(t, env, fixture.accessID, session, "doc_glob", "{}"); strings.Contains(text, "sibling.md") || strings.Contains(text, "foreign.md") {
 		t.Fatalf("glob leaked other categories: %q", text)
 	}
@@ -600,13 +604,106 @@ func TestMCPMemoryEndpointKeepsSevenTools(t *testing.T) {
 	docsList := docsMCPCall(t, env, fixture.accessID, docsSession, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}")
 	docsResult, _ := docsList["result"].(map[string]any)
 	docsTools, _ := docsResult["tools"].([]any)
-	if len(docsTools) != 7 {
-		t.Fatalf("docs endpoint tools = %d, want 7", len(docsTools))
+	if len(docsTools) != 8 {
+		t.Fatalf("docs endpoint tools = %d, want 8", len(docsTools))
 	}
 	for _, raw := range docsTools {
 		name, _ := raw.(map[string]any)["name"].(string)
 		if !strings.HasPrefix(name, "doc_") {
 			t.Fatalf("unexpected tool on /mcp/docs: %q", name)
+		}
+	}
+}
+
+func TestDocsMCPMoveContract(t *testing.T) {
+	env := setup(t)
+	fixture := newDocsWorkspace(t, env, "文档区")
+	session := docsMCPSession(t, env, fixture.accessID)
+	createDoc(t, env, fixture.workspaceID, "public", "", "public.md", "public original")
+	createDoc(t, env, fixture.workspaceID, "category", fixture.categoryID, "notes.md", "alpha body")
+	createDoc(t, env, fixture.workspaceID, "category", fixture.categoryID, "target.md", "target original")
+
+	// 公共文档区拒绝移动，公共正文不受任何影响。
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"public.md","new_path":"public-v2.md","scope":"public"}`); !isError || !strings.Contains(text, "公共文档区为只读") {
+		t.Fatalf("public move must fail: %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"notes.md","new_path":"notes.md"}`); !isError || !strings.Contains(text, "相同") {
+		t.Fatalf("same path move must fail: %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"notes.md","new_path":"a//b.md"}`); !isError {
+		t.Fatalf("invalid target path must fail: %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"ghost.md","new_path":"target.md","overwrite":true}`); !isError || !strings.Contains(text, "文档不存在") {
+		t.Fatalf("missing source overwrite move must fail: %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_read",
+		`{"path":"target.md"}`); isError || !strings.Contains(text, "target original") {
+		t.Fatalf("target doc must remain intact after missing source move: %q %v", text, isError)
+	}
+
+	// 单篇重命名与跨文件夹移动。
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"notes.md","new_path":"archive/notes-v2.md"}`); isError || !strings.Contains(text, "已移动文档：notes.md -> archive/notes-v2.md") {
+		t.Fatalf("single doc_move = %q %v", text, isError)
+	}
+	if _, isError := docsTool(t, env, fixture.accessID, session, "doc_read", `{"path":"notes.md"}`); !isError {
+		t.Fatal("old path must not exist after move")
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_read",
+		`{"path":"archive/notes-v2.md"}`); isError || !strings.Contains(text, "alpha body") {
+		t.Fatalf("read moved doc = %q %v", text, isError)
+	}
+
+	// 目标已存在时默认拒绝，显式 overwrite=true 覆盖成功。
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"archive/notes-v2.md","new_path":"target.md"}`); !isError || !strings.Contains(text, "拒绝覆盖") {
+		t.Fatalf("duplicate move without overwrite must fail: %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"archive/notes-v2.md","new_path":"target.md","overwrite":true}`); isError {
+		t.Fatalf("overwrite doc_move = %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_read",
+		`{"path":"target.md"}`); isError || !strings.Contains(text, "alpha body") {
+		t.Fatalf("read overwritten doc = %q %v", text, isError)
+	}
+
+	// 目录前缀批量移动：支持尾斜杠归一化、严守斜杠边界、向自身内部禁止、冲突回滚与覆盖。
+	createDoc(t, env, fixture.workspaceID, "category", fixture.categoryID, "drafts/a.md", "draft a")
+	createDoc(t, env, fixture.workspaceID, "category", fixture.categoryID, "drafts/sub/b.md", "draft b")
+	createDoc(t, env, fixture.workspaceID, "category", fixture.categoryID, "drafts-other/c.md", "sibling dir")
+	createDoc(t, env, fixture.workspaceID, "category", fixture.categoryID, "dest/keep.md", "keep me")
+	createDoc(t, env, fixture.workspaceID, "category", fixture.categoryID, "dest/a.md", "old dest a")
+
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"drafts","new_path":"drafts/sub","recursive":true}`); !isError || !strings.Contains(text, "源目录内部") {
+		t.Fatalf("move into self must fail: %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"drafts/","new_path":"dest/","recursive":true}`); !isError || !strings.Contains(text, "拒绝覆盖") {
+		t.Fatalf("recursive conflict without overwrite must fail: %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_read",
+		`{"path":"drafts/sub/b.md"}`); isError || !strings.Contains(text, "draft b") {
+		t.Fatalf("rollback must preserve drafts/sub/b.md: %q %v", text, isError)
+	}
+	if text, isError := docsTool(t, env, fixture.accessID, session, "doc_move",
+		`{"path":"drafts/","new_path":"dest/","recursive":true,"overwrite":true}`); isError || !strings.Contains(text, "共 2 篇文档") {
+		t.Fatalf("recursive overwrite doc_move = %q %v", text, isError)
+	}
+	for path, want := range map[string]string{
+		"dest/a.md":         "draft a",
+		"dest/sub/b.md":     "draft b",
+		"dest/keep.md":      "keep me",
+		"drafts-other/c.md": "sibling dir",
+	} {
+		if text, isError := docsTool(t, env, fixture.accessID, session, "doc_read",
+			jsonObject(map[string]string{"path": path})); isError || !strings.Contains(text, want) {
+			t.Fatalf("read %s = %q %v", path, text, isError)
 		}
 	}
 }

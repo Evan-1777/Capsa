@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -403,6 +404,208 @@ func DeleteDocumentByPath(handle *sql.DB, workspaceID, categoryID, path string) 
 		return false, err
 	}
 	return affected > 0, nil
+}
+
+// withImmediateTx runs fn inside an exclusive SQLite write transaction and
+// rolls back unless fn returns commit == true with a nil error.
+func withImmediateTx(handle *sql.DB, fn func(ctx context.Context, conn *sql.Conn) (bool, error)) error {
+	ctx := context.Background()
+	conn, err := handle.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	commit, err := fn(ctx, conn)
+	if err != nil || !commit {
+		_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		return err
+	}
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return err
+}
+
+// MoveDocumentByPath renames or moves one document inside the current category,
+// preserving id and created_at. It never touches the public scope. Returned
+// statuses are "same_path", "not_found", "duplicate" or "moved".
+func MoveDocumentByPath(handle *sql.DB, workspaceID, categoryID, oldPath, newPath string, overwrite bool) (string, error) {
+	if oldPath == newPath {
+		return "same_path", nil
+	}
+	if !overwrite {
+		result, err := handle.Exec(
+			"UPDATE documents SET path = ?, updated_at = ? WHERE workspace_id = ? AND scope = 'category' AND category_id = ? AND path = ?",
+			newPath, db.UtcNow(), workspaceID, categoryID, oldPath)
+		if err != nil {
+			if isUniqueViolation(err) {
+				return "duplicate", nil
+			}
+			return "", err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return "", err
+		}
+		if affected == 0 {
+			return "not_found", nil
+		}
+		return "moved", nil
+	}
+
+	status := ""
+	err := withImmediateTx(handle, func(ctx context.Context, conn *sql.Conn) (bool, error) {
+		var sourceID string
+		err := conn.QueryRowContext(ctx,
+			"SELECT id FROM documents WHERE workspace_id = ? AND scope = 'category' AND category_id = ? AND path = ?",
+			workspaceID, categoryID, oldPath).Scan(&sourceID)
+		if err == sql.ErrNoRows {
+			status = "not_found"
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if _, err := conn.ExecContext(ctx,
+			"DELETE FROM documents WHERE workspace_id = ? AND scope = 'category' AND category_id = ? AND path = ?",
+			workspaceID, categoryID, newPath); err != nil {
+			return false, err
+		}
+		if _, err := conn.ExecContext(ctx,
+			"UPDATE documents SET path = ?, updated_at = ? WHERE id = ?",
+			newPath, db.UtcNow(), sourceID); err != nil {
+			return false, err
+		}
+		status = "moved"
+		return true, nil
+	})
+	return status, err
+}
+
+type docMoveEntry struct {
+	id      string
+	oldPath string
+	newPath string
+}
+
+// MoveDocumentsByPrefix atomically moves every document under oldPrefix/ to
+// newPrefix/ inside the current category. Returned statuses are "same_path",
+// "into_self", "not_found", "invalid_path", "duplicate" or "moved".
+func MoveDocumentsByPrefix(handle *sql.DB, workspaceID, categoryID, oldPrefix, newPrefix string, overwrite bool) (int, string, string, error) {
+	if oldPrefix == newPrefix {
+		return 0, "", "same_path", nil
+	}
+	oldSlash := oldPrefix + "/"
+	if strings.HasPrefix(newPrefix, oldSlash) {
+		return 0, "", "into_self", nil
+	}
+
+	movedCount := 0
+	detail := ""
+	status := ""
+	err := withImmediateTx(handle, func(ctx context.Context, conn *sql.Conn) (bool, error) {
+		// Range scan [prefix+"/", prefix+"0") relies on '/' (0x2f) + 1 == '0' (0x30)
+		// to match slash boundaries cleanly without LIKE wildcards or UTF-8 rune mismatches.
+		rows, err := conn.QueryContext(ctx,
+			"SELECT id, path FROM documents WHERE workspace_id = ? AND scope = 'category' AND category_id = ? AND path >= ? AND path < ?",
+			workspaceID, categoryID, oldSlash, oldPrefix+"0")
+		if err != nil {
+			return false, err
+		}
+		var moves []docMoveEntry
+		movingIDs := map[string]bool{}
+		for rows.Next() {
+			var id, docPath string
+			if err := rows.Scan(&id, &docPath); err != nil {
+				rows.Close()
+				return false, err
+			}
+			if !strings.HasPrefix(docPath, oldSlash) {
+				continue
+			}
+			dest, msg := NormalizeDocPath(newPrefix + "/" + strings.TrimPrefix(docPath, oldSlash))
+			if msg != "" {
+				rows.Close()
+				detail = msg
+				status = "invalid_path"
+				return false, nil
+			}
+			moves = append(moves, docMoveEntry{id: id, oldPath: docPath, newPath: dest})
+			movingIDs[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, err
+		}
+		rows.Close()
+
+		if len(moves) == 0 {
+			status = "not_found"
+			return false, nil
+		}
+
+		// Moving a nested folder upward (e.g. a/b -> a when a/b/x.md and a/b/b/x.md
+		// both exist) maps deeper files onto shallower source paths; shortest-first
+		// updates vacate each shallower path before a deeper file moves into it.
+		sort.Slice(moves, func(i, j int) bool {
+			if len(moves[i].oldPath) != len(moves[j].oldPath) {
+				return len(moves[i].oldPath) < len(moves[j].oldPath)
+			}
+			return moves[i].oldPath < moves[j].oldPath
+		})
+
+		targetRows, err := conn.QueryContext(ctx,
+			"SELECT id, path FROM documents WHERE workspace_id = ? AND scope = 'category' AND category_id = ? AND path >= ? AND path < ?",
+			workspaceID, categoryID, newPrefix+"/", newPrefix+"0")
+		if err != nil {
+			return false, err
+		}
+		externalByPath := map[string]string{}
+		for targetRows.Next() {
+			var id, docPath string
+			if err := targetRows.Scan(&id, &docPath); err != nil {
+				targetRows.Close()
+				return false, err
+			}
+			if !movingIDs[id] {
+				externalByPath[docPath] = id
+			}
+		}
+		if err := targetRows.Err(); err != nil {
+			targetRows.Close()
+			return false, err
+		}
+		targetRows.Close()
+
+		var deleteIDs []string
+		for _, item := range moves {
+			if targetID, clash := externalByPath[item.newPath]; clash {
+				if !overwrite {
+					detail = item.newPath
+					status = "duplicate"
+					return false, nil
+				}
+				deleteIDs = append(deleteIDs, targetID)
+			}
+		}
+		for _, targetID := range deleteIDs {
+			if _, err := conn.ExecContext(ctx, "DELETE FROM documents WHERE id = ?", targetID); err != nil {
+				return false, err
+			}
+		}
+		stamp := db.UtcNow()
+		for _, item := range moves {
+			if _, err := conn.ExecContext(ctx, "UPDATE documents SET path = ?, updated_at = ? WHERE id = ?",
+				item.newPath, stamp, item.id); err != nil {
+				return false, err
+			}
+		}
+		movedCount = len(moves)
+		status = "moved"
+		return true, nil
+	})
+	return movedCount, detail, status, err
 }
 
 // UpdateDocumentByID edits a document addressed by primary key for the Web

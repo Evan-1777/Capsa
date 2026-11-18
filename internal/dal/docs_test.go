@@ -253,3 +253,135 @@ func TestQueryDocumentsScopeFilter(t *testing.T) {
 		t.Fatalf("exact path = %v err=%v", exact, err)
 	}
 }
+
+func TestMoveDocumentByPath(t *testing.T) {
+	handle := newTestDB(t)
+	workspaceID, categoryID := newDocsFixture(t, handle)
+	if _, status, err := CreateDocument(handle, workspaceID, "public", "", "pub.md", "public body"); err != nil || status != "created" {
+		t.Fatalf("public seed: %q %v", status, err)
+	}
+	created, status, err := CreateDocument(handle, workspaceID, "category", categoryID, "notes.md", "cat body")
+	if err != nil || status != "created" {
+		t.Fatalf("category seed: %q %v", status, err)
+	}
+	if _, status, err := CreateDocument(handle, workspaceID, "category", categoryID, "existing.md", "keep me"); err != nil || status != "created" {
+		t.Fatalf("existing seed: %q %v", status, err)
+	}
+
+	if status, err := MoveDocumentByPath(handle, workspaceID, categoryID, "notes.md", "notes.md", false); err != nil || status != "same_path" {
+		t.Fatalf("same path status = %q err=%v", status, err)
+	}
+	// 分类移动绝不触碰公共文档区。
+	if status, err := MoveDocumentByPath(handle, workspaceID, categoryID, "pub.md", "pub-moved.md", false); err != nil || status != "not_found" {
+		t.Fatalf("move public doc status = %q err=%v", status, err)
+	}
+	if status, err := MoveDocumentByPath(handle, workspaceID, categoryID, "ghost.md", "existing.md", true); err != nil || status != "not_found" {
+		t.Fatalf("overwrite from missing source status = %q err=%v", status, err)
+	}
+	// 源不存在时，即使开启 overwrite 也不得误删已有目标文档。
+	kept, err := GetDocumentByPath(handle, workspaceID, "category", categoryID, "existing.md")
+	if err != nil || kept == nil || kept["content"] != "keep me" {
+		t.Fatalf("existing target modified when source missing: %v err=%v", kept, err)
+	}
+
+	if status, err := MoveDocumentByPath(handle, workspaceID, categoryID, "notes.md", "existing.md", false); err != nil || status != "duplicate" {
+		t.Fatalf("duplicate without overwrite status = %q err=%v", status, err)
+	}
+	if status, err := MoveDocumentByPath(handle, workspaceID, categoryID, "notes.md", "archive/notes-v2.md", false); err != nil || status != "moved" {
+		t.Fatalf("move to folder status = %q err=%v", status, err)
+	}
+	if old, err := GetDocumentByPath(handle, workspaceID, "category", categoryID, "notes.md"); err != nil || old != nil {
+		t.Fatalf("old path still exists: %v err=%v", old, err)
+	}
+	moved, err := GetDocumentByPath(handle, workspaceID, "category", categoryID, "archive/notes-v2.md")
+	if err != nil || moved == nil || moved["id"] != created["id"] || moved["created_at"] != created["created_at"] || moved["content"] != "cat body" {
+		t.Fatalf("moved doc mismatch: %v err=%v", moved, err)
+	}
+
+	// 显式覆盖目标路径：保留源 id 与内容，目标旧文档被替换。
+	if status, err := MoveDocumentByPath(handle, workspaceID, categoryID, "archive/notes-v2.md", "existing.md", true); err != nil || status != "moved" {
+		t.Fatalf("overwrite move status = %q err=%v", status, err)
+	}
+	overwritten, err := GetDocumentByPath(handle, workspaceID, "category", categoryID, "existing.md")
+	if err != nil || overwritten == nil || overwritten["id"] != created["id"] || overwritten["content"] != "cat body" {
+		t.Fatalf("overwritten doc = %v err=%v", overwritten, err)
+	}
+}
+
+func TestMoveDocumentsByPrefix(t *testing.T) {
+	handle := newTestDB(t)
+	workspaceID, categoryID := newDocsFixture(t, handle)
+	seeds := map[string]string{
+		"规范/a.md":       "doc a",
+		"规范/sub/b.md":   "doc b",
+		"规范-other/c.md": "untouched sibling",
+		"archive/x.md":  "existing archive x",
+	}
+	for p, body := range seeds {
+		if _, status, err := CreateDocument(handle, workspaceID, "category", categoryID, p, body); err != nil || status != "created" {
+			t.Fatalf("seed %s: %q %v", p, status, err)
+		}
+	}
+
+	if _, _, status, err := MoveDocumentsByPrefix(handle, workspaceID, categoryID, "规范", "规范", false); err != nil || status != "same_path" {
+		t.Fatalf("same prefix = %q err=%v", status, err)
+	}
+	if _, _, status, err := MoveDocumentsByPrefix(handle, workspaceID, categoryID, "规范", "规范/sub", false); err != nil || status != "into_self" {
+		t.Fatalf("into self = %q err=%v", status, err)
+	}
+	if _, _, status, err := MoveDocumentsByPrefix(handle, workspaceID, categoryID, "empty", "dest", false); err != nil || status != "not_found" {
+		t.Fatalf("missing prefix = %q err=%v", status, err)
+	}
+
+	// 超长目标路径触发整批原子回滚。
+	longDest := strings.Repeat("d", DocPathMax-2)
+	if _, _, status, err := MoveDocumentsByPrefix(handle, workspaceID, categoryID, "规范", longDest, false); err != nil || status != "invalid_path" {
+		t.Fatalf("too long prefix = %q err=%v", status, err)
+	}
+
+	// 目标存在冲突且未开启覆盖时整批回滚。
+	if _, status, err := CreateDocument(handle, workspaceID, "category", categoryID, "archive/a.md", "conflict"); err != nil || status != "created" {
+		t.Fatalf("seed conflict: %q %v", status, err)
+	}
+	if _, detail, status, err := MoveDocumentsByPrefix(handle, workspaceID, categoryID, "规范", "archive", false); err != nil || status != "duplicate" || detail != "archive/a.md" {
+		t.Fatalf("conflict without overwrite = %q %q err=%v", status, detail, err)
+	}
+	if stillThere, _ := GetDocumentByPath(handle, workspaceID, "category", categoryID, "规范/sub/b.md"); stillThere == nil {
+		t.Fatal("failed prefix move must roll back all source documents")
+	}
+
+	// 显式覆盖仅替换碰撞文件，保留目标目录原有非碰撞文件且不影响相似前缀目录。
+	moved, _, status, err := MoveDocumentsByPrefix(handle, workspaceID, categoryID, "规范", "archive", true)
+	if err != nil || status != "moved" || moved != 2 {
+		t.Fatalf("prefix overwrite move = moved=%d status=%q err=%v", moved, status, err)
+	}
+	if doc, _ := GetDocumentByPath(handle, workspaceID, "category", categoryID, "archive/a.md"); doc == nil || doc["content"] != "doc a" {
+		t.Fatalf("overwritten archive/a.md = %v", doc)
+	}
+	if doc, _ := GetDocumentByPath(handle, workspaceID, "category", categoryID, "archive/sub/b.md"); doc == nil || doc["content"] != "doc b" {
+		t.Fatalf("moved archive/sub/b.md = %v", doc)
+	}
+	if doc, _ := GetDocumentByPath(handle, workspaceID, "category", categoryID, "archive/x.md"); doc == nil || doc["content"] != "existing archive x" {
+		t.Fatalf("non-colliding target doc must stay = %v", doc)
+	}
+	if doc, _ := GetDocumentByPath(handle, workspaceID, "category", categoryID, "规范-other/c.md"); doc == nil || doc["content"] != "untouched sibling" {
+		t.Fatalf("similar prefix sibling must stay untouched = %v", doc)
+	}
+
+	// 验证子目录向父目录回迁（含 a/b/x.md 与 a/b/b/x.md）按短路径优先更新无唯一索引碰撞。
+	for _, p := range []string{"a/b/x.md", "a/b/b/x.md"} {
+		if _, status, err := CreateDocument(handle, workspaceID, "category", categoryID, p, p); err != nil || status != "created" {
+			t.Fatalf("seed nested %s: %q %v", p, status, err)
+		}
+	}
+	moved, _, status, err = MoveDocumentsByPrefix(handle, workspaceID, categoryID, "a/b", "a", false)
+	if err != nil || status != "moved" || moved != 2 {
+		t.Fatalf("move upward = moved=%d status=%q err=%v", moved, status, err)
+	}
+	if doc, _ := GetDocumentByPath(handle, workspaceID, "category", categoryID, "a/x.md"); doc == nil || doc["content"] != "a/b/x.md" {
+		t.Fatalf("upward moved a/x.md = %v", doc)
+	}
+	if doc, _ := GetDocumentByPath(handle, workspaceID, "category", categoryID, "a/b/x.md"); doc == nil || doc["content"] != "a/b/b/x.md" {
+		t.Fatalf("upward moved a/b/x.md = %v", doc)
+	}
+}

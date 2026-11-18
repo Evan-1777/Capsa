@@ -43,7 +43,7 @@ func docIdentityFrom(ctx context.Context) *auth.DocAccessIdentity {
 	return identity
 }
 
-// NewDocsMCPServer builds the document workspace server with its seven
+// NewDocsMCPServer builds the document workspace server with its eight
 // file-like primitives.
 func NewDocsMCPServer() *mcpserver.MCPServer {
 	instance := mcpserver.NewMCPServer("capsa-docs", "1.0.0")
@@ -106,6 +106,16 @@ func NewDocsMCPServer() *mcpserver.MCPServer {
 		mcp.WithString("path", mcp.Required(), mcp.Description("目标文档的逻辑路径")),
 		mcp.WithString("scope", mcp.Description("仅接受 category；传入 public 会被拒绝")),
 	), handleDocDelete)
+
+	instance.AddTool(mcp.NewTool("doc_move",
+		mcp.WithDescription("移动或重命名当前子项目下的文档（支持单篇文档或目录前缀批量移动）；目标路径已存在时默认拒绝覆盖。公共文档区只读。"),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("path", mcp.Required(), mcp.Description("源文档逻辑路径；recursive 为 true 时为源目录前缀")),
+		mcp.WithString("new_path", mcp.Required(), mcp.Description("目标文档逻辑路径；recursive 为 true 时为目标目录前缀")),
+		mcp.WithBoolean("overwrite", mcp.Description("目标路径已存在时是否覆盖，默认 false 拒绝覆盖"), mcp.DefaultBool(false)),
+		mcp.WithBoolean("recursive", mcp.Description("是否按目录前缀批量移动（匹配 path/ 下全部文档），默认 false 仅移动单篇文档"), mcp.DefaultBool(false)),
+		mcp.WithString("scope", mcp.Description("仅接受 category；传入 public 会被拒绝")),
+	), handleDocMove)
 
 	return instance
 }
@@ -474,4 +484,61 @@ func handleDocDelete(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 		return toolError(fmt.Sprintf("文档不存在：%s", documentPath))
 	}
 	return toolText(fmt.Sprintf("已删除文档：%s | 子项目 %s", documentPath, identity.CategoryName))
+}
+
+func handleDocMove(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if request.GetString("scope", "") == "public" {
+		return toolError(publicReadOnlyMessage)
+	}
+	recursive := request.GetBool("recursive", false)
+	overwrite := request.GetBool("overwrite", false)
+	rawOld := request.GetString("path", "")
+	rawNew := request.GetString("new_path", "")
+	if recursive {
+		rawOld = strings.TrimSuffix(strings.TrimSpace(rawOld), "/")
+		rawNew = strings.TrimSuffix(strings.TrimSpace(rawNew), "/")
+	}
+	oldPath, message := dal.NormalizeDocPath(rawOld)
+	if message != "" {
+		return toolError(message)
+	}
+	newPath, message := dal.NormalizeDocPath(rawNew)
+	if message != "" {
+		return toolError(message)
+	}
+	if oldPath == newPath {
+		return toolError("源路径与目标路径相同")
+	}
+	handle, identity, message := docsHandle(ctx)
+	if message != "" {
+		return toolError(message)
+	}
+	if !recursive {
+		status, err := dal.MoveDocumentByPath(handle, identity.WorkspaceID, identity.CategoryID, oldPath, newPath, overwrite)
+		if err != nil {
+			return toolError("服务内部错误")
+		}
+		switch status {
+		case "not_found":
+			return toolError(fmt.Sprintf("文档不存在：%s", oldPath))
+		case "duplicate":
+			return toolError(fmt.Sprintf("目标文档已存在，拒绝覆盖：%s", newPath))
+		}
+		return toolText(fmt.Sprintf("已移动文档：%s -> %s | 子项目 %s", oldPath, newPath, identity.CategoryName))
+	}
+	moved, detail, status, err := dal.MoveDocumentsByPrefix(handle, identity.WorkspaceID, identity.CategoryID, oldPath, newPath, overwrite)
+	if err != nil {
+		return toolError("服务内部错误")
+	}
+	switch status {
+	case "into_self":
+		return toolError(fmt.Sprintf("目标目录不能位于源目录内部：%s -> %s", oldPath, newPath))
+	case "not_found":
+		return toolError(fmt.Sprintf("目录下不存在文档：%s", oldPath))
+	case "invalid_path":
+		return toolError(detail)
+	case "duplicate":
+		return toolError(fmt.Sprintf("目标文档已存在，拒绝覆盖：%s", detail))
+	}
+	return toolText(fmt.Sprintf("已移动目录：%s/ -> %s/ | 共 %d 篇文档 | 子项目 %s", oldPath, newPath, moved, identity.CategoryName))
 }

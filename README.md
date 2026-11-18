@@ -16,7 +16,7 @@
 | Web 端凭据深度管理：查看 Key 状态、权限矩阵、在线签发（单次明文披露）、吊销与物理删除 | 环境变量管理员凭据的 Web 化修改（改值重启） |
 | 顶层双模工作区：记忆工作区与文档工作区，创建时固定模式且互不转换 | 工作区创建后的模式互转 |
 | 文档工作区两级容器：工作区公共文档区（跨子项目只读共享）+ 子项目专属文档区（读写隔离） | 文档版本历史与多人协同冲突合并 |
-| 文档 MCP 端点：通配搜索、关键词/正则检索、全量或按行分段读取、防覆盖新建、全量覆写、原子局部替换与删除 | 文档附件的二进制存储与预览 |
+| 文档 MCP 端点：通配搜索、关键词/正则检索、全量或按行分段读取、防覆盖新建、全量覆写、原子局部替换、移动重命名与删除 | 文档附件的二进制存储与预览 |
 | 每子项目独立高熵访问 ID：管理台按需弹出接入弹层展示、一键复制与即时轮换 | 子项目访问 ID 的哈希存储（管理台需可随时查看原值） |
 | 在线热备与快照回灌 | |
 
@@ -187,6 +187,7 @@ Agent 可用的工具：`memory_groups`、`memory_search`、`memory_peek`、`mem
 | `doc_create` | 在当前子项目新建文档，同名拒绝覆盖 |
 | `doc_write` | 覆盖当前子项目下已存在文档的全部正文 |
 | `doc_edit` | 精确文本替换；命中多处时默认拒绝，`replace_all` 可全量替换 |
+| `doc_move` | 移动或重命名文档及目录前缀；默认拒绝覆盖，`overwrite` 可显式覆盖 |
 | `doc_delete` | 物理删除当前子项目下的文档 |
 
 公共文档区对所有写工具只读，只能由管理台维护。
@@ -206,7 +207,7 @@ capsa-docs-mcp init "https://memory.evan-ai.xyz/mcp/docs?token=capsa_doc_<32位�
 capsa-docs-mcp check
 ```
 
-代理桥无参启动时本地直接响应 `initialize` 与 `tools/list`（固定返回 7 个 `doc_*` 工具定义，不依赖启动目录是否存在凭据）；执行 `tools/call` 时按调用参数 `cwd`（省略时取代理启动目录）向上至 `.git` 根动态读取 `.env` 中的 `CAPSA_DOCS_TOKEN` 与可选 `CAPSA_DOCS_URL`（默认 `https://memory.evan-ai.xyz/mcp/docs`），按 `(url, token)` 懒握手缓存 `Mcp-Session-Id`、剥离 `cwd` 后转发请求并处理 404 会话过期重握手，缺失凭据时返回工具级 `isError: true`。
+代理桥无参启动时本地直接响应 `initialize` 与 `tools/list`（固定返回 8 个 `doc_*` 工具定义，不依赖启动目录是否存在凭据）；执行 `tools/call` 时按调用参数 `cwd`（省略时取代理启动目录）向上至 `.git` 根动态读取 `.env` 中的 `CAPSA_DOCS_TOKEN` 与可选 `CAPSA_DOCS_URL`（默认 `https://memory.evan-ai.xyz/mcp/docs`），按 `(url, token)` 懒握手缓存 `Mcp-Session-Id`、剥离 `cwd` 后转发请求并处理 404 会话过期重握手，缺失凭据时返回工具级 `isError: true`。
 
 ## Web 管理台
 

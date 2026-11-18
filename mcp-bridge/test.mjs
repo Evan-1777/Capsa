@@ -3,7 +3,7 @@
  * Self-check for capsa-docs-mcp:
  *   1. Workspace .env upward resolution bounded by .git
  *   2. Subcommand init (full URL, custom URL, bare token, .gitignore idempotency)
- *   3. Decoupled tool discovery (no token & no remote HTTP -> initialize ok + 7 static doc_* tools; tools/call -> isError)
+ *   3. Decoupled tool discovery (no token & no remote HTTP -> initialize ok + 8 static doc_* tools; tools/call -> isError)
  *   4. Stdio lazy auth proxy (default cwd + explicit cwd override + cwd stripping, 404 session re-handshake, SSE & JSON)
  *   5. Subcommand check + end-to-end schema & call verification against real Capsa binary when built
  */
@@ -38,7 +38,7 @@ const CAPSA_ROOT = path.resolve(path.dirname(BRIDGE_ENTRY), '..');
 
 const byId = (responses, id) => responses.find((frame) => frame && frame.id === id);
 
-function runStdioSession(cwd, frames, envOverrides = {}) {
+function runStdioSession(cwd, frames, envOverrides = {}, { sequential = false } = {}) {
   return new Promise((resolve, reject) => {
     const proc = child_process.spawn(process.execPath, [BRIDGE_ENTRY], {
       cwd,
@@ -52,25 +52,56 @@ function runStdioSession(cwd, frames, envOverrides = {}) {
 
     let stdout = '';
     let stderr = '';
+    let lineBuf = '';
+    const parsed = [];
+    let waiter = null;
+
     proc.stdout.setEncoding('utf8');
     proc.stderr.setEncoding('utf8');
-    proc.stdout.on('data', (chunk) => { stdout += chunk; });
+    proc.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      lineBuf += chunk;
+      let nl;
+      while ((nl = lineBuf.indexOf('\n')) !== -1) {
+        const line = lineBuf.slice(0, nl).trim();
+        lineBuf = lineBuf.slice(nl + 1);
+        if (!line) continue;
+        const msg = JSON.parse(line);
+        parsed.push(msg);
+        if (waiter && msg.id === waiter.id) {
+          const done = waiter.resolve;
+          waiter = null;
+          done(msg);
+        }
+      }
+    });
     proc.stderr.on('data', (chunk) => { stderr += chunk; });
     proc.on('error', reject);
     proc.on('close', (code) => {
-      const parsed = stdout
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map((l) => JSON.parse(l));
+      if (lineBuf.trim()) parsed.push(JSON.parse(lineBuf.trim()));
       resolve({ code, responses: parsed, stderr });
     });
 
-    // Write frames and close stdin after allowing async queue to drain.
-    for (const frame of frames) {
-      proc.stdin.write(JSON.stringify(frame) + '\n');
+    if (!sequential) {
+      // Write frames and close stdin after allowing async queue to drain.
+      for (const frame of frames) {
+        proc.stdin.write(JSON.stringify(frame) + '\n');
+      }
+      setTimeout(() => proc.stdin.end(), 250);
+      return;
     }
-    setTimeout(() => proc.stdin.end(), 250);
+
+    (async () => {
+      for (const frame of frames) {
+        const hasId = Object.prototype.hasOwnProperty.call(frame, 'id');
+        const pending = hasId
+          ? new Promise((res) => { waiter = { id: frame.id, resolve: res }; })
+          : null;
+        proc.stdin.write(JSON.stringify(frame) + '\n');
+        if (pending) await pending;
+      }
+      proc.stdin.end();
+    })().catch(reject);
   });
 }
 
@@ -138,12 +169,12 @@ async function main() {
     assert.equal(unauthSession.responses.length, 3);
     assert.equal(byId(unauthSession.responses, 1)?.result.serverInfo.name, 'capsa-docs');
     const unauthTools = byId(unauthSession.responses, 2);
-    assert.equal(unauthTools?.result.tools.length, 7);
+    assert.equal(unauthTools?.result.tools.length, 8);
     assert.deepEqual(
       unauthTools.result.tools.map((t) => t.name),
-      ['doc_glob', 'doc_grep', 'doc_read', 'doc_create', 'doc_write', 'doc_edit', 'doc_delete'],
+      ['doc_glob', 'doc_grep', 'doc_read', 'doc_create', 'doc_write', 'doc_edit', 'doc_delete', 'doc_move'],
     );
-    assert.equal(DOCS_TOOLS.length, 7);
+    assert.equal(DOCS_TOOLS.length, 8);
     assert.deepEqual([...READ_ONLY_TOOLS].sort(), ['doc_glob', 'doc_grep', 'doc_read']);
     const unauthCall = byId(unauthSession.responses, 3);
     assert.equal(unauthCall?.result.isError, true);
@@ -256,7 +287,7 @@ async function main() {
         { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' },
       );
       assert.equal(discoveryOnly.responses.length, 2);
-      assert.equal(byId(discoveryOnly.responses, 2)?.result.tools.length, 7);
+      assert.equal(byId(discoveryOnly.responses, 2)?.result.tools.length, 8);
       assert.equal(receivedRequests, reqsBeforeDiscovery, 'initialize + tools/list must not hit remote server');
 
       // Global daemon mode: start proxy in unrelated host directory (no .env), pass cwd per call
@@ -280,7 +311,7 @@ async function main() {
 
       assert.equal(daemonProxied.responses.length, 4);
       assert.ok(byId(daemonProxied.responses, 10)?.result?.serverInfo);
-      assert.equal(byId(daemonProxied.responses, 11)?.result.tools.length, 7);
+      assert.equal(byId(daemonProxied.responses, 11)?.result.tools.length, 8);
       assert.match(byId(daemonProxied.responses, 12)?.result.content[0].text || '', /命中 3 篇/);
       assert.match(byId(daemonProxied.responses, 13)?.result.content[0].text || '', /命中 3 篇/);
       assert.ok(initializedNotifications >= 2, 'initial lazy handshake + 404 re-handshake must both send notifications/initialized');
@@ -320,20 +351,22 @@ async function main() {
       assert.match(formattedAgg, /127\.0\.0\.1:9999/);
       assert.match(formattedAgg, /::1:9999/);
 
-      const prevAllProxy = process.env.ALL_PROXY;
-      const prevNoProxySock = process.env.NO_PROXY;
+      const savedProxyEnv = {};
+      for (const k of ['HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy']) {
+        savedProxyEnv[k] = process.env[k];
+        delete process.env[k];
+      }
       try {
-        delete process.env.NO_PROXY;
         process.env.ALL_PROXY = 'socks5://127.0.0.1:1080';
         await assert.rejects(
           () => postRemote('http://remote.invalid:8000/mcp/docs', 't', '', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'doc_create' } }),
           /不支持的代理协议：socks5:/,
         );
       } finally {
-        if (prevAllProxy === undefined) delete process.env.ALL_PROXY;
-        else process.env.ALL_PROXY = prevAllProxy;
-        if (prevNoProxySock === undefined) delete process.env.NO_PROXY;
-        else process.env.NO_PROXY = prevNoProxySock;
+        for (const [k, v] of Object.entries(savedProxyEnv)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
         closeAgentPool();
       }
 
@@ -711,10 +744,14 @@ async function main() {
           { jsonrpc: '2.0', method: 'notifications/initialized' },
           { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
           { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'doc_create', arguments: { path: 'SCOPE.md', content: '# Scope\n' } } },
-        ], { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' });
-        assert.equal(realStdio.responses.length, 3);
-        assert.equal(byId(realStdio.responses, 2)?.result.tools.length, 7);
+          { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'doc_move', arguments: { path: 'SCOPE.md', new_path: 'docs/SCOPE.md' } } },
+          { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'doc_read', arguments: { path: 'docs/SCOPE.md' } } },
+        ], { HTTP_PROXY: '', HTTPS_PROXY: '', http_proxy: '', https_proxy: '' }, { sequential: true });
+        assert.equal(realStdio.responses.length, 5);
+        assert.equal(byId(realStdio.responses, 2)?.result.tools.length, 8);
         assert.ok((byId(realStdio.responses, 3)?.result.content[0].text || '').includes('已新建文档：SCOPE.md'));
+        assert.ok((byId(realStdio.responses, 4)?.result.content[0].text || '').includes('已移动文档：SCOPE.md -> docs/SCOPE.md'));
+        assert.ok((byId(realStdio.responses, 5)?.result.content[0].text || '').includes('# Scope'));
 
         const realCheckCode = await runCheck(realProjDir);
         assert.equal(realCheckCode, 0);

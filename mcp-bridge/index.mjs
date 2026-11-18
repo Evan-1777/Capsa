@@ -3,7 +3,7 @@
  * capsa-docs-mcp — zero-dependency MCP stdio proxy & workspace CLI for Capsa /mcp/docs.
  *
  * Modes:
- *   capsa-docs-mcp                     MCP stdio server (static 7 doc_* tools; per-call .env auth via cwd)
+ *   capsa-docs-mcp                     MCP stdio server (static 8 doc_* tools; per-call .env auth via cwd)
  *   capsa-docs-mcp init <url_or_token> Write/update CAPSA_DOCS_TOKEN (and non-default URL) in ./.env
  *   capsa-docs-mcp check               Verify connectivity and print category document count
  */
@@ -210,6 +210,40 @@ export const DOCS_TOOLS = [
         path: {
           type: 'string',
           description: '目标文档的逻辑路径',
+        },
+        scope: {
+          type: 'string',
+          description: '仅接受 category；传入 public 会被拒绝',
+        },
+        cwd: CWD_PROPERTY,
+      },
+    },
+  },
+  {
+    name: 'doc_move',
+    description: '移动或重命名当前子项目下的文档（支持单篇文档或目录前缀批量移动）；目标路径已存在时默认拒绝覆盖。公共文档区只读。',
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: 'object',
+      required: ['path', 'new_path'],
+      properties: {
+        path: {
+          type: 'string',
+          description: '源文档逻辑路径；recursive 为 true 时为源目录前缀',
+        },
+        new_path: {
+          type: 'string',
+          description: '目标文档逻辑路径；recursive 为 true 时为目标目录前缀',
+        },
+        overwrite: {
+          type: 'boolean',
+          default: false,
+          description: '目标路径已存在时是否覆盖，默认 false 拒绝覆盖',
+        },
+        recursive: {
+          type: 'boolean',
+          default: false,
+          description: '是否按目录前缀批量移动（匹配 path/ 下全部文档），默认 false 仅移动单篇文档',
         },
         scope: {
           type: 'string',
