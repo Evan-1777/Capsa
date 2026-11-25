@@ -1,6 +1,5 @@
-// Package formatters renders the fixed plain-text contracts for the read tools
-// and the group listing. capsa/formatters.py is the single source of truth; the
-// output here must match it byte for byte.
+// Package formatters renders the fixed plain-text contracts for the memory
+// MCP read tools and group listing.
 package formatters
 
 import (
@@ -56,16 +55,53 @@ func stringOf(item map[string]any, key string) string {
 	return text
 }
 
-func reviewAtPtr(item map[string]any) *string {
-	if text, ok := item["review_at"].(string); ok {
-		return &text
+func sortedScopes(scopes map[string]string) string {
+	names := make([]string, 0, len(scopes))
+	for name := range scopes {
+		names = append(names, name)
 	}
-	return nil
+	sort.Strings(names)
+	return strings.Join(names, ",")
+}
+
+func tierTag(item map[string]any, now time.Time) string {
+	if deletedAt := stringOf(item, "deleted_at"); deletedAt != "" {
+		reason := strings.TrimSpace(stringOf(item, "deleted_reason"))
+		if reason == "" {
+			reason = "-"
+		}
+		return fmt.Sprintf("[已归档/垃圾桶 归档于 %s | 原因: %s]", date(deletedAt), reason)
+	}
+	switch retrieval.ComputeTier(item, now) {
+	case retrieval.TierPersistent:
+		return "[持久]"
+	case retrieval.TierTemporary:
+		return fmt.Sprintf("[临时 到期 %s]", date(item["expires_at"]))
+	case retrieval.TierDeep:
+		return "[深层]"
+	default:
+		return "[浅层]"
+	}
+}
+
+func depthLabel(depth string) string {
+	switch depth {
+	case "lighter":
+		return "较浅(浅层标题)"
+	case "shallow":
+		return "浅层(浅层标题+摘要)"
+	case "deeper":
+		return "更深(深层标题)"
+	case "full":
+		return "完全(浅层+深层标题)"
+	default:
+		return depth
+	}
 }
 
 // FormatGroups renders the accessible group listing.
 func FormatGroups(groups []map[string]any) string {
-	lines := []string{"# 可访问分组"}
+	lines := []string{"# 可访问组别"}
 	for _, group := range groups {
 		lines = append(lines, fmt.Sprintf("- %s | %s | %s | %v 条 | %s",
 			stringOf(group, "slug"), stringOf(group, "name"), stringOf(group, "permission"),
@@ -74,15 +110,35 @@ func FormatGroups(groups []map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
-// FormatSearch renders the search result listing.
-func FormatSearch(query string, ranked []map[string]any, scopes map[string]string, now time.Time) string {
-	scopeNames := make([]string, 0, len(scopes))
-	for name := range scopes {
-		scopeNames = append(scopeNames, name)
+// FormatCatalog renders the four-depth active memory catalog listing.
+func FormatCatalog(depth string, items []map[string]any, total, offset int, scopes map[string]string, now time.Time) string {
+	header := fmt.Sprintf("# 记忆目录: %s | 共 %d 条 | 范围: %s",
+		depthLabel(depth), total, sortedScopes(scopes))
+	if len(items) > 0 {
+		header = fmt.Sprintf("# 记忆目录: %s | 共 %d 条 (展示 %d-%d) | 范围: %s",
+			depthLabel(depth), total, offset+1, offset+len(items), sortedScopes(scopes))
 	}
-	sort.Strings(scopeNames)
-	lines := []string{fmt.Sprintf(`# 记忆检索: "%s" | 命中 %d 条 | 范围: %s`,
-		query, len(ranked), strings.Join(scopeNames, ","))}
+	lines := []string{header}
+	for index, item := range items {
+		position := offset + index + 1
+		lines = append(lines, fmt.Sprintf("[%d] %s | %s | %s | %s | 标签: %s",
+			position, stringOf(item, "id"), stringOf(item, "group_slug"),
+			tierTag(item, now), date(item["updated_at"]), tagsLiteral(item["tags"])))
+		lines = append(lines, fmt.Sprintf("    %s", stringOf(item, "title")))
+		if depth == "shallow" {
+			lines = append(lines, fmt.Sprintf("    摘要: %s", stringOf(item, "summary")))
+		}
+	}
+	if offset+len(items) < total {
+		lines = append(lines, fmt.Sprintf("> 更多: memory_catalog(depth=%q, offset=%d)", depth, offset+len(items)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// FormatSearch renders the multi-layer search result listing.
+func FormatSearch(query string, ranked []map[string]any, scopes map[string]string, layers []string, returnTitle, returnSummary bool, now time.Time) string {
+	lines := []string{fmt.Sprintf(`# 记忆检索: "%s" | 命中 %d 条 | 层级: %s | 范围: %s`,
+		query, len(ranked), strings.Join(layers, ","), sortedScopes(scopes))}
 	ids := []string{}
 	for index, item := range ranked {
 		position := index + 1
@@ -90,44 +146,19 @@ func FormatSearch(query string, ranked []map[string]any, scopes map[string]strin
 			lines = append(lines, fmt.Sprintf("[%d] %s | [无权访问]", position, stringOf(item, "id")))
 			continue
 		}
-		expired := ""
-		if retrieval.IsExpired(reviewAtPtr(item), now) {
-			expired = "（复核已过期）"
-		}
-		lines = append(lines, fmt.Sprintf("[%d] %s | %s | %s | 标签: %s",
+		lines = append(lines, fmt.Sprintf("[%d] %s | %s | %s | %s | 标签: %s",
 			position, stringOf(item, "id"), stringOf(item, "group_slug"),
-			date(item["updated_at"]), tagsLiteral(item["tags"])))
-		lines = append(lines, fmt.Sprintf("    %s%s", stringOf(item, "title"), expired))
-		ids = append(ids, stringOf(item, "id"))
-	}
-	if len(ids) > 0 {
-		lines = append(lines, fmt.Sprintf("> 下一步: memory_peek(ids=%s)", idsLiteral(ids)))
-	}
-	return strings.Join(lines, "\n")
-}
-
-// FormatPeek renders the summary listing.
-func FormatPeek(items []map[string]any) string {
-	lines := []string{}
-	ids := []string{}
-	for index, item := range items {
-		position := index + 1
-		switch statusOf(item) {
-		case "forbidden":
-			lines = append(lines, fmt.Sprintf("[%d] %s | [无权访问]", position, stringOf(item, "id")))
-			continue
-		case "not_found":
-			lines = append(lines, fmt.Sprintf("[%d] %s | [不存在]", position, stringOf(item, "id")))
-			continue
+			tierTag(item, now), date(item["updated_at"]), tagsLiteral(item["tags"])))
+		if returnTitle {
+			lines = append(lines, fmt.Sprintf("    %s", stringOf(item, "title")))
 		}
-		lines = append(lines, fmt.Sprintf("[%d] %s | %s | 更新 %s",
-			position, stringOf(item, "id"), stringOf(item, "group_slug"), date(item["updated_at"])))
-		lines = append(lines, fmt.Sprintf("    标题: %s", stringOf(item, "title")))
-		lines = append(lines, fmt.Sprintf("    摘要: %s", stringOf(item, "summary")))
+		if returnSummary {
+			lines = append(lines, fmt.Sprintf("    摘要: %s", stringOf(item, "summary")))
+		}
 		ids = append(ids, stringOf(item, "id"))
 	}
 	if len(ids) > 0 {
-		lines = append(lines, fmt.Sprintf("> 下一步: memory_read(ids=%s)", idsLiteral(ids)))
+		lines = append(lines, fmt.Sprintf("> 正文读取: memory_read(ids=%s)", idsLiteral(ids)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -156,9 +187,9 @@ func sliceRunes(s string, offset, limit int) (string, int) {
 	return s[startByte:endByte], runeIdx
 }
 
-// FormatRead renders full bodies with per-entry and per-call truncation. Offsets
-// and lengths are counted in characters (runes), matching the Python contract.
-func FormatRead(items []map[string]any, offset int) string {
+// FormatRead renders full bodies with per-entry and per-call truncation,
+// including archive annotations for recycle-bin entries.
+func FormatRead(items []map[string]any, offset int, now time.Time) string {
 	if offset < 0 {
 		offset = 0
 	}
@@ -184,8 +215,8 @@ func FormatRead(items []map[string]any, offset int) string {
 		available := totalRunes - start
 		take := min(maxTake, available)
 		consumed += take
-		header := fmt.Sprintf("===== %s | %s | 更新 %s =====",
-			stringOf(item, "id"), stringOf(item, "group_slug"), date(item["updated_at"]))
+		header := fmt.Sprintf("===== %s | %s | %s | 更新 %s =====",
+			stringOf(item, "id"), stringOf(item, "group_slug"), tierTag(item, now), date(item["updated_at"]))
 		if available > take {
 			header += fmt.Sprintf(" [截断: 本条剩余 %d 字符未返回]", available-take)
 			truncated = append(truncated, stringOf(item, "id"))

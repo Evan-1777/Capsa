@@ -46,23 +46,23 @@ func TestTokenizeMatchesPython(t *testing.T) {
 	}
 }
 
-func TestScoreMatchesPython(t *testing.T) {
+func TestScoreWithFields(t *testing.T) {
 	memory := map[string]any{
 		"id": "mem_a", "title": "架构设计要点", "summary": "关于架构",
 		"tags": `["设计","arch"]`, "body": "正文架构", "pinned": int64(1),
-		"review_at": "2026-09-01T00:00:00.000000+00:00",
 	}
 	terms := Tokenize("架构")
-	if got := Score(memory, terms, refNow, false); got != 6 {
-		t.Fatalf("Score meta = %v, want 6", got)
+	if got := ScoreWithFields(memory, terms, DefaultSearchFields); got != 8 {
+		t.Fatalf("Score meta (title 4 + summary 1 + persistent 3) = %v, want 8", got)
 	}
-	if got := Score(memory, terms, refNow, true); got != 6.2 {
-		t.Fatalf("Score body = %v, want 6.2", got)
+	allFields := SearchFields{Title: true, Summary: true, Tags: true, Body: true}
+	if got := ScoreWithFields(memory, terms, allFields); got != 8.2 {
+		t.Fatalf("Score body = %v, want 8.2", got)
 	}
 }
 
-func rankIDs(memories []map[string]any, query string) []string {
-	ranked := RankMemories(memories, query, refNow, false)
+func rankIDs(memories []map[string]any, query string, fields SearchFields) []string {
+	ranked := RankMemoriesWithFields(memories, query, fields)
 	out := make([]string, len(ranked))
 	for i, memory := range ranked {
 		out[i] = memory["id"].(string)
@@ -72,26 +72,74 @@ func rankIDs(memories []map[string]any, query string) []string {
 
 func fixtureMemories() []map[string]any {
 	return []map[string]any{
-		{"id": "mem_1", "title": "无关", "summary": "", "tags": `[]`,
+		{"id": "mem_1", "title": "无关", "summary": "摘要含架构", "tags": `["架构标签"]`, "body": "正文密钥",
 			"updated_at": "2026-10-02T00:00:00.000000+00:00", "pinned": int64(0)},
-		{"id": "mem_2", "title": "架构设计", "summary": "", "tags": `[]`,
-			"updated_at": "2026-10-01T00:00:00.000000+00:00", "pinned": int64(0)},
-		{"id": "mem_3", "title": "架构", "summary": "", "tags": `[]`,
+		{"id": "mem_2", "title": "架构设计", "summary": "", "tags": `[]`, "body": "",
+			"updated_at": "2026-10-01T00:00:00.000000+00:00", "pinned": int64(0),
+			"expires_at": "2026-12-01T00:00:00.000000+00:00"},
+		{"id": "mem_3", "title": "架构", "summary": "", "tags": `[]`, "body": "",
 			"updated_at": "2026-10-03T00:00:00.000000+00:00", "pinned": int64(1)},
 	}
 }
 
-func TestRankEmptyQueryBrowses(t *testing.T) {
-	want := []string{"mem_3", "mem_1", "mem_2"}
-	if got := rankIDs(fixtureMemories(), ""); !equalStrings(got, want) {
+func TestRankEmptyQueryUnifiedOrder(t *testing.T) {
+	// Persistent (mem_3) > Temporary (mem_2) > Regular (mem_1)
+	want := []string{"mem_3", "mem_2", "mem_1"}
+	if got := rankIDs(fixtureMemories(), "", DefaultSearchFields); !equalStrings(got, want) {
 		t.Fatalf("browse order = %v, want %v", got, want)
 	}
 }
 
-func TestRankKeywordFiltersAndOrders(t *testing.T) {
-	want := []string{"mem_3", "mem_2"}
-	if got := rankIDs(fixtureMemories(), "架构"); !equalStrings(got, want) {
-		t.Fatalf("ranked order = %v, want %v", got, want)
+func TestRankSearchFieldsIsolation(t *testing.T) {
+	// Title-only must exclude mem_1 (which only matches in summary/tags).
+	wantTitle := []string{"mem_3", "mem_2"}
+	if got := rankIDs(fixtureMemories(), "架构", SearchFields{Title: true}); !equalStrings(got, wantTitle) {
+		t.Fatalf("title-only = %v, want %v", got, wantTitle)
+	}
+	// Body-only matches mem_1 on 正文密钥.
+	wantBody := []string{"mem_1"}
+	if got := rankIDs(fixtureMemories(), "密钥", SearchFields{Body: true}); !equalStrings(got, wantBody) {
+		t.Fatalf("body-only = %v, want %v", got, wantBody)
+	}
+}
+
+func TestComputeTierAndLayerOf(t *testing.T) {
+	oldUpdated := "2026-06-01T00:00:00.000000+00:00" // ~4 months before refNow (2026-10-08)
+	recentUpdated := "2026-09-01T00:00:00.000000+00:00"
+
+	persistentOld := map[string]any{"pinned": int64(1), "updated_at": oldUpdated, "shallow_months": int64(1)}
+	if got := ComputeTier(persistentOld, refNow); got != TierPersistent {
+		t.Fatalf("persistent tier = %q", got)
+	}
+	if got := LayerOf(persistentOld, refNow); got != "shallow" {
+		t.Fatalf("persistent layer = %q", got)
+	}
+
+	tempOld := map[string]any{"expires_at": "2026-12-01T00:00:00.000000+00:00", "updated_at": oldUpdated, "shallow_months": int64(1)}
+	if got := ComputeTier(tempOld, refNow); got != TierTemporary {
+		t.Fatalf("temporary tier = %q", got)
+	}
+	if got := LayerOf(tempOld, refNow); got != "shallow" {
+		t.Fatalf("temporary layer = %q", got)
+	}
+
+	regular := map[string]any{"updated_at": oldUpdated, "shallow_months": int64(3)}
+	if got := ComputeTier(regular, refNow); got != TierDeep {
+		t.Fatalf("3-month cutoff for 4-month-old memory = %q, want deep", got)
+	}
+	regular["shallow_months"] = int64(6)
+	if got := ComputeTier(regular, refNow); got != TierShallow {
+		t.Fatalf("6-month cutoff for 4-month-old memory = %q, want shallow", got)
+	}
+
+	recent := map[string]any{"updated_at": recentUpdated, "shallow_months": int64(3)}
+	if got := ComputeTier(recent, refNow); got != TierShallow {
+		t.Fatalf("recent tier = %q, want shallow", got)
+	}
+
+	deleted := map[string]any{"updated_at": recentUpdated, "deleted_at": "2026-10-05T00:00:00.000000+00:00"}
+	if got := LayerOf(deleted, refNow); got != "trash" {
+		t.Fatalf("deleted layer = %q, want trash", got)
 	}
 }
 
@@ -109,17 +157,13 @@ func TestTitleSimilarityAndFind(t *testing.T) {
 	}
 }
 
-func TestIsExpired(t *testing.T) {
-	past := "2026-09-01T00:00:00.000000+00:00"
-	future := "2026-11-01T00:00:00.000000+00:00"
-	if !IsExpired(&past, refNow) {
-		t.Fatal("past review_at must be expired")
+func TestNormalizeTimestamp(t *testing.T) {
+	got, err := NormalizeTimestamp("2026-09-01T08:00:00+08:00")
+	if err != nil {
+		t.Fatalf("NormalizeTimestamp: %v", err)
 	}
-	if IsExpired(&future, refNow) {
-		t.Fatal("future review_at must not be expired")
-	}
-	if IsExpired(nil, refNow) {
-		t.Fatal("nil review_at must not be expired")
+	if got != "2026-09-01T00:00:00.000000+00:00" {
+		t.Fatalf("NormalizeTimestamp = %q", got)
 	}
 }
 

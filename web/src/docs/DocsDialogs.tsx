@@ -217,11 +217,7 @@ export function DocumentDialog({
       <form onSubmit={submit} className="space-y-4">
         <h2 className="text-title-large text-on-surface">新建文档</h2>
 
-        <FormField
-          label="文档路径"
-          id="document-path"
-          hint="允许斜杠分层，例如 guides/overview.md；可直接修改前缀以调整所属目录，同名文档不会被覆盖"
-        >
+        <FormField label="文档路径" id="document-path">
           <Input
             id="document-path"
             aria-label="文档路径"
@@ -302,11 +298,7 @@ export function RenameDocumentDialog({
       <form onSubmit={submit} className="space-y-4">
         <h2 className="text-title-large text-on-surface">重命名文档</h2>
 
-        <FormField
-          label="文档路径"
-          id="rename-path"
-          hint="同作用域下路径必须唯一；修改斜杠目录段即可移动文档所属文件夹"
-        >
+        <FormField label="文档路径" id="rename-path">
           <Input
             id="rename-path"
             aria-label="文档路径"

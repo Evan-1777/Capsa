@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"capsa/internal/auth"
@@ -139,12 +141,15 @@ func NewWebHandler() http.Handler {
 	mux.Handle("DELETE /api/groups/{slug}", apiHandler(groupDelete))
 	mux.Handle("GET /api/memories", apiHandler(memoriesList))
 	mux.Handle("POST /api/memories", apiHandler(memoryCreate))
+	mux.Handle("POST /api/memories/trash/empty", apiHandler(memoryEmptyTrash))
 	mux.Handle("GET /api/memories/{id}", apiHandler(memoryDetail))
 	mux.Handle("PUT /api/memories/{id}", apiHandler(memoryUpdate))
 	mux.Handle("DELETE /api/memories/{id}", apiHandler(memoryDelete))
 	mux.Handle("POST /api/memories/{id}/restore", apiHandler(memoryRestore))
+	mux.Handle("DELETE /api/memories/{id}/purge", apiHandler(memoryPurge))
 	mux.Handle("GET /api/keys", apiHandler(keyList))
 	mux.Handle("POST /api/keys", apiHandler(keyCreate))
+	mux.Handle("PUT /api/keys/{id}", apiHandler(keyUpdate))
 	mux.Handle("POST /api/keys/{id}/revoke", apiHandler(keyRevoke))
 	mux.Handle("DELETE /api/keys/{id}", apiHandler(keyDelete))
 	registerWorkspaceRoutes(mux)
@@ -158,33 +163,42 @@ func grantsOf(r *http.Request) map[string]string {
 	return map[string]string{}
 }
 
-func listItem(row map[string]any, grants map[string]string) map[string]any {
+func isExpiredRow(row map[string]any, now time.Time) bool {
+	raw, ok := row["expires_at"].(string)
+	if !ok || raw == "" {
+		return false
+	}
+	moment, err := db.ParseTimestamp(raw)
+	if err != nil {
+		return false
+	}
+	return !moment.After(now)
+}
+
+func listItem(row map[string]any, grants map[string]string, now time.Time) map[string]any {
 	item := map[string]any{}
 	for _, field := range dal.WebListFields {
 		item[field] = row[field]
 	}
 	item["tags"] = retrieval.DecodeTags(item["tags"])
 	item["permission"] = permissions.PermissionFor(grants, row["group_slug"].(string))
-	item["is_overdue"] = retrieval.IsExpired(reviewAtOf(row), nowUTC())
+	item["persistent"] = retrieval.IsPersistent(row)
+	item["tier"] = retrieval.ComputeTier(row, now)
+	item["is_expired"] = isExpiredRow(row, now)
 	return item
 }
 
-func detailItem(row map[string]any, grants map[string]string) map[string]any {
+func detailItem(row map[string]any, grants map[string]string, now time.Time) map[string]any {
 	item := map[string]any{}
 	for _, field := range dal.WebItemFields {
 		item[field] = row[field]
 	}
 	item["tags"] = retrieval.DecodeTags(item["tags"])
 	item["permission"] = permissions.PermissionFor(grants, row["group_slug"].(string))
-	item["is_overdue"] = retrieval.IsExpired(reviewAtOf(row), nowUTC())
+	item["persistent"] = retrieval.IsPersistent(row)
+	item["tier"] = retrieval.ComputeTier(row, now)
+	item["is_expired"] = isExpiredRow(row, now)
 	return item
-}
-
-func reviewAtOf(row map[string]any) *string {
-	if text, ok := row["review_at"].(string); ok {
-		return &text
-	}
-	return nil
 }
 
 func boundedInt(r *http.Request, name string, fallback, minimum, maximum int) (int, error) {
@@ -222,19 +236,28 @@ func jsonBody(r *http.Request) (map[string]any, error) {
 	return payload, nil
 }
 
-func reviewAtValue(value any) (*string, error) {
-	if value == nil {
-		return nil, nil
+// optionalJSONBody decodes an optional JSON object body, treating an empty
+// request body (io.EOF) as an empty map so callers may omit the payload.
+func optionalJSONBody(r *http.Request) (map[string]any, error) {
+	if r.Body == nil {
+		return map[string]any{}, nil
 	}
-	text, ok := value.(string)
-	if !ok {
-		return nil, validation(fmt.Sprintf("review_at 不是合法的 ISO 8601 时间：%v", value))
+	var payload map[string]any
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		if errors.Is(err, io.EOF) {
+			return map[string]any{}, nil
+		}
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return nil, errPayloadTooLarge
+		}
+		return nil, validation("请求体不是合法的 JSON")
 	}
-	normalized, err := retrieval.NormalizeReviewAt(text)
-	if err != nil {
-		return nil, validation(fmt.Sprintf("review_at 不是合法的 ISO 8601 时间：%s", text))
+	if payload == nil {
+		return map[string]any{}, nil
 	}
-	return &normalized, nil
+	return payload, nil
 }
 
 func tagsValue(value any) ([]string, error) {
@@ -262,30 +285,12 @@ func groupDescription(value any) (string, error) {
 	}
 	text, ok := value.(string)
 	if !ok {
-		return "", validation("分类描述必须是字符串")
+		return "", validation("组别描述必须是字符串")
 	}
 	if utf8.RuneCountInString(text) > groupDescMax {
-		return "", validation(fmt.Sprintf("分类描述超长 (当前 %d 字符，上限 %d 字符)", utf8.RuneCountInString(text), groupDescMax))
+		return "", validation(fmt.Sprintf("组别描述超长 (当前 %d 字符，上限 %d 字符)", utf8.RuneCountInString(text), groupDescMax))
 	}
 	return text, nil
-}
-
-func toInt(value any) (int, bool) {
-	switch typed := value.(type) {
-	case bool:
-		if typed {
-			return 1, true
-		}
-		return 0, true
-	case float64:
-		return int(typed), true
-	case int:
-		return typed, true
-	case int64:
-		return int(typed), true
-	default:
-		return 0, false
-	}
 }
 
 func authMe(w http.ResponseWriter, r *http.Request) error {
@@ -307,7 +312,7 @@ func withDB(fn func(handle *sql.DB) error) error {
 func listGroups(w http.ResponseWriter, r *http.Request) error {
 	workspaceID := r.URL.Query().Get("workspace_id")
 	var items []map[string]any
-	if err := withDB(func(handle *sql.DB) error {
+	if err := withMemoryDB(func(handle *sql.DB) error {
 		if workspaceID != "" {
 			if refusal := requireWorkspaceMode(handle, workspaceID, "memory"); refusal != nil {
 				return refusal
@@ -331,7 +336,7 @@ func groupCreate(w http.ResponseWriter, r *http.Request) error {
 	if !slugPattern.MatchString(slug) {
 		return validation("slug 只能使用字母、数字、下划线与连字符，长度 1~32 且首字符不能是连字符")
 	}
-	name, message := requireText(stringValue(payload["name"]), groupNameMax, "分类名称")
+	name, message := requireText(stringValue(payload["name"]), groupNameMax, "组别名称")
 	if message != "" {
 		return validation(message)
 	}
@@ -355,7 +360,7 @@ func groupCreate(w http.ResponseWriter, r *http.Request) error {
 		case "wrong_mode":
 			return validation(fmt.Sprintf("工作区 %s 不是记忆工作区", workspaceID))
 		case "duplicate":
-			return validation(fmt.Sprintf("分组 %s 已存在", slug))
+			return validation(fmt.Sprintf("组别 %s 已存在", slug))
 		}
 		groups, err := dal.ListGroupsWithCountsInWorkspace(handle, map[string]string{slug: "rw"}, workspaceID)
 		if err != nil || len(groups) == 0 {
@@ -387,12 +392,12 @@ func groupUpdate(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		if group == nil {
-			return fail(CodeNotFound, fmt.Sprintf("分组 %s 不存在", slug), 404)
+			return fail(CodeNotFound, fmt.Sprintf("组别 %s 不存在", slug), 404)
 		}
 		nextName := group["name"].(string)
 		nextDescription := group["description"].(string)
 		if name != nil {
-			value, message := requireText(stringValue(name), groupNameMax, "分类名称")
+			value, message := requireText(stringValue(name), groupNameMax, "组别名称")
 			if message != "" {
 				return validation(message)
 			}
@@ -432,9 +437,9 @@ func groupDelete(w http.ResponseWriter, r *http.Request) error {
 	}
 	switch status {
 	case "not_found":
-		return fail(CodeNotFound, fmt.Sprintf("分组 %s 不存在", slug), 404)
+		return fail(CodeNotFound, fmt.Sprintf("组别 %s 不存在", slug), 404)
 	case "has_memories":
-		return validation(fmt.Sprintf("分类 %s 下仍有记忆（含回收站），禁止删除", slug))
+		return validation(fmt.Sprintf("组别 %s 下仍有记忆（含回收站），禁止删除", slug))
 	}
 	return ok(w, map[string]any{"slug": slug, "action": "deleted"})
 }
@@ -445,8 +450,19 @@ func memoriesList(w http.ResponseWriter, r *http.Request) error {
 	if query.Has("status") {
 		status = query.Get("status")
 	}
-	if status != "active" && status != "overdue" && status != "deleted" {
-		return validation(fmt.Sprintf("status 只接受 active / overdue / deleted，本次传入 %s", status))
+	if status != "active" && status != "deleted" {
+		return validation(fmt.Sprintf("status 只接受 active / deleted，本次传入 %s", status))
+	}
+	tier := strings.TrimSpace(query.Get("tier"))
+	if tier != "" {
+		switch tier {
+		case retrieval.TierPersistent, retrieval.TierTemporary, retrieval.TierShallow, retrieval.TierDeep:
+		default:
+			return validation(fmt.Sprintf("tier 只接受 persistent / temporary / shallow / deep，本次传入 %s", tier))
+		}
+		if status != "active" {
+			return validation("tier 筛选只作用于活跃条目，status 需为 active")
+		}
 	}
 	limit, err := boundedInt(r, "limit", 20, 1, 100)
 	if err != nil {
@@ -463,20 +479,33 @@ func memoriesList(w http.ResponseWriter, r *http.Request) error {
 	}
 	workspaceID := query.Get("workspace_id")
 	grants := grantsOf(r)
+	now := nowUTC()
 	var rows []map[string]any
 	var total int
-	if err := withDB(func(handle *sql.DB) error {
+	if err := withMemoryDB(func(handle *sql.DB) error {
 		if workspaceID != "" {
 			if refusal := requireWorkspaceMode(handle, workspaceID, "memory"); refusal != nil {
 				return refusal
 			}
 		}
-		if keyword != "" {
-			candidates, err := dal.ListActiveMemoriesForSearchInWorkspace(handle, grants, workspaceID, group, false)
+		if keyword != "" || tier == retrieval.TierShallow || tier == retrieval.TierDeep {
+			candidates, err := dal.ListMemoriesForCatalogAndSearch(handle, grants, workspaceID, group, true, false, false)
 			if err != nil {
 				return err
 			}
-			ranked := retrieval.RankMemories(candidates, keyword, nowUTC(), false)
+			if tier != "" {
+				filtered := make([]map[string]any, 0, len(candidates))
+				for _, row := range candidates {
+					if retrieval.ComputeTier(row, now) == tier {
+						filtered = append(filtered, row)
+					}
+				}
+				candidates = filtered
+			}
+			ranked := candidates
+			if keyword != "" {
+				ranked = retrieval.RankMemoriesWithFields(candidates, keyword, retrieval.DefaultSearchFields)
+			}
 			total = len(ranked)
 			start := offset
 			if start > len(ranked) {
@@ -490,14 +519,14 @@ func memoriesList(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		}
 		var err error
-		rows, total, err = dal.ListMemoriesForWebInWorkspace(handle, grants, workspaceID, status, group, offset, limit)
+		rows, total, err = dal.ListMemoriesForWebInWorkspace(handle, grants, workspaceID, status, tier, group, offset, limit)
 		return err
 	}); err != nil {
 		return err
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, listItem(row, grants))
+		items = append(items, listItem(row, grants, now))
 	}
 	return ok(w, map[string]any{"items": items, "total": total, "offset": offset, "limit": limit})
 }
@@ -506,7 +535,7 @@ func memoryDetail(w http.ResponseWriter, r *http.Request) error {
 	memoryID := r.PathValue("id")
 	grants := grantsOf(r)
 	var row map[string]any
-	if err := withDB(func(handle *sql.DB) error {
+	if err := withMemoryDB(func(handle *sql.DB) error {
 		var err error
 		row, err = dal.GetMemoryForWeb(handle, memoryID)
 		return err
@@ -516,7 +545,7 @@ func memoryDetail(w http.ResponseWriter, r *http.Request) error {
 	if row == nil || row["deleted_at"] != nil || permissions.PermissionFor(grants, row["group_slug"].(string)) == "" {
 		return fail(CodeNotFound, missingMessage, 404)
 	}
-	return ok(w, detailItem(row, grants))
+	return ok(w, detailItem(row, grants, nowUTC()))
 }
 
 func memoryCreate(w http.ResponseWriter, r *http.Request) error {
@@ -529,7 +558,7 @@ func memoryCreate(w http.ResponseWriter, r *http.Request) error {
 		return validation("group 不能为空")
 	}
 	if permissions.PermissionFor(grantsOf(r), group) != "rw" {
-		return fail(CodeForbidden, fmt.Sprintf("对分组 %s 没有写权限，拒绝写入", group), 403)
+		return fail(CodeForbidden, fmt.Sprintf("对组别 %s 没有写权限，拒绝写入", group), 403)
 	}
 	title, message := requireText(stringValue(payload["title"]), TitleMax, "标题")
 	if message != "" {
@@ -547,21 +576,42 @@ func memoryCreate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	stamp, err := reviewAtValue(payload["review_at"])
-	if err != nil {
-		return err
+	persistent := false
+	if raw, present := payload["persistent"]; present && raw != nil {
+		val, okBool := raw.(bool)
+		if !okBool {
+			return validation("persistent 必须是布尔值")
+		}
+		persistent = val
+	}
+	var expiresAt *string
+	if raw, present := payload["expires_at"]; present && raw != nil {
+		text, okStr := raw.(string)
+		if !okStr {
+			return validation("expires_at 必须是 ISO 8601 时间字符串")
+		}
+		if strings.TrimSpace(text) != "" {
+			if persistent {
+				return validation("持久记忆与临时记忆（expires_at）互斥，不能同时设置")
+			}
+			normalized, msg := parseFutureExpiresAt(text, nowUTC())
+			if msg != "" {
+				return validation(msg)
+			}
+			expiresAt = &normalized
+		}
 	}
 	var memoryID string
 	var similar []map[string]any
-	if err := withDB(func(handle *sql.DB) error {
+	if err := withMemoryDB(func(handle *sql.DB) error {
 		candidates, err := dal.ListActiveTitlesByGroup(handle, group)
 		if err != nil {
 			return err
 		}
 		similar = retrieval.FindSimilarMemories(candidates, title, retrieval.SimilarityThreshold)
-		memoryID, err = dal.InsertMemory(handle, group, title, summary, body, tags, stamp, nil)
+		memoryID, err = dal.InsertMemory(handle, group, title, summary, body, tags, persistent, expiresAt, nil)
 		if err != nil {
-			return validation(fmt.Sprintf("分组 %s 不存在，拒绝写入", group))
+			return validation(fmt.Sprintf("组别 %s 不存在，拒绝写入", group))
 		}
 		return nil
 	}); err != nil {
@@ -574,21 +624,21 @@ func memoryCreate(w http.ResponseWriter, r *http.Request) error {
 	return ok(w, map[string]any{"id": memoryID, "similar_items": items})
 }
 
-// locateWritableWeb resolves the target and its write permission; a non-nil
-// result is the refusal to return.
-func locateWritableWeb(handle *sql.DB, memoryID string, grants map[string]string) error {
-	results, err := dal.GetMemoriesBatchForAccess(handle, []string{memoryID}, grants)
+// locateWritableWeb resolves the target and its write permission; returning the
+// authorized row or a non-nil refusal.
+func locateWritableWeb(handle *sql.DB, memoryID string, grants map[string]string) (map[string]any, error) {
+	results, err := dal.GetMemoriesBatchForAccess(handle, []string{memoryID}, grants, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(results) == 0 || results[0]["status"] != "authorized" {
-		return fail(CodeNotFound, missingMessage, 404)
+		return nil, fail(CodeNotFound, missingMessage, 404)
 	}
 	group := results[0]["group_slug"].(string)
 	if permissions.PermissionFor(grants, group) != "rw" {
-		return fail(CodeForbidden, fmt.Sprintf("对分组 %s 只有只读权限，拒绝修改", group), 403)
+		return nil, fail(CodeForbidden, fmt.Sprintf("对组别 %s 只有只读权限，拒绝修改", group), 403)
 	}
-	return nil
+	return results[0], nil
 }
 
 func memoryUpdate(w http.ResponseWriter, r *http.Request) error {
@@ -597,13 +647,40 @@ func memoryUpdate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	clearReview, _ := payload["clear_review_at"].(bool)
-	if clearReview && payload["review_at"] != nil {
-		return validation("clear_review_at 与 review_at 不能同时给出")
+	hasPersistent := false
+	persistentVal := false
+	if raw, present := payload["persistent"]; present && raw != nil {
+		val, okBool := raw.(bool)
+		if !okBool {
+			return validation("persistent 必须是布尔值")
+		}
+		hasPersistent = true
+		persistentVal = val
+	}
+	hasExpires := false
+	expiresVal := ""
+	if raw, present := payload["expires_at"]; present && raw != nil {
+		text, okStr := raw.(string)
+		if !okStr {
+			return validation("expires_at 必须是 ISO 8601 时间字符串")
+		}
+		if strings.TrimSpace(text) != "" {
+			hasExpires = true
+			expiresVal = text
+		}
+	}
+	clearExpires := false
+	if raw, present := payload["clear_expires_at"]; present && raw != nil {
+		val, okBool := raw.(bool)
+		if !okBool {
+			return validation("clear_expires_at 必须是布尔值")
+		}
+		clearExpires = val
 	}
 	grants := grantsOf(r)
-	return withDB(func(handle *sql.DB) error {
-		if refusal := locateWritableWeb(handle, memoryID, grants); refusal != nil {
+	return withMemoryDB(func(handle *sql.DB) error {
+		existing, refusal := locateWritableWeb(handle, memoryID, grants)
+		if refusal != nil {
 			return refusal
 		}
 		fields := map[string]any{}
@@ -635,21 +712,12 @@ func memoryUpdate(w http.ResponseWriter, r *http.Request) error {
 			}
 			fields["tags"] = value
 		}
-		if payload["pinned"] != nil {
-			value, valid := toInt(payload["pinned"])
-			if !valid {
-				return validation("pinned 必须是布尔或整数")
-			}
-			fields["pinned"] = value
+		lifecycleFields, msg := validateMemoryLifecycleUpdate(existing, hasPersistent, persistentVal, hasExpires, expiresVal, clearExpires, nowUTC())
+		if msg != "" {
+			return validation(msg)
 		}
-		if clearReview {
-			fields["review_at"] = nil
-		} else if payload["review_at"] != nil {
-			value, err := reviewAtValue(payload["review_at"])
-			if err != nil {
-				return err
-			}
-			fields["review_at"] = *value
+		for k, v := range lifecycleFields {
+			fields[k] = v
 		}
 		if len(fields) == 0 {
 			return validation("至少提供一个待更新字段")
@@ -672,8 +740,8 @@ func memoryDelete(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	grants := grantsOf(r)
-	return withDB(func(handle *sql.DB) error {
-		if refusal := locateWritableWeb(handle, memoryID, grants); refusal != nil {
+	return withMemoryDB(func(handle *sql.DB) error {
+		if _, refusal := locateWritableWeb(handle, memoryID, grants); refusal != nil {
 			return refusal
 		}
 		reason, _ := payload["reason"].(string)
@@ -693,8 +761,26 @@ func memoryDelete(w http.ResponseWriter, r *http.Request) error {
 
 func memoryRestore(w http.ResponseWriter, r *http.Request) error {
 	memoryID := r.PathValue("id")
+	payload, err := optionalJSONBody(r)
+	if err != nil {
+		return err
+	}
+	var newExpiresAt *string
+	if raw, present := payload["expires_at"]; present && raw != nil {
+		text, okStr := raw.(string)
+		if !okStr {
+			return validation("expires_at 必须是 ISO 8601 时间字符串")
+		}
+		if strings.TrimSpace(text) != "" {
+			normalized, msg := parseFutureExpiresAt(text, nowUTC())
+			if msg != "" {
+				return validation(msg)
+			}
+			newExpiresAt = &normalized
+		}
+	}
 	grants := grantsOf(r)
-	return withDB(func(handle *sql.DB) error {
+	return withMemoryDB(func(handle *sql.DB) error {
 		row, err := dal.GetMemoryForWeb(handle, memoryID)
 		if err != nil {
 			return err
@@ -704,16 +790,87 @@ func memoryRestore(w http.ResponseWriter, r *http.Request) error {
 		}
 		group := row["group_slug"].(string)
 		if permissions.PermissionFor(grants, group) != "rw" {
-			return fail(CodeForbidden, fmt.Sprintf("对分组 %s 只有只读权限，拒绝修改", group), 403)
+			return fail(CodeForbidden, fmt.Sprintf("对组别 %s 只有只读权限，拒绝修改", group), 403)
 		}
 		if row["deleted_at"] == nil {
 			return fail(CodeNotFound, missingMessage, 404)
 		}
-		if _, err := dal.RestoreMemory(handle, memoryID); err != nil {
+		if _, err := dal.RestoreMemory(handle, memoryID, newExpiresAt, db.UtcNow()); err != nil {
 			return err
 		}
 		return ok(w, map[string]any{"id": memoryID, "action": "restored"})
 	})
+}
+
+func memoryPurge(w http.ResponseWriter, r *http.Request) error {
+	memoryID := r.PathValue("id")
+	grants := grantsOf(r)
+	return withMemoryDB(func(handle *sql.DB) error {
+		row, err := dal.GetMemoryForWeb(handle, memoryID)
+		if err != nil {
+			return err
+		}
+		if row == nil || row["deleted_at"] == nil || permissions.PermissionFor(grants, row["group_slug"].(string)) == "" {
+			return fail(CodeNotFound, missingMessage, 404)
+		}
+		group := row["group_slug"].(string)
+		if permissions.PermissionFor(grants, group) != "rw" {
+			return fail(CodeForbidden, fmt.Sprintf("对组别 %s 只有只读权限，拒绝永久删除", group), 403)
+		}
+		purged, err := dal.PurgeMemory(handle, memoryID)
+		if err != nil {
+			return err
+		}
+		if !purged {
+			return fail(CodeNotFound, missingMessage, 404)
+		}
+		return ok(w, map[string]any{"id": memoryID, "action": "purged"})
+	})
+}
+
+func memoryEmptyTrash(w http.ResponseWriter, r *http.Request) error {
+	payload, err := optionalJSONBody(r)
+	if err != nil {
+		return err
+	}
+	workspaceID := ""
+	if raw, present := payload["workspace_id"]; present && raw != nil {
+		text, okStr := raw.(string)
+		if !okStr {
+			return validation("workspace_id 必须是字符串")
+		}
+		workspaceID = strings.TrimSpace(text)
+	}
+	group := ""
+	if raw, present := payload["group"]; present && raw != nil {
+		text, okStr := raw.(string)
+		if !okStr {
+			return validation("group 必须是字符串")
+		}
+		group = strings.TrimSpace(text)
+	}
+	grants := grantsOf(r)
+	if group != "" && permissions.PermissionFor(grants, group) != "rw" {
+		return fail(CodeForbidden, fmt.Sprintf("对组别 %s 没有写权限，拒绝清空回收站", group), 403)
+	}
+	allowAll, writableGroups := writableScopesFrom(grants)
+	if !allowAll && len(writableGroups) == 0 {
+		return fail(CodeForbidden, "当前凭据没有任何可写组别，拒绝清空回收站", 403)
+	}
+	var deletedCount int64
+	if err := withMemoryDB(func(handle *sql.DB) error {
+		if workspaceID != "" {
+			if refusal := requireWorkspaceMode(handle, workspaceID, "memory"); refusal != nil {
+				return refusal
+			}
+		}
+		var err error
+		deletedCount, err = dal.EmptyTrashMemories(handle, writableGroups, allowAll, workspaceID, group)
+		return err
+	}); err != nil {
+		return err
+	}
+	return ok(w, map[string]any{"deleted_count": deletedCount, "action": "emptied"})
 }
 
 func checkKeyGuard(r *http.Request, targetID string) error {
@@ -743,6 +900,32 @@ func keyList(w http.ResponseWriter, r *http.Request) error {
 	return ok(w, map[string]any{"items": items, "total": len(items), "offset": 0, "limit": len(items)})
 }
 
+func validateKeyScopes(handle *sql.DB, rawScopes map[string]any) (map[string]string, error) {
+	if len(rawScopes) == 0 {
+		return nil, validation("scopes 必须是非空字典")
+	}
+	groups, err := dal.ListGroups(handle)
+	if err != nil {
+		return nil, err
+	}
+	existing := map[string]bool{}
+	for _, group := range groups {
+		existing[group["slug"].(string)] = true
+	}
+	scopes := map[string]string{}
+	for slug, raw := range rawScopes {
+		if slug != "*" && !existing[slug] {
+			return nil, validation(fmt.Sprintf("组别 %s 不存在", slug))
+		}
+		permission, _ := raw.(string)
+		if permission != "r" && permission != "rw" {
+			return nil, validation(fmt.Sprintf("权限值必须是 r 或 rw，本次传入 %v", raw))
+		}
+		scopes[slug] = permission
+	}
+	return scopes, nil
+}
+
 func keyCreate(w http.ResponseWriter, r *http.Request) error {
 	payload, err := jsonBody(r)
 	if err != nil {
@@ -752,42 +935,102 @@ func keyCreate(w http.ResponseWriter, r *http.Request) error {
 	if message != "" {
 		return validation(message)
 	}
-	rawScopes, ok := payload["scopes"].(map[string]any)
-	if !ok || len(rawScopes) == 0 {
+	rawScopes, okMap := payload["scopes"].(map[string]any)
+	if !okMap || len(rawScopes) == 0 {
 		return validation("scopes 必须是非空字典")
 	}
-	scopes := map[string]string{}
+	var scopes map[string]string
 	var keyID, plain string
 	if err := withDB(func(handle *sql.DB) error {
-		groups, err := dal.ListGroups(handle)
+		var err error
+		scopes, err = validateKeyScopes(handle, rawScopes)
 		if err != nil {
 			return err
 		}
-		existing := map[string]bool{}
-		for _, group := range groups {
-			existing[group["slug"].(string)] = true
-		}
-		for slug, raw := range rawScopes {
-			if slug != "*" && !existing[slug] {
-				return validation(fmt.Sprintf("分组 %s 不存在", slug))
-			}
-			permission, _ := raw.(string)
-			if permission != "r" && permission != "rw" {
-				return validation(fmt.Sprintf("权限值必须是 r 或 rw，本次传入 %v", raw))
-			}
-			scopes[slug] = permission
-		}
 		keyID, plain = auth.IssueKey()
-		if err := dal.CreateKey(handle, keyID, name, ids.HashToken(plain), scopes); err != nil {
-			return err
-		}
-		return nil
+		return dal.CreateKey(handle, keyID, name, ids.HashToken(plain), scopes)
 	}); err != nil {
 		return err
 	}
 	return okStatus(w, map[string]any{
 		"id": keyID, "name": name, "token": plain, "scopes": scopes, "created_at": db.UtcNow(),
 	}, 201)
+}
+
+func keyUpdate(w http.ResponseWriter, r *http.Request) error {
+	targetID := r.PathValue("id")
+	if targetID == permissions.AdminKeyID {
+		return validation("环境变量管理员凭据不受管理接口支持，请通过环境变量变更或重启服务完成轮换")
+	}
+	payload, err := jsonBody(r)
+	if err != nil {
+		return err
+	}
+	_, hasName := payload["name"]
+	_, hasScopes := payload["scopes"]
+	if !hasName && !hasScopes {
+		return validation("至少提供一个待更新字段")
+	}
+	var namePtr *string
+	if hasName {
+		value, message := requireText(stringValue(payload["name"]), keyNameMax, "Key 名称")
+		if message != "" {
+			return validation(message)
+		}
+		namePtr = &value
+	}
+	var rawScopes map[string]any
+	if hasScopes {
+		var okMap bool
+		rawScopes, okMap = payload["scopes"].(map[string]any)
+		if !okMap || len(rawScopes) == 0 {
+			return validation("scopes 必须是非空字典")
+		}
+	}
+	token := AccessTokenFrom(r.Context())
+	isCurrent := token != nil && token.KeyID == targetID
+	var updated map[string]any
+	if err := withDB(func(handle *sql.DB) error {
+		existing, err := dal.GetKey(handle, targetID)
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			return fail(CodeNotFound, fmt.Sprintf("Key %s 不存在", targetID), 404)
+		}
+		if existing["revoked_at"] != nil {
+			return validation(fmt.Sprintf("Key %s 已吊销，无法编辑", targetID))
+		}
+		nextName := existing["name"].(string)
+		if namePtr != nil {
+			nextName = *namePtr
+		}
+		nextScopes := existing["scopes"].(map[string]string)
+		if hasScopes {
+			nextScopes, err = validateKeyScopes(handle, rawScopes)
+			if err != nil {
+				return err
+			}
+			if isCurrent && nextScopes["*"] != "rw" {
+				return validation("禁止移除当前管理凭据的全局读写权限，防止管理台自锁")
+			}
+		}
+		status, err := dal.UpdateKey(handle, targetID, nextName, nextScopes)
+		if err != nil {
+			return err
+		}
+		switch status {
+		case "not_found":
+			return fail(CodeNotFound, fmt.Sprintf("Key %s 不存在", targetID), 404)
+		case "already_revoked":
+			return validation(fmt.Sprintf("Key %s 已吊销，无法编辑", targetID))
+		}
+		updated, err = dal.GetKey(handle, targetID)
+		return err
+	}); err != nil {
+		return err
+	}
+	return ok(w, updated)
 }
 
 func keyRevoke(w http.ResponseWriter, r *http.Request) error {

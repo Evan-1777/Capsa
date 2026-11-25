@@ -8,7 +8,7 @@ import (
 
 func newDocsFixture(t *testing.T, handle *sql.DB) (string, string) {
 	t.Helper()
-	workspace, err := CreateWorkspace(handle, "文档区", "", "docs")
+	workspace, err := CreateWorkspace(handle, "文档区", "", "docs", 3)
 	if err != nil || workspace == nil {
 		t.Fatalf("create docs workspace: %v %v", workspace, err)
 	}
@@ -184,7 +184,7 @@ func TestDocCategoryLifecycleAndAccessID(t *testing.T) {
 	}
 
 	// 记忆工作区下的分类行不参与 /mcp/docs 鉴权。
-	memory, err := CreateWorkspace(handle, "记忆区", "", "memory")
+	memory, err := CreateWorkspace(handle, "记忆区", "", "memory", 3)
 	if err != nil {
 		t.Fatalf("memory workspace: %v", err)
 	}
@@ -383,5 +383,60 @@ func TestMoveDocumentsByPrefix(t *testing.T) {
 	}
 	if doc, _ := GetDocumentByPath(handle, workspaceID, "category", categoryID, "a/b/x.md"); doc == nil || doc["content"] != "a/b/b/x.md" {
 		t.Fatalf("upward moved a/b/x.md = %v", doc)
+	}
+}
+
+func TestDocCategorySortOrderAndReorder(t *testing.T) {
+	handle := newTestDB(t)
+	ws, err := CreateWorkspace(handle, "排序区", "", "docs", 3)
+	if err != nil {
+		t.Fatalf("create ws: %v", err)
+	}
+	wsID := ws["id"].(string)
+	otherWS, err := CreateWorkspace(handle, "其他区", "", "docs", 3)
+	if err != nil {
+		t.Fatalf("create other ws: %v", err)
+	}
+	otherCat, err := CreateDocCategory(handle, otherWS["id"].(string), "跨区", "")
+	if err != nil {
+		t.Fatalf("create other cat: %v", err)
+	}
+
+	c1, err := CreateDocCategory(handle, wsID, "一", "")
+	if err != nil || c1["sort_order"] != int64(0) {
+		t.Fatalf("c1 = %v err=%v", c1, err)
+	}
+	c2, err := CreateDocCategory(handle, wsID, "二", "")
+	if err != nil || c2["sort_order"] != int64(1) {
+		t.Fatalf("c2 = %v err=%v", c2, err)
+	}
+	c3, err := CreateDocCategory(handle, wsID, "三", "")
+	if err != nil || c3["sort_order"] != int64(2) {
+		t.Fatalf("c3 = %v err=%v", c3, err)
+	}
+	id1, id2, id3 := c1["id"].(string), c2["id"].(string), c3["id"].(string)
+
+	// Mismatch cases: duplicate, missing, extra, cross-workspace.
+	for _, bad := range [][]string{
+		{id1, id1, id2},
+		{id1, id2},
+		{id1, id2, id3, "cat_extra"},
+		{id1, id2, otherCat["id"].(string)},
+	} {
+		if status, err := ReorderDocCategories(handle, wsID, bad); err != nil || status != "mismatch" {
+			t.Fatalf("ReorderDocCategories(%v) = (%q, %v), want mismatch", bad, status, err)
+		}
+	}
+
+	if status, err := ReorderDocCategories(handle, wsID, []string{id3, id1, id2}); err != nil || status != "reordered" {
+		t.Fatalf("ReorderDocCategories valid = (%q, %v)", status, err)
+	}
+	list, err := ListDocCategories(handle, wsID)
+	if err != nil || len(list) != 3 {
+		t.Fatalf("list = %v err=%v", list, err)
+	}
+	if list[0]["id"] != id3 || list[1]["id"] != id1 || list[2]["id"] != id2 {
+		t.Fatalf("reordered list = [%v, %v, %v], want [%s, %s, %s]",
+			list[0]["id"], list[1]["id"], list[2]["id"], id3, id1, id2)
 	}
 }

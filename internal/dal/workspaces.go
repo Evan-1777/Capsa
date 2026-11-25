@@ -13,7 +13,7 @@ import (
 
 // workspaceFields is the shared projection for workspace rows, including the
 // container counters the settings view renders.
-const workspaceFields = `w.id, w.name, w.description, w.mode, w.created_at, w.updated_at,
+const workspaceFields = `w.id, w.name, w.description, w.mode, w.shallow_months, w.created_at, w.updated_at,
        (SELECT COUNT(*) FROM groups g WHERE g.workspace_id = w.id) AS group_count,
        (SELECT COUNT(*) FROM doc_categories c WHERE c.workspace_id = w.id) AS category_count,
        (SELECT COUNT(*) FROM documents d WHERE d.workspace_id = w.id AND d.scope = 'public') AS public_doc_count`
@@ -52,13 +52,16 @@ func GetWorkspace(handle *sql.DB, workspaceID string) (map[string]any, error) {
 
 // CreateWorkspace inserts a workspace with a generated id, retrying a primary
 // key clash at most three times, and returns the stored record.
-func CreateWorkspace(handle *sql.DB, name, description, mode string) (map[string]any, error) {
+func CreateWorkspace(handle *sql.DB, name, description, mode string, shallowMonths int) (map[string]any, error) {
+	if mode != "memory" || shallowMonths <= 0 {
+		shallowMonths = db.DefaultShallowMonths
+	}
 	stamp := db.UtcNow()
 	for attempt := 0; attempt < 3; attempt++ {
 		workspaceID := ids.NewWorkspaceID()
 		_, err := handle.Exec(
-			"INSERT INTO workspaces (id, name, description, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-			workspaceID, name, description, mode, stamp, stamp)
+			"INSERT INTO workspaces (id, name, description, mode, shallow_months, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			workspaceID, name, description, mode, shallowMonths, stamp, stamp)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 				continue
@@ -70,12 +73,22 @@ func CreateWorkspace(handle *sql.DB, name, description, mode string) (map[string
 	return nil, fmt.Errorf("生成唯一工作区 id 失败")
 }
 
-// UpdateWorkspace edits name and description. The mode is fixed at creation,
-// so it is deliberately absent from the assignment list.
-func UpdateWorkspace(handle *sql.DB, workspaceID, name, description string) (bool, error) {
-	result, err := handle.Exec(
-		"UPDATE workspaces SET name = ?, description = ?, updated_at = ? WHERE id = ?",
-		name, description, db.UtcNow(), workspaceID)
+// UpdateWorkspace edits name, description and optionally shallow_months. The
+// mode is fixed at creation, so it is deliberately absent from the assignment list.
+func UpdateWorkspace(handle *sql.DB, workspaceID, name, description string, shallowMonths *int) (bool, error) {
+	var (
+		result sql.Result
+		err    error
+	)
+	if shallowMonths != nil {
+		result, err = handle.Exec(
+			"UPDATE workspaces SET name = ?, description = ?, shallow_months = ?, updated_at = ? WHERE id = ?",
+			name, description, *shallowMonths, db.UtcNow(), workspaceID)
+	} else {
+		result, err = handle.Exec(
+			"UPDATE workspaces SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+			name, description, db.UtcNow(), workspaceID)
+	}
 	if err != nil {
 		return false, err
 	}

@@ -16,7 +16,9 @@ import type {
   MemoryInput,
   MemoryListItem,
   MemoryStatus,
+  MemoryTier,
   SimilarItem,
+  UpdateKeyInput,
   WorkspaceInfo,
   WorkspaceInput,
   WorkspaceMode,
@@ -74,6 +76,7 @@ function queryString(params: object): string {
 
 export interface MemoryQuery {
   status?: MemoryStatus;
+  tier?: MemoryTier;
   group?: string;
   query?: string;
   offset?: number;
@@ -102,6 +105,8 @@ export const api = {
   keys: (signal?: AbortSignal) => request<ListData<KeyRecord>>("/api/keys", { signal }),
   createKey: (payload: CreateKeyInput) =>
     request<CreatedKeyResult>("/api/keys", { method: "POST", body: JSON.stringify(payload) }),
+  updateKey: (id: string, payload: UpdateKeyInput) =>
+    request<KeyRecord>("/api/keys/" + id, { method: "PUT", body: JSON.stringify(payload) }),
   revokeKey: (id: string) =>
     request<{ id: string; action: string }>("/api/keys/" + id + "/revoke", { method: "POST" }),
   deleteKey: (id: string) =>
@@ -125,11 +130,26 @@ export const api = {
       method: "DELETE",
       body: JSON.stringify({ reason }),
     }),
-  restore: (id: string) =>
-    request<{ id: string; action: string }>("/api/memories/" + id + "/restore", { method: "POST" }),
+  restore: (id: string, payload?: { expires_at?: string }) =>
+    request<{ id: string; action: string }>("/api/memories/" + id + "/restore", {
+      method: "POST",
+      ...(payload && payload.expires_at ? { body: JSON.stringify(payload) } : {}),
+    }),
+  purgeMemory: (id: string) =>
+    request<{ id: string; action: string }>("/api/memories/" + id + "/purge", { method: "DELETE" }),
+  emptyTrash: (payload?: { workspace_id?: string; group?: string }) =>
+    request<{ deleted_count: number; action: string }>("/api/memories/trash/empty", {
+      method: "POST",
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
+    }),
 
   workspaces: (signal?: AbortSignal) => request<ListData<WorkspaceInfo>>("/api/workspaces", { signal }),
-  createWorkspace: (payload: { name: string; description?: string; mode: WorkspaceMode }) =>
+  createWorkspace: (payload: {
+    name: string;
+    description?: string;
+    mode: WorkspaceMode;
+    shallow_months?: number;
+  }) =>
     request<WorkspaceInfo>("/api/workspaces", { method: "POST", body: JSON.stringify(payload) }),
   updateWorkspace: (id: string, payload: WorkspaceInput) =>
     request<WorkspaceInfo>("/api/workspaces/" + id, { method: "PUT", body: JSON.stringify(payload) }),
@@ -142,6 +162,11 @@ export const api = {
     request<DocCategory>("/api/workspaces/" + workspaceId + "/categories", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  reorderDocCategories: (workspaceId: string, ids: string[]) =>
+    request<ListData<DocCategory>>("/api/workspaces/" + workspaceId + "/categories/reorder", {
+      method: "PUT",
+      body: JSON.stringify({ ids }),
     }),
   updateDocCategory: (workspaceId: string, categoryId: string, payload: DocCategoryInput) =>
     request<DocCategory>("/api/workspaces/" + workspaceId + "/categories/" + categoryId, {

@@ -128,17 +128,22 @@ func TestSharedHandleRotationAndPartialIndexes(t *testing.T) {
 	if err := InitSchema(h1); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
-	// Verify all three partial indexes exist in sqlite_master.
+	// Verify partial and ordering indexes exist in sqlite_master and legacy idx_memories_overdue is absent.
 	for _, indexName := range []string{
 		"idx_memories_active_global",
-		"idx_memories_overdue",
+		"idx_memories_expires",
 		"idx_memories_deleted",
+		"idx_doc_categories_ws_order",
 	} {
 		var found string
 		err := h1.QueryRow("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?", indexName).Scan(&found)
 		if err != nil || found != indexName {
-			t.Fatalf("missing partial index %s: %v", indexName, err)
+			t.Fatalf("missing index %s: %v", indexName, err)
 		}
+	}
+	var legacyIdx string
+	if err := h1.QueryRow("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_memories_overdue'").Scan(&legacyIdx); err == nil {
+		t.Fatalf("legacy idx_memories_overdue must be dropped")
 	}
 
 	// Verify tuned PRAGMAs on shared connection.

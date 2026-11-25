@@ -12,7 +12,8 @@ export interface ListData<T> {
 }
 
 export type Permission = "r" | "rw";
-export type MemoryStatus = "active" | "overdue" | "deleted";
+export type MemoryStatus = "active" | "deleted";
+export type MemoryTier = "persistent" | "temporary" | "shallow" | "deep";
 
 export interface MemoryListItem {
   id: string;
@@ -20,13 +21,14 @@ export interface MemoryListItem {
   title: string;
   summary: string;
   tags: string[];
-  review_at: string | null;
-  pinned: number;
+  persistent: boolean;
+  expires_at: string | null;
+  tier: MemoryTier;
+  is_expired: boolean;
   updated_at: string;
   deleted_at: string | null;
   deleted_reason: string | null;
   permission: Permission;
-  is_overdue: boolean;
 }
 
 export interface MemoryDetail extends MemoryListItem {
@@ -58,6 +60,7 @@ export interface WorkspaceInfo {
   name: string;
   description: string;
   mode: WorkspaceMode;
+  shallow_months: number;
   group_count: number;
   category_count: number;
   public_doc_count: number;
@@ -69,6 +72,7 @@ export interface WorkspaceInput {
   name?: string;
   description?: string;
   mode?: WorkspaceMode;
+  shallow_months?: number;
 }
 
 export type DocScope = "public" | "category";
@@ -79,6 +83,7 @@ export interface DocCategory {
   name: string;
   description: string;
   access_id: string;
+  sort_order: number;
   doc_count: number;
   created_at: string;
   updated_at: string;
@@ -124,6 +129,11 @@ export interface CreateKeyInput {
   scopes: Record<string, Permission>;
 }
 
+export interface UpdateKeyInput {
+  name?: string;
+  scopes?: Record<string, Permission>;
+}
+
 export interface CreatedKeyResult {
   id: string;
   name: string;
@@ -144,7 +154,7 @@ export interface MemoryInput {
   summary?: string;
   body?: string;
   tags?: string[];
-  review_at?: string;
-  clear_review_at?: boolean;
-  pinned?: boolean;
+  persistent?: boolean;
+  expires_at?: string;
+  clear_expires_at?: boolean;
 }

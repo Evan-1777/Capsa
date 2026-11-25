@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BookOpen, Boxes, CalendarClock, KeyRound, Trash2 } from "lucide-react";
+import { BookOpen, Boxes, KeyRound, Trash2 } from "lucide-react";
 
 import { ApiError, api } from "../api";
 import { ErrorBanner, Skeleton } from "../components/ui";
@@ -9,25 +9,25 @@ import { GroupManager } from "./GroupManager";
 import { KeyManager } from "./KeyManager";
 import { MemoryWorkspace } from "./MemoryWorkspace";
 import { RecycleBin } from "./RecycleBin";
-import { ReviewCenter } from "./ReviewCenter";
 
-export type MemoryView = "workbench" | "groups" | "keys" | "review" | "recycle";
+export type MemoryView = "workbench" | "groups" | "keys" | "recycle";
 
 export const MEMORY_NAV_ITEMS: NavItem<MemoryView>[] = [
   { id: "workbench", label: "记忆工作台", icon: BookOpen },
-  { id: "groups", label: "分类管理", icon: Boxes },
+  { id: "groups", label: "组别管理", icon: Boxes },
   { id: "keys", label: "凭据管理", icon: KeyRound },
-  { id: "review", label: "时效复核", icon: CalendarClock },
   { id: "recycle", label: "回收站", icon: Trash2 },
 ];
 
-/** 传统记忆业务子应用：自治声明导航与分组数据流，单向装配全局外壳。 */
+/** 记忆业务子应用：自治声明 4 项导航与组别数据流，单向装配全局外壳。 */
 export function MemoryApp({
   info,
   theme,
   onToggleTheme,
   onSignOut,
   workspace,
+  workspaces,
+  onUpdateCurrentKeyName,
   shell,
 }: {
   info: KeyInfo;
@@ -35,6 +35,8 @@ export function MemoryApp({
   onToggleTheme: () => void;
   onSignOut: () => void;
   workspace: WorkspaceInfo;
+  workspaces: WorkspaceInfo[];
+  onUpdateCurrentKeyName: (nextName: string) => void;
   shell: WorkspaceShellProps;
 }) {
   const [groups, setGroups] = useState<GroupInfo[]>([]);
@@ -54,9 +56,8 @@ export function MemoryApp({
     try {
       await refreshGroups();
     } catch (error) {
-      // 401 由全局守卫接管并卸载本组件，不在此处重复呈现。
       if (!(error instanceof ApiError && error.code === "UNAUTHORIZED")) {
-        setGroupsError(error instanceof Error ? error.message : "分类列表加载失败");
+        setGroupsError(error instanceof Error ? error.message : "组别列表加载失败");
       }
     } finally {
       setLoading(false);
@@ -64,7 +65,6 @@ export function MemoryApp({
   }, [refreshGroups]);
 
   useEffect(() => {
-    // 切换记忆工作区时回到工作台并按新工作区重新拉取分类，杜绝跨区数据残留。
     setView("workbench");
     void loadGroups();
   }, [loadGroups]);
@@ -92,6 +92,7 @@ export function MemoryApp({
         <MemoryWorkspace
           key={workspace.id}
           workspaceId={workspace.id}
+          shallowMonths={workspace.shallow_months}
           groups={groups}
           onManageGroups={() => setView("groups")}
         />
@@ -103,11 +104,11 @@ export function MemoryApp({
           onGroupsChange={refreshGroups}
         />
       ) : view === "keys" ? (
-        <KeyManager groups={groups} currentKeyId={info.key_id} />
-      ) : view === "review" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <ReviewCenter key={workspace.id} workspaceId={workspace.id} />
-        </div>
+        <KeyManager
+          workspaces={workspaces}
+          currentKeyId={info.key_id}
+          onUpdateCurrentKeyName={onUpdateCurrentKeyName}
+        />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <RecycleBin key={workspace.id} workspaceId={workspace.id} />

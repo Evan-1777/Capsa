@@ -91,15 +91,24 @@ func TestMigrateIfInitializedUpgradesLegacyDatabase(t *testing.T) {
 		t.Fatalf("legacy group workspace = %q, want %q", workspaceID, DefaultWorkspaceID)
 	}
 	var mode string
-	if err := handle.QueryRow("SELECT mode FROM workspaces WHERE id = ?", DefaultWorkspaceID).Scan(&mode); err != nil {
+	var shallowMonths int
+	if err := handle.QueryRow("SELECT mode, shallow_months FROM workspaces WHERE id = ?", DefaultWorkspaceID).Scan(&mode, &shallowMonths); err != nil {
 		t.Fatalf("default workspace missing: %v", err)
 	}
-	if mode != "memory" {
-		t.Fatalf("default workspace mode = %q", mode)
+	if mode != "memory" || shallowMonths != DefaultShallowMonths {
+		t.Fatalf("default workspace = (%q, %d), want (memory, %d)", mode, shallowMonths, DefaultShallowMonths)
 	}
 	var bodies int
-	if err := handle.QueryRow("SELECT COUNT(*) FROM memories WHERE id = 'mem_legacy'").Scan(&bodies); err != nil || bodies != 1 {
-		t.Fatalf("legacy memory lost: count=%d err=%v", bodies, err)
+	if err := handle.QueryRow("SELECT COUNT(*) FROM memories WHERE id = 'mem_legacy' AND expires_at IS NULL AND pinned = 0").Scan(&bodies); err != nil || bodies != 1 {
+		t.Fatalf("legacy memory lost or unexpected defaults: count=%d err=%v", bodies, err)
+	}
+	// Verify doc_categories.sort_order column exists after migration.
+	if _, err := handle.Exec("INSERT INTO doc_categories (id, workspace_id, name, description, access_id, created_at, updated_at) VALUES ('cat_1', ?, 'c', '', 'acc_1', ?, ?)", DefaultWorkspaceID, stamp, stamp); err != nil {
+		t.Fatalf("insert doc_category after migration: %v", err)
+	}
+	var sortOrder int
+	if err := handle.QueryRow("SELECT sort_order FROM doc_categories WHERE id = 'cat_1'").Scan(&sortOrder); err != nil || sortOrder != 0 {
+		t.Fatalf("doc_categories.sort_order = %d err=%v, want 0", sortOrder, err)
 	}
 
 	// A second startup must be a harmless no-op.

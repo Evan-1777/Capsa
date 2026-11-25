@@ -96,14 +96,103 @@ func Tokenize(query string) map[string]struct{} {
 	return terms
 }
 
-// NormalizeReviewAt parses an ISO 8601 timestamp and re-renders it in UTC using
-// the fixed-width storage layout. A value without an offset is read as UTC.
-func NormalizeReviewAt(value string) (string, error) {
+// Four-tier memory lifecycle constants.
+const (
+	TierPersistent = "persistent"
+	TierTemporary  = "temporary"
+	TierShallow    = "shallow"
+	TierDeep       = "deep"
+)
+
+// SearchFields controls which memory fields participate in keyword matching and scoring.
+type SearchFields struct {
+	Title   bool
+	Summary bool
+	Tags    bool
+	Body    bool
+}
+
+// DefaultSearchFields matches title, summary and tags without loading body.
+var DefaultSearchFields = SearchFields{Title: true, Summary: true, Tags: true}
+
+// NormalizeTimestamp parses an ISO 8601 timestamp and re-renders it in UTC
+// using the fixed-width storage layout. A value without an offset is read as UTC.
+func NormalizeTimestamp(value string) (string, error) {
 	moment, err := db.ParseTimestamp(value)
 	if err != nil {
 		return "", err
 	}
 	return moment.Format("2006-01-02T15:04:05.000000-07:00"), nil
+}
+
+// IsPersistent reports whether a memory row is marked persistent (stored in
+// pinned or already mapped to persistent).
+func IsPersistent(memory map[string]any) bool {
+	if value, ok := memory["persistent"].(bool); ok {
+		return value
+	}
+	return pinnedOf(memory)
+}
+
+func shallowMonthsOf(memory map[string]any) int {
+	switch value := memory["shallow_months"].(type) {
+	case int:
+		if value > 0 {
+			return value
+		}
+	case int64:
+		if value > 0 {
+			return int(value)
+		}
+	case float64:
+		if value > 0 {
+			return int(value)
+		}
+	}
+	return db.DefaultShallowMonths
+}
+
+// ComputeTier dynamically classifies an active memory into persistent,
+// temporary, shallow or deep based on its owning workspace's shallow_months.
+func ComputeTier(memory map[string]any, now time.Time) string {
+	if IsPersistent(memory) {
+		return TierPersistent
+	}
+	if stringField(memory, "expires_at") != "" {
+		return TierTemporary
+	}
+	months := shallowMonthsOf(memory)
+	cutoff := now.UTC().AddDate(0, -months, 0)
+	updatedAt, err := db.ParseTimestamp(stringField(memory, "updated_at"))
+	if err != nil {
+		return TierShallow
+	}
+	if !updatedAt.Before(cutoff) {
+		return TierShallow
+	}
+	return TierDeep
+}
+
+// LayerOf maps a memory to its search/catalog layer: "trash", "deep" or "shallow".
+func LayerOf(memory map[string]any, now time.Time) string {
+	if stringField(memory, "deleted_at") != "" {
+		return "trash"
+	}
+	if ComputeTier(memory, now) == TierDeep {
+		return "deep"
+	}
+	return "shallow"
+}
+
+// TierPriority returns the unified sort bucket: persistent (0) < temporary (1) < other (2).
+func TierPriority(memory map[string]any) int {
+	if IsPersistent(memory) {
+		return 0
+	}
+	if stringField(memory, "expires_at") != "" {
+		return 1
+	}
+	return 2
 }
 
 // TitleSimilarity returns the Bigram Jaccard coefficient of two titles.
@@ -150,56 +239,51 @@ func FindSimilarMemories(candidates []map[string]any, title string, threshold fl
 	return similar
 }
 
-// IsExpired reports whether a review timestamp lies in the past.
-func IsExpired(reviewAt *string, now time.Time) bool {
-	if reviewAt == nil || *reviewAt == "" {
-		return false
-	}
-	moment, err := db.ParseTimestamp(*reviewAt)
-	if err != nil {
-		return false
-	}
-	return moment.Before(now)
-}
-
-// Score computes the weighted score of a memory for a token set.
-func Score(memory map[string]any, terms map[string]struct{}, now time.Time, includeBody bool) float64 {
-	score, _ := scoreMemory(memory, terms, now, includeBody)
+// ScoreWithFields computes the weighted score of a memory for a token set using
+// only the enabled fields.
+func ScoreWithFields(memory map[string]any, terms map[string]struct{}, fields SearchFields) float64 {
+	score, _ := scoreMemoryWithFields(memory, terms, fields)
 	return score
 }
 
-func scoreMemory(memory map[string]any, terms map[string]struct{}, now time.Time, includeBody bool) (float64, bool) {
-	title := Normalize(stringField(memory, "title"))
-	summary := Normalize(stringField(memory, "summary"))
-	rawTags := tagsOf(memory)
-	tags := make([]string, len(rawTags))
-	for i, tag := range rawTags {
-		tags[i] = Normalize(tag)
-	}
+func scoreMemoryWithFields(memory map[string]any, terms map[string]struct{}, fields SearchFields) (float64, bool) {
 	matched := false
 	total := 0.0
-	for term := range terms {
-		if strings.Contains(title, term) {
-			total += 4
-			matched = true
-		}
-	}
-	for term := range terms {
-		if strings.Contains(summary, term) {
-			total += 1
-			matched = true
-		}
-	}
-	for term := range terms {
-		for _, tag := range tags {
-			if strings.Contains(tag, term) {
-				total += 2
+	if fields.Title {
+		title := Normalize(stringField(memory, "title"))
+		for term := range terms {
+			if strings.Contains(title, term) {
+				total += 4
 				matched = true
-				break
 			}
 		}
 	}
-	if includeBody {
+	if fields.Summary {
+		summary := Normalize(stringField(memory, "summary"))
+		for term := range terms {
+			if strings.Contains(summary, term) {
+				total += 1
+				matched = true
+			}
+		}
+	}
+	if fields.Tags {
+		rawTags := tagsOf(memory)
+		tags := make([]string, len(rawTags))
+		for i, tag := range rawTags {
+			tags[i] = Normalize(tag)
+		}
+		for term := range terms {
+			for _, tag := range tags {
+				if strings.Contains(tag, term) {
+					total += 2
+					matched = true
+					break
+				}
+			}
+		}
+	}
+	if fields.Body {
 		body := Normalize(stringField(memory, "body"))
 		bodyScore := 0.0
 		for term := range terms {
@@ -210,40 +294,38 @@ func scoreMemory(memory map[string]any, terms map[string]struct{}, now time.Time
 		}
 		total += math.Min(bodyScore, BodyScoreCap)
 	}
-	if pinnedOf(memory) {
+	if IsPersistent(memory) {
 		total += 3
-	}
-	if IsExpired(stringPtrField(memory, "review_at"), now) {
-		total -= 2
 	}
 	return round2(total), matched
 }
 
 type rankedEntry struct {
-	memory map[string]any
-	id     string
-	pinned bool
-	epoch  float64
-	score  float64
+	memory   map[string]any
+	id       string
+	priority int
+	epoch    float64
+	score    float64
 }
 
-// RankMemories returns a ranked copy of the input ordered by score (when query
-// has tokens), pinned flag, update time and descending id tie-breaker.
-func RankMemories(memories []map[string]any, query string, now time.Time, includeBody bool) []map[string]any {
+// RankMemoriesWithFields returns a ranked copy of the input ordered by score
+// (when query has tokens), unified tier priority (persistent < temporary <
+// other), update time descending and id descending.
+func RankMemoriesWithFields(memories []map[string]any, query string, fields SearchFields) []map[string]any {
 	terms := Tokenize(query)
 	if len(terms) == 0 {
 		entries := make([]rankedEntry, len(memories))
 		for i, memory := range memories {
 			entries[i] = rankedEntry{
-				memory: memory,
-				id:     stringField(memory, "id"),
-				pinned: pinnedOf(memory),
-				epoch:  epochOf(memory),
+				memory:   memory,
+				id:       stringField(memory, "id"),
+				priority: TierPriority(memory),
+				epoch:    epochOf(memory),
 			}
 		}
 		sort.SliceStable(entries, func(i, j int) bool {
-			if entries[i].pinned != entries[j].pinned {
-				return entries[i].pinned
+			if entries[i].priority != entries[j].priority {
+				return entries[i].priority < entries[j].priority
 			}
 			if entries[i].epoch != entries[j].epoch {
 				return entries[i].epoch > entries[j].epoch
@@ -259,24 +341,24 @@ func RankMemories(memories []map[string]any, query string, now time.Time, includ
 
 	entries := make([]rankedEntry, 0, len(memories))
 	for _, memory := range memories {
-		score, hit := scoreMemory(memory, terms, now, includeBody)
+		score, hit := scoreMemoryWithFields(memory, terms, fields)
 		if !hit {
 			continue
 		}
 		entries = append(entries, rankedEntry{
-			memory: memory,
-			id:     stringField(memory, "id"),
-			pinned: pinnedOf(memory),
-			epoch:  epochOf(memory),
-			score:  score,
+			memory:   memory,
+			id:       stringField(memory, "id"),
+			priority: TierPriority(memory),
+			epoch:    epochOf(memory),
+			score:    score,
 		})
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		if entries[i].score != entries[j].score {
 			return entries[i].score > entries[j].score
 		}
-		if entries[i].pinned != entries[j].pinned {
-			return entries[i].pinned
+		if entries[i].priority != entries[j].priority {
+			return entries[i].priority < entries[j].priority
 		}
 		if entries[i].epoch != entries[j].epoch {
 			return entries[i].epoch > entries[j].epoch
@@ -309,13 +391,6 @@ func stringField(memory map[string]any, key string) string {
 		return value
 	}
 	return ""
-}
-
-func stringPtrField(memory map[string]any, key string) *string {
-	if value, ok := memory[key].(string); ok {
-		return &value
-	}
-	return nil
 }
 
 func pinnedOf(memory map[string]any) bool {

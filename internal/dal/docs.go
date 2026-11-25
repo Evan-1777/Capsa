@@ -66,14 +66,14 @@ func NormalizeDocPath(raw string) (string, string) {
 }
 
 // ListDocCategories lists the categories of a docs workspace with their
-// document counts.
+// document counts, ordered by persistent sort_order.
 func ListDocCategories(handle *sql.DB, workspaceID string) ([]map[string]any, error) {
 	rows, err := queryMaps(handle, `
-        SELECT c.id, c.workspace_id, c.name, c.description, c.access_id, c.created_at, c.updated_at,
+        SELECT c.id, c.workspace_id, c.name, c.description, c.access_id, c.sort_order, c.created_at, c.updated_at,
                (SELECT COUNT(*) FROM documents d WHERE d.category_id = c.id) AS doc_count
         FROM doc_categories c
         WHERE c.workspace_id = ?
-        ORDER BY c.created_at ASC, c.id ASC
+        ORDER BY c.sort_order ASC, c.created_at ASC, c.id ASC
         `, workspaceID)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func ListDocCategories(handle *sql.DB, workspaceID string) ([]map[string]any, er
 // GetDocCategory fetches one category of a docs workspace, or nil when absent.
 func GetDocCategory(handle *sql.DB, workspaceID, categoryID string) (map[string]any, error) {
 	rows, err := queryMaps(handle, `
-        SELECT c.id, c.workspace_id, c.name, c.description, c.access_id, c.created_at, c.updated_at,
+        SELECT c.id, c.workspace_id, c.name, c.description, c.access_id, c.sort_order, c.created_at, c.updated_at,
                (SELECT COUNT(*) FROM documents d WHERE d.category_id = c.id) AS doc_count
         FROM doc_categories c
         WHERE c.workspace_id = ? AND c.id = ?
@@ -95,21 +95,87 @@ func GetDocCategory(handle *sql.DB, workspaceID, categoryID string) (map[string]
 	return rows[0], nil
 }
 
-// CreateDocCategory inserts a category with generated ids. A duplicate name in
-// the same workspace returns DuplicateDocNameError.
+// CreateDocCategory inserts a category with generated ids appended to the end
+// of the workspace sort order. A duplicate name in the same workspace returns
+// DuplicateDocNameError.
 func CreateDocCategory(handle *sql.DB, workspaceID, name, description string) (map[string]any, error) {
 	stamp := db.UtcNow()
 	categoryID := ids.NewDocCategoryID()
-	_, err := handle.Exec(
-		"INSERT INTO doc_categories (id, workspace_id, name, description, access_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		categoryID, workspaceID, name, description, ids.NewDocAccessID(), stamp, stamp)
-	if err != nil {
-		if isUniqueViolation(err) {
-			return nil, DuplicateDocNameError{Name: name}
+	err := withImmediateTx(handle, func(ctx context.Context, conn *sql.Conn) (bool, error) {
+		var nextOrder int
+		if err := conn.QueryRowContext(ctx,
+			"SELECT COALESCE(MAX(sort_order), -1) + 1 FROM doc_categories WHERE workspace_id = ?",
+			workspaceID).Scan(&nextOrder); err != nil {
+			return false, err
 		}
+		if _, err := conn.ExecContext(ctx,
+			"INSERT INTO doc_categories (id, workspace_id, name, description, access_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			categoryID, workspaceID, name, description, ids.NewDocAccessID(), nextOrder, stamp, stamp); err != nil {
+			if isUniqueViolation(err) {
+				return false, DuplicateDocNameError{Name: name}
+			}
+			return false, err
+		}
+		return true, nil
+	})
+	if err != nil {
 		return nil, err
 	}
+	// Called after withImmediateTx commits and releases the sole pooled connection.
 	return GetDocCategory(handle, workspaceID, categoryID)
+}
+
+// ReorderDocCategories atomically updates sort_order for every category in one
+// workspace. It returns "mismatch" when categoryIDs does not form a bijection
+// with the workspace's existing categories, or "reordered" on commit.
+func ReorderDocCategories(handle *sql.DB, workspaceID string, categoryIDs []string) (string, error) {
+	status := ""
+	err := withImmediateTx(handle, func(ctx context.Context, conn *sql.Conn) (bool, error) {
+		rows, err := conn.QueryContext(ctx,
+			"SELECT id FROM doc_categories WHERE workspace_id = ?", workspaceID)
+		if err != nil {
+			return false, err
+		}
+		existing := map[string]bool{}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return false, err
+			}
+			existing[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, err
+		}
+		rows.Close()
+
+		if len(categoryIDs) != len(existing) {
+			status = "mismatch"
+			return false, nil
+		}
+		seen := make(map[string]bool, len(categoryIDs))
+		for _, id := range categoryIDs {
+			if !existing[id] || seen[id] {
+				status = "mismatch"
+				return false, nil
+			}
+			seen[id] = true
+		}
+
+		stamp := db.UtcNow()
+		for idx, id := range categoryIDs {
+			if _, err := conn.ExecContext(ctx,
+				"UPDATE doc_categories SET sort_order = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
+				idx, stamp, workspaceID, id); err != nil {
+				return false, err
+			}
+		}
+		status = "reordered"
+		return true, nil
+	})
+	return status, err
 }
 
 // UpdateDocCategory renames a category. It returns "not_found",

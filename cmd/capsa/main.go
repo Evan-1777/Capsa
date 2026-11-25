@@ -37,7 +37,7 @@ var defaultGroups = [][3]string{
 	{"proj", "项目", "项目相关记忆：架构决策、实施进度与接口约定"},
 	{"study", "学习", "学习笔记：技术原理、资料摘要与练习记录"},
 	{"life", "生活", "生活记录：计划、清单与日常事务"},
-	{"track", "追踪", "需要按期复核的追踪事项"},
+	{"track", "追踪", "阶段性追踪与待办事项"},
 }
 
 func main() {
@@ -143,7 +143,7 @@ func cmdInit() int {
 		}
 		slugs = append(slugs, group[0])
 	}
-	fmt.Printf("已预置标准分组：%s\n", strings.Join(slugs, ", "))
+	fmt.Printf("已预置标准组别：%s\n", strings.Join(slugs, ", "))
 	return 0
 }
 
@@ -154,7 +154,7 @@ func cmdGroup(args []string) int {
 	switch args[0] {
 	case "add":
 		flags := flag.NewFlagSet("group add", flag.ContinueOnError)
-		description := flags.String("desc", "", "分组描述")
+		description := flags.String("desc", "", "组别描述")
 		positional, err := parseInterspersed(flags, args[1:])
 		if err != nil {
 			return 2
@@ -169,16 +169,16 @@ func cmdGroup(args []string) int {
 		defer handle.Close()
 		inserted, err := dal.AddGroup(handle, positional[0], positional[1], *description)
 		if err != nil {
-			return fail("新增分组失败：%v", err)
+			return fail("新增组别失败：%v", err)
 		}
 		if !inserted {
-			return fail("分组 %s 已存在，未修改", positional[0])
+			return fail("组别 %s 已存在，未修改", positional[0])
 		}
 		group, err := dal.GetGroup(handle, positional[0])
 		if err != nil || group == nil {
-			return fail("读取分组失败")
+			return fail("读取组别失败")
 		}
-		fmt.Printf("分组 %s | %s | %s\n", group["slug"], group["name"], group["description"])
+		fmt.Printf("组别 %s | %s | %s\n", group["slug"], group["name"], group["description"])
 		return 0
 	case "list":
 		handle, err := connect()
@@ -188,7 +188,7 @@ func cmdGroup(args []string) int {
 		defer handle.Close()
 		groups, err := dal.ListGroups(handle)
 		if err != nil {
-			return fail("列出分组失败：%v", err)
+			return fail("列出组别失败：%v", err)
 		}
 		for _, group := range groups {
 			fmt.Printf("%s | %s | %s\n", group["slug"], group["name"], group["description"])
@@ -205,15 +205,15 @@ func cmdGroup(args []string) int {
 		defer handle.Close()
 		status, err := dal.DeleteEmptyGroup(handle, args[1])
 		if err != nil {
-			return fail("删除分组失败：%v", err)
+			return fail("删除组别失败：%v", err)
 		}
 		switch status {
 		case "not_found":
-			return fail("未找到分组：%s", args[1])
+			return fail("未找到组别：%s", args[1])
 		case "has_memories":
-			return fail("分组 %s 下仍有记忆（含回收站），无法删除", args[1])
+			return fail("组别 %s 下仍有记忆（含回收站），无法删除", args[1])
 		}
-		fmt.Printf("已删除分组：%s\n", args[1])
+		fmt.Printf("已删除组别：%s\n", args[1])
 		return 0
 	default:
 		return fail("用法: capsa group <add|list|delete> ...")
@@ -271,7 +271,7 @@ func cmdKey(args []string) int {
 		defer handle.Close()
 		groups, err := dal.ListGroups(handle)
 		if err != nil {
-			return fail("读取分组失败：%v", err)
+			return fail("读取组别失败：%v", err)
 		}
 		existing := map[string]bool{}
 		for _, group := range groups {
@@ -279,7 +279,7 @@ func cmdKey(args []string) int {
 		}
 		for slug, permission := range scopes {
 			if slug != "*" && !existing[slug] {
-				return fail("未找到分组：%s", slug)
+				return fail("未找到组别：%s", slug)
 			}
 			if permission != "r" && permission != "rw" {
 				return fail("权限值必须是 r 或 rw，本次传入 %s", permission)
@@ -360,7 +360,7 @@ func cmdMemory(args []string) int {
 	switch args[0] {
 	case "list-deleted":
 		flags := flag.NewFlagSet("memory list-deleted", flag.ContinueOnError)
-		group := flags.String("group", "", "只列出指定分组")
+		group := flags.String("group", "", "只列出指定组别")
 		if err := flags.Parse(args[1:]); err != nil {
 			return 2
 		}
@@ -369,6 +369,9 @@ func cmdMemory(args []string) int {
 			return fail("连接数据库失败：%v", err)
 		}
 		defer handle.Close()
+		if _, err := dal.ArchiveExpiredMemories(handle, db.UtcNow()); err != nil {
+			return fail("归档过期记忆失败：%v", err)
+		}
 		entries, err := dal.ListDeletedMemories(handle, *group)
 		if err != nil {
 			return fail("列出回收站失败：%v", err)
@@ -391,7 +394,7 @@ func cmdMemory(args []string) int {
 			return fail("连接数据库失败：%v", err)
 		}
 		defer handle.Close()
-		restored, err := dal.RestoreMemory(handle, args[1])
+		restored, err := dal.RestoreMemory(handle, args[1], nil, db.UtcNow())
 		if err != nil {
 			return fail("恢复记忆失败：%v", err)
 		}
@@ -407,7 +410,7 @@ func cmdMemory(args []string) int {
 
 func cmdReview(args []string) int {
 	flags := flag.NewFlagSet("review", flag.ContinueOnError)
-	group := flags.String("group", "", "只审阅指定分组")
+	group := flags.String("group", "", "只审阅指定组别")
 	query := flags.String("query", "", "关键词，与 MCP memory_search 同源")
 	limit := flags.Int("limit", 20, "最多输出条数")
 	if err := flags.Parse(args); err != nil {
@@ -421,20 +424,23 @@ func cmdReview(args []string) int {
 		return fail("连接数据库失败：%v", err)
 	}
 	defer handle.Close()
+	if _, err := dal.ArchiveExpiredMemories(handle, db.UtcNow()); err != nil {
+		return fail("归档过期记忆失败：%v", err)
+	}
 	groups, err := dal.ListGroups(handle)
 	if err != nil {
-		return fail("读取分组失败：%v", err)
+		return fail("读取组别失败：%v", err)
 	}
-	// CLI 是管理员通道：按读写权限取出全部已建分组。
+	// CLI 是管理员通道：按读写权限取出全部已建组别。
 	scopes := map[string]string{}
 	for _, item := range groups {
 		scopes[item["slug"].(string)] = "rw"
 	}
-	memories, err := dal.ListActiveMemoriesForSearch(handle, scopes, *group, false)
+	memories, err := dal.ListMemoriesForCatalogAndSearch(handle, scopes, "", *group, true, false, false)
 	if err != nil {
 		return fail("读取记忆失败：%v", err)
 	}
-	ranked := retrieval.RankMemories(memories, *query, time.Now().UTC(), false)
+	ranked := retrieval.RankMemoriesWithFields(memories, *query, retrieval.DefaultSearchFields)
 	if len(ranked) > *limit {
 		ranked = ranked[:*limit]
 	}
@@ -442,12 +448,14 @@ func cmdReview(args []string) int {
 		fmt.Println("没有符合条件的记忆")
 		return 0
 	}
+	now := time.Now().UTC()
 	for index, item := range ranked {
 		updated, _ := item["updated_at"].(string)
 		if len(updated) > 10 {
 			updated = updated[:10]
 		}
-		fmt.Printf("[%d] %s | %s | %s | %s\n", index+1, item["id"], item["group_slug"], updated, item["title"])
+		tier := retrieval.ComputeTier(item, now)
+		fmt.Printf("[%d] [%s] %s | %s | %s | %s\n", index+1, tier, item["id"], item["group_slug"], updated, item["title"])
 	}
 	return 0
 }

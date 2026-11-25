@@ -1,12 +1,23 @@
+import { Clock, Layers, Pin, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api } from "../api";
-import { Button, FormField, Input, Select, SideSheet, Textarea } from "../components/ui";
-import type { GroupInfo, MemoryDetail, SimilarItem } from "../types";
+import {
+  Button,
+  FormField,
+  IconButton,
+  Input,
+  Select,
+  SideSheet,
+  Textarea,
+} from "../components/ui";
+import type { GroupInfo, MemoryDetail, MemoryInput, SimilarItem } from "../types";
 
 const TITLE_MAX = 60;
 const SUMMARY_MAX = 200;
 const BODY_MAX = 64000;
+
+type LifecycleMode = "normal" | "persistent" | "temporary";
 
 interface FormState {
   group: string;
@@ -14,7 +25,41 @@ interface FormState {
   summary: string;
   body: string;
   tags: string;
-  reviewDate: string;
+  lifecycle: LifecycleMode;
+  expiresLocal: string;
+}
+
+export function toLocalDateTimeInput(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+}
+
+export function futureLocalDateTime(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  date.setHours(23, 59, 0, 0);
+  return toLocalDateTimeInput(date.toISOString());
+}
+
+export function localDateTimeToUTCISO(localValue: string): string | null {
+  if (!localValue.trim()) return null;
+  const date = new Date(localValue);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function initialLifecycle(memory: MemoryDetail | null): LifecycleMode {
+  if (!memory) return "normal";
+  if (memory.persistent) return "persistent";
+  if (memory.expires_at) return "temporary";
+  return "normal";
 }
 
 export function EditDrawer({
@@ -30,13 +75,17 @@ export function EditDrawer({
   onCreated: () => void;
   onSaved: (createdId: string | null) => void;
 }) {
+  const initialMode = initialLifecycle(memory);
+  const initialExpiresLocal = toLocalDateTimeInput(memory?.expires_at);
+
   const [form, setForm] = useState<FormState>({
     group: memory?.group_slug ?? groups[0]?.slug ?? "",
     title: memory?.title ?? "",
     summary: memory?.summary ?? "",
     body: memory?.body ?? "",
     tags: memory?.tags.join(", ") ?? "",
-    reviewDate: memory?.review_at?.slice(0, 10) ?? "",
+    lifecycle: initialMode,
+    expiresLocal: initialExpiresLocal,
   });
   const [similar, setSimilar] = useState<SimilarItem[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
@@ -55,13 +104,29 @@ export function EditDrawer({
     setDirty(true);
   };
 
+  function selectLifecycle(mode: LifecycleMode) {
+    if (mode === "temporary" && !form.expiresLocal) {
+      update({ lifecycle: mode, expiresLocal: futureLocalDateTime(7) });
+      return;
+    }
+    update({ lifecycle: mode });
+  }
+
   const overTitle = form.title.length > TITLE_MAX;
   const overSummary = form.summary.length > SUMMARY_MAX;
   const overBody = form.body.length > BODY_MAX;
-  const invalid = overTitle || overSummary || overBody || !form.title.trim() || !form.group;
+
+  const expiresDate = form.expiresLocal ? new Date(form.expiresLocal) : null;
+  const expiresInvalid =
+    form.lifecycle === "temporary" &&
+    (!expiresDate || Number.isNaN(expiresDate.getTime()) || expiresDate.getTime() <= Date.now());
+
+  const invalid =
+    overTitle || overSummary || overBody || !form.title.trim() || !form.group || expiresInvalid;
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (invalid) return;
     setBusy(true);
     setFailure(null);
     const tags = form.tags
@@ -70,15 +135,30 @@ export function EditDrawer({
       .filter(Boolean);
     try {
       if (memory) {
-        const payload: Record<string, unknown> = {};
+        const payload: MemoryInput = {};
         if (form.title !== memory.title) payload.title = form.title;
         if (form.summary !== memory.summary) payload.summary = form.summary;
         if (form.body !== memory.body) payload.body = form.body;
         if (tags.join("\u0000") !== memory.tags.join("\u0000")) payload.tags = tags;
-        if (form.reviewDate !== (memory.review_at?.slice(0, 10) ?? "")) {
-          if (form.reviewDate) payload.review_at = `${form.reviewDate}T00:00:00+00:00`;
-          else payload.clear_review_at = true;
+
+        if (form.lifecycle === "normal") {
+          if (memory.persistent) payload.persistent = false;
+          if (memory.expires_at) payload.clear_expires_at = true;
+        } else if (form.lifecycle === "persistent") {
+          if (!memory.persistent) payload.persistent = true;
+        } else {
+          const iso = localDateTimeToUTCISO(form.expiresLocal);
+          if (!iso) {
+            setFailure("请设置有效的归档时间");
+            setBusy(false);
+            return;
+          }
+          if (memory.persistent) payload.persistent = false;
+          if (form.expiresLocal !== initialExpiresLocal || initialMode !== "temporary") {
+            payload.expires_at = iso;
+          }
         }
+
         if (Object.keys(payload).length === 0) {
           onClose();
           return;
@@ -87,13 +167,25 @@ export function EditDrawer({
         setDirty(false);
         onSaved(null);
       } else {
-        const result = await api.create({
+        const payload: MemoryInput = {
           group: form.group,
           title: form.title,
           summary: form.summary,
           body: form.body,
           tags,
-        });
+        };
+        if (form.lifecycle === "persistent") {
+          payload.persistent = true;
+        } else if (form.lifecycle === "temporary") {
+          const iso = localDateTimeToUTCISO(form.expiresLocal);
+          if (!iso) {
+            setFailure("请设置有效的归档时间");
+            setBusy(false);
+            return;
+          }
+          payload.expires_at = iso;
+        }
+        const result = await api.create(payload);
         setSimilar(result.similar_items);
         setDirty(false);
         onCreated();
@@ -121,17 +213,22 @@ export function EditDrawer({
           <h2 className="text-title-medium text-on-surface">
             {memory ? "编辑记忆" : "新建记忆"}
           </h2>
-          <Button variant="text" size="sm" type="button" onClick={requestClose}>
-            关闭
-          </Button>
+          <IconButton
+            aria-label="关闭"
+            title="关闭"
+            onClick={requestClose}
+            className="!h-8 !w-8"
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </IconButton>
         </header>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
           {!memory && (
-            <FormField label="分组" id="edit-group-select">
+            <FormField label="组别" id="edit-group-select">
               <Select
                 id="edit-group-select"
-                aria-label="分组"
+                aria-label="组别"
                 value={form.group}
                 onChange={(event) => update({ group: event.target.value })}
               >
@@ -143,6 +240,81 @@ export function EditDrawer({
               </Select>
             </FormField>
           )}
+
+          <div className="space-y-2">
+            <span className="block text-label-large text-on-surface">记忆状态</span>
+            <div
+              role="radiogroup"
+              aria-label="记忆状态"
+              className="grid grid-cols-3 overflow-hidden rounded-full border border-outline bg-surface-container-low"
+            >
+              {(
+                [
+                  { id: "normal", label: "常规", icon: Layers },
+                  { id: "persistent", label: "持久", icon: Pin },
+                  { id: "temporary", label: "临时", icon: Clock },
+                ] as const
+              ).map((option, idx) => {
+                const Icon = option.icon;
+                const active = form.lifecycle === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => selectLifecycle(option.id)}
+                    className={`md-state-layer flex h-9 items-center justify-center gap-1.5 text-label-large transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${
+                      idx > 0 ? "border-l border-outline" : ""
+                    } ${
+                      active
+                        ? "bg-secondary-container font-medium text-on-secondary-container"
+                        : "text-on-surface-variant hover:text-on-surface"
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" aria-hidden />
+                    <span>{option.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {form.lifecycle === "temporary" && (
+              <div className="space-y-2 rounded-md border border-outline-variant bg-surface-container p-3">
+                <FormField label="自动归档时间" id="edit-expires-at">
+                  <Input
+                    id="edit-expires-at"
+                    type="datetime-local"
+                    aria-label="自动归档时间"
+                    value={form.expiresLocal}
+                    invalid={expiresInvalid}
+                    onChange={(event) => update({ expiresLocal: event.target.value })}
+                  />
+                </FormField>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { label: "+1天", days: 1 },
+                    { label: "+7天", days: 7 },
+                    { label: "+30天", days: 30 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.days}
+                      type="button"
+                      onClick={() => update({ expiresLocal: futureLocalDateTime(preset.days) })}
+                      className="md-state-layer rounded-sm border border-outline-variant bg-surface-container-low px-2.5 py-1 text-label-medium text-on-surface-variant transition-colors hover:border-outline hover:text-on-surface"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+                {expiresInvalid && (
+                  <p role="alert" className="text-body-small text-error">
+                    归档时间必须晚于当前时间
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
 
           <Field
             label="标题"
@@ -169,28 +341,6 @@ export function EditDrawer({
             rows={12}
             markdown
           />
-
-          {memory && (
-            <FormField label="复核时间" id="edit-review-date">
-              <div className="flex items-center gap-2">
-                <Input
-                  id="edit-review-date"
-                  type="date"
-                  aria-label="复核时间"
-                  value={form.reviewDate}
-                  onChange={(event) => update({ reviewDate: event.target.value })}
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  type="button"
-                  onClick={() => update({ reviewDate: "" })}
-                >
-                  清除
-                </Button>
-              </div>
-            </FormField>
-          )}
 
           <FormField label="标签" id="edit-tags-input">
             <Input

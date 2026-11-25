@@ -10,6 +10,7 @@ import {
   EmptyState,
   ErrorBanner,
   FormField,
+  IconButton,
   Input,
   Select,
   Textarea,
@@ -18,10 +19,12 @@ import type { WorkspaceInfo, WorkspaceMode } from "../types";
 
 const NAME_MAX = 60;
 const DESC_MAX = 200;
+const SHALLOW_MIN = 1;
+const SHALLOW_MAX = 120;
 
 type Editing = { mode: "create" } | { mode: "edit"; workspace: WorkspaceInfo };
 
-/** 全局工作区设置视图：新建（含模式选定）、基础信息编辑与空工作区删除。 */
+/** 全局工作区设置视图：新建（含模式选定）、基础信息与浅层记忆周期编辑、空工作区删除。 */
 export function WorkspaceSettings({
   workspaces,
   activeWorkspaceId,
@@ -51,23 +54,23 @@ export function WorkspaceSettings({
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
       <div className="mx-auto max-w-3xl space-y-4 px-5 py-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-0.5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <IconButton
+              aria-label="返回当前工作区"
+              title="返回"
+              onClick={onBack}
+              className="!h-9 !w-9"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden />
+            </IconButton>
             <h1 className="text-headline-small text-on-surface">工作区设置</h1>
-            <p className="text-body-medium text-on-surface-variant">
-              工作区模式创建后不可修改，不同工作区的分类、子项目与文档彼此隔离
-            </p>
           </div>
           <Button variant="primary" size="sm" onClick={() => setEditing({ mode: "create" })}>
             <Plus className="h-4 w-4" aria-hidden />
             <span>新建工作区</span>
           </Button>
         </div>
-
-        <Button variant="text" size="sm" onClick={onBack} className="!px-2">
-          <ArrowLeft className="h-4 w-4" aria-hidden />
-          <span>返回当前工作区</span>
-        </Button>
 
         {failure && <ErrorBanner message={failure} onRetry={refresh} />}
 
@@ -86,26 +89,54 @@ export function WorkspaceSettings({
               const active = workspace.id === activeWorkspaceId;
               const isDefault = workspace.id === "default";
               return (
-                <Card as="li" key={workspace.id} className="flex flex-col justify-between space-y-3 p-4">
+                <Card
+                  as="li"
+                  key={workspace.id}
+                  className="flex flex-col justify-between space-y-3 p-4"
+                >
                   <div className="min-w-0 space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <p className="truncate text-title-small text-on-surface">{workspace.name}</p>
-                      <Badge variant={workspace.mode === "docs" ? "primary" : "neutral"}>
-                        {workspace.mode === "docs" ? "文档模式" : "记忆模式"}
-                      </Badge>
-                      {isDefault && <Badge variant="success">默认</Badge>}
-                      {active && <Badge variant="primary">当前</Badge>}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <p className="truncate text-title-small text-on-surface">
+                          {workspace.name}
+                        </p>
+                        <Badge variant={workspace.mode === "docs" ? "primary" : "neutral"}>
+                          {workspace.mode === "docs" ? "文档" : "记忆"}
+                        </Badge>
+                        {isDefault && <Badge variant="success">默认</Badge>}
+                        {active && <Badge variant="primary">当前</Badge>}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <IconButton
+                          aria-label={`编辑工作区 ${workspace.name}`}
+                          title="编辑"
+                          onClick={() => setEditing({ mode: "edit", workspace })}
+                          className="!h-8 !w-8"
+                        >
+                          <Pencil className="h-4 w-4" aria-hidden />
+                        </IconButton>
+                        {!isDefault && (
+                          <IconButton
+                            aria-label={`删除工作区 ${workspace.name}`}
+                            title="删除"
+                            onClick={() => setDeleting(workspace)}
+                            className="!h-8 !w-8"
+                          >
+                            <Trash2 className="h-4 w-4" aria-hidden />
+                          </IconButton>
+                        )}
+                      </div>
                     </div>
                     <p className="line-clamp-2 text-body-small text-on-surface-variant">
                       {workspace.description || "暂无描述"}
                     </p>
                     <p className="text-label-medium text-on-surface-variant">
                       {workspace.mode === "docs"
-                        ? workspace.category_count + " 个子项目 · " + workspace.public_doc_count + " 篇公共文档"
-                        : workspace.group_count + " 个分类"}
+                        ? `${workspace.category_count} 个子项目 · ${workspace.public_doc_count} 篇公共文档`
+                        : `${workspace.group_count} 个组别 · 浅层 ${workspace.shallow_months} 个月`}
                     </p>
                   </div>
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex items-center justify-end">
                     <Button
                       variant="tonal"
                       size="sm"
@@ -113,26 +144,8 @@ export function WorkspaceSettings({
                       onClick={() => onSelect(workspace.id)}
                     >
                       {active && <Check className="h-3.5 w-3.5" aria-hidden />}
-                      <span>{active ? "当前工作区" : "切换至此工作区"}</span>
+                      <span>{active ? "当前工作区" : "切换"}</span>
                     </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setEditing({ mode: "edit", workspace })}
-                    >
-                      <Pencil className="h-3.5 w-3.5" aria-hidden />
-                      <span>编辑</span>
-                    </Button>
-                    {isDefault ? (
-                      <span className="self-center text-label-medium text-on-surface-variant">
-                        默认工作区常驻
-                      </span>
-                    ) : (
-                      <Button variant="secondary" size="sm" onClick={() => setDeleting(workspace)}>
-                        <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                        <span>删除</span>
-                      </Button>
-                    )}
                   </div>
                 </Card>
               );
@@ -180,21 +193,41 @@ function WorkspaceDialog({
   const [name, setName] = useState(existing?.name ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(existing?.mode ?? "memory");
+  const [shallowMonthsText, setShallowMonthsText] = useState(
+    String(existing?.shallow_months ?? 3),
+  );
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const parsedShallow = Number(shallowMonthsText);
+  const shallowInvalid =
+    workspaceMode === "memory" &&
+    (!shallowMonthsText.trim() ||
+      !Number.isInteger(parsedShallow) ||
+      parsedShallow < SHALLOW_MIN ||
+      parsedShallow > SHALLOW_MAX);
   const nameInvalid = !name.trim() || name.length > NAME_MAX;
   const descInvalid = description.length > DESC_MAX;
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (nameInvalid || descInvalid || shallowInvalid) return;
     setBusy(true);
     setFailure(null);
     try {
       if (existing) {
-        await api.updateWorkspace(existing.id, { name, description });
+        await api.updateWorkspace(existing.id, {
+          name,
+          description,
+          ...(workspaceMode === "memory" ? { shallow_months: parsedShallow } : {}),
+        });
       } else {
-        await api.createWorkspace({ name, description, mode: workspaceMode });
+        await api.createWorkspace({
+          name,
+          description,
+          mode: workspaceMode,
+          ...(workspaceMode === "memory" ? { shallow_months: parsedShallow } : {}),
+        });
       }
       await onSaved();
     } catch (error) {
@@ -244,15 +277,7 @@ function WorkspaceDialog({
           />
         </FormField>
 
-        <FormField
-          label="工作区模式"
-          id="workspace-mode"
-          hint={
-            existing
-              ? "模式创建后不可修改"
-              : "记忆模式承接分组与记忆，文档模式承载两级文档区"
-          }
-        >
+        <FormField label="工作区模式" id="workspace-mode">
           <Select
             id="workspace-mode"
             aria-label="工作区模式"
@@ -264,6 +289,27 @@ function WorkspaceDialog({
             <option value="docs">文档模式</option>
           </Select>
         </FormField>
+
+        {workspaceMode === "memory" && (
+          <FormField label="浅层记忆周期（月）" id="workspace-shallow-months">
+            <Input
+              id="workspace-shallow-months"
+              type="number"
+              min={SHALLOW_MIN}
+              max={SHALLOW_MAX}
+              step={1}
+              aria-label="浅层记忆周期（月）"
+              value={shallowMonthsText}
+              invalid={shallowInvalid}
+              onChange={(event) => setShallowMonthsText(event.target.value)}
+            />
+            {shallowInvalid && (
+              <p role="alert" className="mt-1 text-body-small text-error">
+                请输入 {SHALLOW_MIN}~{SHALLOW_MAX} 之间的整数
+              </p>
+            )}
+          </FormField>
+        )}
 
         {failure && (
           <p role="alert" className="text-body-small text-error">
@@ -279,7 +325,7 @@ function WorkspaceDialog({
             variant="primary"
             size="sm"
             type="submit"
-            disabled={nameInvalid || descInvalid || busy}
+            disabled={nameInvalid || descInvalid || shallowInvalid || busy}
             busy={busy}
             busyText={existing ? "正在保存..." : "正在创建..."}
           >

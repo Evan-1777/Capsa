@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"capsa/internal/auth"
 	"capsa/internal/dal"
@@ -227,8 +228,14 @@ func TestMCPInitializeAndTools(t *testing.T) {
 	list := mcpCall(t, env, session, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	listResult, _ := list["result"].(map[string]any)
 	tools, _ := listResult["tools"].([]any)
-	if len(tools) != 7 {
-		t.Fatalf("expected 7 tools, got %d", len(tools))
+	if len(tools) != 11 {
+		t.Fatalf("expected 11 tools, got %d", len(tools))
+	}
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		if tool["name"] == "memory_peek" {
+			t.Fatal("memory_peek must be removed")
+		}
 	}
 
 	call := mcpCall(t, env, session, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_groups","arguments":{}}}`)
@@ -238,7 +245,7 @@ func TestMCPInitializeAndTools(t *testing.T) {
 		t.Fatal("memory_groups returned no content")
 	}
 	first, _ := content[0].(map[string]any)
-	if !strings.HasPrefix(first["text"].(string), "# 可访问分组") {
+	if !strings.HasPrefix(first["text"].(string), "# 可访问组别") {
 		t.Fatalf("unexpected groups text: %v", first["text"])
 	}
 }
@@ -513,7 +520,7 @@ func TestStaticCacheAndGzipIsolatedFromMCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("db.Shared: %v", err)
 	}
-	ws, err := dal.CreateWorkspace(handle, "docs-ws", "", "docs")
+	ws, err := dal.CreateWorkspace(handle, "docs-ws", "", "docs", 0)
 	if err != nil {
 		t.Fatalf("create docs workspace: %v", err)
 	}
@@ -554,4 +561,304 @@ func TestStaticCacheAndGzipIsolatedFromMCP(t *testing.T) {
 			t.Fatalf("%s Cache-Control = %q, want no-transform", ep.path, mcpResp.Header.Get("Cache-Control"))
 		}
 	}
+}
+
+func mcpCallWithToken(t *testing.T, env *testEnv, token, session, body string) map[string]any {
+	t.Helper()
+	request, err := http.NewRequest("POST", env.server.URL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new mcp request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	if session != "" {
+		request.Header.Set("Mcp-Session-Id", session)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("mcp do: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("mcp status = %d body=%s", response.StatusCode, raw)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode mcp: %v", err)
+	}
+	return payload
+}
+
+func mcpSessionForToken(t *testing.T, env *testEnv, token string) string {
+	t.Helper()
+	request, _ := http.NewRequest("POST", env.server.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	defer response.Body.Close()
+	return response.Header.Get("Mcp-Session-Id")
+}
+
+func mcpToolCall(t *testing.T, env *testEnv, token, session, name, argsJSON string) (string, bool) {
+	t.Helper()
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, name, argsJSON)
+	payload := mcpCallWithToken(t, env, token, session, body)
+	result, _ := payload["result"].(map[string]any)
+	isError, _ := result["isError"].(bool)
+	return mcpText(payload), isError
+}
+
+func TestMCPNewToolsAndLifecycle(t *testing.T) {
+	env := setup(t)
+	handle, err := db.Shared()
+	if err != nil {
+		t.Fatalf("db.Shared: %v", err)
+	}
+	// Seed a partial key (proj:rw, study:r) and a read-only key (proj:r).
+	partialID, partialToken := auth.IssueKey()
+	if err := dal.CreateKey(handle, partialID, "partial", ids.HashToken(partialToken), map[string]string{"proj": "rw", "study": "r"}); err != nil {
+		t.Fatalf("seed partial key: %v", err)
+	}
+	roID, roToken := auth.IssueKey()
+	if err := dal.CreateKey(handle, roID, "ro", ids.HashToken(roToken), map[string]string{"proj": "r"}); err != nil {
+		t.Fatalf("seed ro key: %v", err)
+	}
+
+	adminSess := mcpSessionForToken(t, env, adminToken)
+	partialSess := mcpSessionForToken(t, env, partialToken)
+	roSess := mcpSessionForToken(t, env, roToken)
+
+	future := time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+
+	// 1. Mutual exclusivity & past expires_at rejection on memory_save.
+	if _, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_save",
+		fmt.Sprintf(`{"group":"proj","title":"bad","summary":"s","body":"b","persistent":true,"expires_at":%q}`, future)); !isErr {
+		t.Fatal("persistent+expires_at must fail")
+	}
+	if _, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_save",
+		fmt.Sprintf(`{"group":"proj","title":"bad2","summary":"s","body":"b","expires_at":%q}`, past)); !isErr {
+		t.Fatal("past expires_at must fail")
+	}
+
+	// 2. Seed persistent, temporary, shallow, deep memories.
+	pID, err := dal.InsertMemory(handle, "proj", "持久条目", "持久摘要", "持久正文", []string{"pin"}, true, nil, nil)
+	if err != nil {
+		t.Fatalf("insert persistent: %v", err)
+	}
+	tID, err := dal.InsertMemory(handle, "proj", "临时条目", "临时摘要", "临时正文", []string{"tmp"}, false, &future, nil)
+	if err != nil {
+		t.Fatalf("insert temporary: %v", err)
+	}
+	sID, err := dal.InsertMemory(handle, "proj", "浅层条目", "浅层摘要", "BodyOnlyNeedle 浅层正文", []string{"TagOnlyNeedle"}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert shallow: %v", err)
+	}
+	dID, err := dal.InsertMemory(handle, "proj", "深层条目", "深层摘要", "深层正文", []string{}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert deep: %v", err)
+	}
+	fiveMonthsAgo := time.Now().UTC().AddDate(0, -5, 0).Format("2006-01-02T15:04:05.000000-07:00")
+	if _, err := handle.Exec("UPDATE memories SET updated_at = ? WHERE id = ?", fiveMonthsAgo, dID); err != nil {
+		t.Fatalf("backdate deep: %v", err)
+	}
+
+	// 3. memory_catalog four depths + unified order (persistent > temporary > shallow) + dynamic shallow_months.
+	text, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_catalog", `{"depth":"shallow"}`)
+	if isErr || !strings.Contains(text, "持久条目") || !strings.Contains(text, "临时条目") || !strings.Contains(text, "浅层条目") || strings.Contains(text, "深层条目") {
+		t.Fatalf("catalog shallow unexpected: %s", text)
+	}
+	if strings.Index(text, "持久条目") > strings.Index(text, "临时条目") || strings.Index(text, "临时条目") > strings.Index(text, "浅层条目") {
+		t.Fatalf("catalog order violated: %s", text)
+	}
+	deeperText, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_catalog", `{"depth":"deeper"}`)
+	if isErr || !strings.Contains(deeperText, "深层条目") || strings.Contains(deeperText, "浅层条目") {
+		t.Fatalf("catalog deeper unexpected: %s", deeperText)
+	}
+	// Raise default workspace shallow_months to 12 => dID becomes shallow immediately.
+	status, payload := env.envelope(t, "PUT", "/api/workspaces/default", `{"shallow_months":12}`)
+	mustStatus(t, "update shallow_months=12", status, 200, payload)
+	text12, _ := mcpToolCall(t, env, adminToken, adminSess, "memory_catalog", `{"depth":"shallow"}`)
+	if !strings.Contains(text12, "深层条目") {
+		t.Fatalf("updating shallow_months=12 should promote 5-month-old entry: %s", text12)
+	}
+	// Restore shallow_months to 3.
+	status, payload = env.envelope(t, "PUT", "/api/workspaces/default", `{"shallow_months":3}`)
+	mustStatus(t, "restore shallow_months=3", status, 200, payload)
+
+	// 4. memory_search search_in isolation (tags / body) & return_fields.
+	tagHit, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_search", `{"query":"TagOnlyNeedle","search_in":["tags"]}`)
+	if isErr || !strings.Contains(tagHit, sID) {
+		t.Fatalf("search_in=[tags] should hit: %s", tagHit)
+	}
+	bodyMiss, _ := mcpToolCall(t, env, adminToken, adminSess, "memory_search", `{"query":"TagOnlyNeedle","search_in":["body"]}`)
+	if strings.Contains(bodyMiss, sID) {
+		t.Fatalf("search_in=[body] must not hit tags: %s", bodyMiss)
+	}
+	bodyHit, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_search", `{"query":"BodyOnlyNeedle","search_in":["body"],"return_fields":["title","summary"]}`)
+	if isErr || !strings.Contains(bodyHit, "浅层摘要") {
+		t.Fatalf("search_in=[body] with summary return_fields failed: %s", bodyHit)
+	}
+
+	// 5. memory_edit exact replace, ambiguity block, replace_all, and ro denial.
+	if _, isErr := mcpToolCall(t, env, roToken, roSess, "memory_edit",
+		fmt.Sprintf(`{"id":%q,"old_string":"浅层正文","new_string":"x"}`, sID)); !isErr {
+		t.Fatal("ro key must not edit")
+	}
+	editOut, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_edit",
+		fmt.Sprintf(`{"id":%q,"old_string":"浅层正文","new_string":"浅层正文-已改"}`, sID))
+	if isErr || !strings.Contains(editOut, "替换 1 处") {
+		t.Fatalf("memory_edit failed: %s", editOut)
+	}
+	// Editing deep memory promotes it back to shallow because updated_at refreshes.
+	if _, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_edit",
+		fmt.Sprintf(`{"id":%q,"old_string":"深层正文","new_string":"深层正文-刷新"}`, dID)); isErr {
+		t.Fatal("edit deep memory failed")
+	}
+	afterPromote, _ := mcpToolCall(t, env, adminToken, adminSess, "memory_catalog", `{"depth":"shallow"}`)
+	if !strings.Contains(afterPromote, "深层条目") {
+		t.Fatalf("edited deep memory should promote to shallow: %s", afterPromote)
+	}
+
+	// 6. Trash read + permission masking + restore persistent with expires_at clears pinned.
+	if _, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_forget",
+		fmt.Sprintf(`{"id":%q,"reason":"归档测试"}`, pID)); isErr {
+		t.Fatal("forget persistent failed")
+	}
+	// Unauthorized group (life) trash entry must return [无权访问] for partial key.
+	lifeID, err := dal.InsertMemory(handle, "life", "私密生活", "摘要", "正文", nil, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert life: %v", err)
+	}
+	if _, err := dal.SoftDeleteMemory(handle, lifeID, "清理"); err != nil {
+		t.Fatalf("soft delete life: %v", err)
+	}
+	readAuth, isErr := mcpToolCall(t, env, partialToken, partialSess, "memory_read", fmt.Sprintf(`{"ids":[%q,%q]}`, pID, lifeID))
+	if isErr || !strings.Contains(readAuth, "持久正文") || !strings.Contains(readAuth, "[无权访问]") || strings.Contains(readAuth, "life") {
+		t.Fatalf("memory_read trash masking failed: %s", readAuth)
+	}
+	// Restore persistent memory with expires_at => atomically clears pinned.
+	if _, isErr := mcpToolCall(t, env, adminToken, adminSess, "memory_restore",
+		fmt.Sprintf(`{"id":%q,"expires_at":%q}`, pID, future)); isErr {
+		t.Fatal("restore persistent with expires_at failed")
+	}
+	row, _ := dal.GetMemoryForWeb(handle, pID)
+	if row["pinned"] != int64(0) || row["expires_at"] == nil {
+		t.Fatalf("restore with expires_at must clear pinned: pinned=%v expires_at=%v", row["pinned"], row["expires_at"])
+	}
+
+	// 7. memory_empty_trash scope isolation: partial key (proj:rw, study:r) must only empty proj.
+	studyTrash, _ := dal.InsertMemory(handle, "study", "学习回收", "s", "b", nil, false, nil, nil)
+	_, _ = dal.SoftDeleteMemory(handle, studyTrash, "del")
+	_, _ = dal.SoftDeleteMemory(handle, tID, "del")
+	if _, isErr := mcpToolCall(t, env, roToken, roSess, "memory_empty_trash", `{}`); !isErr {
+		t.Fatal("ro key must not empty trash")
+	}
+	emptyOut, isErr := mcpToolCall(t, env, partialToken, partialSess, "memory_empty_trash", `{}`)
+	if isErr || !strings.Contains(emptyOut, "1") {
+		t.Fatalf("partial empty trash unexpected: %s", emptyOut)
+	}
+	if left, _ := dal.GetMemoryForWeb(handle, studyTrash); left == nil {
+		t.Fatal("partial empty trash must not delete read-only group study")
+	}
+	if left, _ := dal.GetMemoryForWeb(handle, lifeID); left == nil {
+		t.Fatal("partial empty trash must not delete unauthorized group life")
+	}
+}
+
+func TestWebAPIv2Contracts(t *testing.T) {
+	env := setup(t)
+	handle, err := db.Shared()
+	if err != nil {
+		t.Fatalf("db.Shared: %v", err)
+	}
+
+	// 1. Workspace shallow_months strict validation.
+	for _, body := range []string{
+		`{"shallow_months":true}`,
+		`{"shallow_months":1.5}`,
+		`{"shallow_months":0}`,
+		`{"shallow_months":121}`,
+	} {
+		status, payload := env.envelope(t, "PUT", "/api/workspaces/default", body)
+		mustStatus(t, "invalid shallow_months "+body, status, 422, payload)
+	}
+	docsWs := newDocsWorkspace(t, env, "文档不可配N")
+	status, payload := env.envelope(t, "PUT", "/api/workspaces/"+docsWs.workspaceID, `{"shallow_months":6}`)
+	mustStatus(t, "docs workspace shallow_months rejected", status, 422, payload)
+
+	// 2. status=overdue rejected; tier filtering works.
+	status, payload = env.envelope(t, "GET", "/api/memories?status=overdue", "")
+	mustStatus(t, "overdue status rejected", status, 422, payload)
+
+	future := time.Now().UTC().Add(72 * time.Hour).Format(time.RFC3339)
+	status, payload = env.envelope(t, "POST", "/api/memories",
+		`{"group":"proj","title":"Web持久","summary":"s","body":"b","persistent":true}`)
+	mustStatus(t, "create persistent", status, 200, payload)
+	status, payload = env.envelope(t, "POST", "/api/memories",
+		fmt.Sprintf(`{"group":"proj","title":"Web临时","summary":"s","body":"b","expires_at":%q}`, future))
+	mustStatus(t, "create temporary", status, 200, payload)
+	tempID := dataOf(payload)["id"].(string)
+
+	status, payload = env.envelope(t, "GET", "/api/memories?tier=persistent", "")
+	mustStatus(t, "tier persistent", status, 200, payload)
+	if len(itemsOf(payload)) != 1 {
+		t.Fatalf("tier=persistent count = %d, want 1", len(itemsOf(payload)))
+	}
+	firstItem := itemsOf(payload)[0].(map[string]any)
+	if _, hasPinned := firstItem["pinned"]; hasPinned {
+		t.Fatal("web response must not leak pinned column")
+	}
+	if _, hasShallow := firstItem["shallow_months"]; hasShallow {
+		t.Fatal("web response must not leak shallow_months column")
+	}
+
+	// 3. Purge & empty trash (with empty JSON body).
+	status, payload = env.envelope(t, "DELETE", "/api/memories/"+tempID+"/purge", "")
+	mustStatus(t, "purge active must 404", status, 404, payload)
+	status, payload = env.envelope(t, "DELETE", "/api/memories/"+tempID, `{"reason":"清理"}`)
+	mustStatus(t, "soft delete", status, 200, payload)
+	status, payload = env.envelope(t, "DELETE", "/api/memories/"+tempID+"/purge", "")
+	mustStatus(t, "purge deleted", status, 200, payload)
+
+	status, payload = env.envelope(t, "POST", "/api/memories/trash/empty", "")
+	mustStatus(t, "empty trash with empty body", status, 200, payload)
+
+	// 4. PUT /api/keys/{id}: online edit, revoked block, self-lock prevention.
+	dbAdminID, dbAdminToken := auth.IssueKey()
+	if err := dal.CreateKey(handle, dbAdminID, "WebAdmin", ids.HashToken(dbAdminToken), map[string]string{"*": "rw"}); err != nil {
+		t.Fatalf("seed db admin: %v", err)
+	}
+	// Self-lock attempt must return 422.
+	resp := env.request(t, "PUT", "/api/keys/"+dbAdminID, dbAdminToken, `{"scopes":{"proj":"rw"}}`)
+	if resp.StatusCode != 422 {
+		t.Fatalf("self-lock downgrade status = %d, want 422", resp.StatusCode)
+	}
+	resp.Body.Close()
+	// Renaming current admin key succeeds and returns full KeyRecord.
+	resp = env.request(t, "PUT", "/api/keys/"+dbAdminID, dbAdminToken, `{"name":"WebAdmin-New"}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("rename current admin key status = %d", resp.StatusCode)
+	}
+	keyData := dataOf(decodeEnvelope(t, resp))
+	if keyData["name"] != "WebAdmin-New" || keyData["created_at"] == nil {
+		t.Fatalf("updated key record incomplete: %v", keyData)
+	}
+	// Revoked key cannot be edited.
+	agentID, agentToken := auth.IssueKey()
+	if err := dal.CreateKey(handle, agentID, "Agent", ids.HashToken(agentToken), map[string]string{"proj": "r"}); err != nil {
+		t.Fatalf("seed agent key: %v", err)
+	}
+	status, payload = env.envelope(t, "PUT", "/api/keys/"+agentID, `{"name":"Agent-RW","scopes":{"proj":"rw"}}`)
+	mustStatus(t, "edit active agent key", status, 200, payload)
+	status, payload = env.envelope(t, "POST", "/api/keys/"+agentID+"/revoke", "")
+	mustStatus(t, "revoke agent key", status, 200, payload)
+	status, payload = env.envelope(t, "PUT", "/api/keys/"+agentID, `{"name":"Blocked"}`)
+	mustStatus(t, "edit revoked key rejected", status, 422, payload)
 }

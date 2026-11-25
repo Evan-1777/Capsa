@@ -258,6 +258,10 @@ export default function App() {
         onToggleTheme={toggleTheme}
         onSignOut={signOut}
         workspace={activeWorkspace}
+        workspaces={workspaces ?? []}
+        onUpdateCurrentKeyName={(nextName) =>
+          setInfo((prev) => (prev ? { ...prev, name: nextName } : prev))
+        }
         shell={shell}
       />
     </Suspense>

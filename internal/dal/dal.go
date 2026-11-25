@@ -10,34 +10,38 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"capsa/internal/db"
 	"capsa/internal/ids"
 	"capsa/internal/permissions"
 )
 
-// Column projections, aligned with capsa/dal.py.
+// Shared SQL fragments for memory queries carrying workspace shallow_months.
 const (
-	memoryReadFields           = "id, group_slug, title, summary, body, tags, review_at, pinned, created_at, updated_at"
-	memorySearchFields         = "id, group_slug, title, summary, tags, review_at, pinned, updated_at"
-	memorySearchWithBodyFields = memorySearchFields + ", body"
+	memoryJoin           = "memories m JOIN groups g ON g.slug = m.group_slug JOIN workspaces w ON w.id = g.workspace_id"
+	memoryBaseFields     = "m.id, m.group_slug, m.title, m.summary, m.tags, m.pinned, m.expires_at, m.created_at, m.updated_at, m.deleted_at, m.deleted_reason, w.shallow_months"
+	memoryWithBodyFields = memoryBaseFields + ", m.body"
+	memoryUnifiedOrder   = "ORDER BY CASE WHEN m.pinned != 0 THEN 0 WHEN m.expires_at IS NOT NULL THEN 1 ELSE 2 END ASC, m.updated_at DESC, m.id DESC"
 )
 
-// WebListFields is the list projection: always carries the recycle-bin columns.
+// WebListFields is the public list projection: internal columns (pinned,
+// shallow_months) are queried in SQL for tier derivation but excluded here so
+// JSON responses never leak them.
 var WebListFields = []string{
-	"id", "group_slug", "title", "summary", "tags", "review_at", "pinned",
+	"id", "group_slug", "title", "summary", "tags", "expires_at",
 	"updated_at", "deleted_at", "deleted_reason",
 }
 
-// WebItemFields is the detail projection, which additionally carries the body.
+// WebItemFields is the public detail projection, which additionally carries body.
 var WebItemFields = []string{
-	"id", "group_slug", "title", "summary", "body", "tags", "review_at",
-	"pinned", "created_at", "updated_at", "deleted_at", "deleted_reason",
+	"id", "group_slug", "title", "summary", "body", "tags", "expires_at",
+	"created_at", "updated_at", "deleted_at", "deleted_reason",
 }
 
 var memoryUpdateFields = map[string]bool{
 	"title": true, "summary": true, "body": true,
-	"tags": true, "review_at": true, "pinned": true,
+	"tags": true, "pinned": true, "expires_at": true,
 }
 
 // DuplicateMemoryIDError is raised when every generated memory id collided with
@@ -97,9 +101,33 @@ func decodeScopes(raw string) map[string]string {
 	return scopes
 }
 
+// ArchiveExpiredMemories lazily moves expired temporary memories into the
+// recycle bin. A fast index-only probe avoids acquiring a write lock on the
+// common path where nothing has expired.
+func ArchiveExpiredMemories(handle *sql.DB, now string) (int64, error) {
+	var one int
+	err := handle.QueryRow(
+		"SELECT 1 FROM memories WHERE deleted_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 1",
+		now).Scan(&one)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	result, err := handle.Exec(
+		"UPDATE memories SET deleted_at = ?, deleted_reason = '临时记忆到期自动归档' WHERE deleted_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?",
+		now, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // GetMemoriesBatchForAccess applies the three-state judgement to each requested
-// id, preserving the order they were given in.
-func GetMemoriesBatchForAccess(handle *sql.DB, memoryIDs []string, scopes map[string]string) ([]map[string]any, error) {
+// id, preserving the order they were given in. When includeDeleted is true,
+// recycle-bin entries are also resolved under the same three-state masking.
+func GetMemoriesBatchForAccess(handle *sql.DB, memoryIDs []string, scopes map[string]string, includeDeleted bool) ([]map[string]any, error) {
 	if len(memoryIDs) == 0 {
 		return []map[string]any{}, nil
 	}
@@ -107,9 +135,13 @@ func GetMemoriesBatchForAccess(handle *sql.DB, memoryIDs []string, scopes map[st
 	for i, id := range memoryIDs {
 		params[i] = id
 	}
+	deletedFilter := " AND m.deleted_at IS NULL"
+	if includeDeleted {
+		deletedFilter = ""
+	}
 	rows, err := queryMaps(handle,
-		fmt.Sprintf("SELECT %s FROM memories WHERE id IN (%s) AND deleted_at IS NULL",
-			memoryReadFields, placeholders(len(memoryIDs))), params...)
+		fmt.Sprintf("SELECT %s FROM %s WHERE m.id IN (%s)%s",
+			memoryWithBodyFields, memoryJoin, placeholders(len(memoryIDs)), deletedFilter), params...)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +162,7 @@ func GetMemoriesBatchForAccess(handle *sql.DB, memoryIDs []string, scopes map[st
 			}
 			results = append(results, item)
 		default:
-			// 只允许返回 status 与 id：携带 group_slug 会泄露未授权分组名。
+			// 只允许返回 status 与 id：携带 group_slug 会泄露未授权组别名。
 			results = append(results, map[string]any{"status": "forbidden", "id": id})
 		}
 	}
@@ -144,42 +176,45 @@ func ListActiveTitlesByGroup(handle *sql.DB, group string) ([]map[string]any, er
 		"SELECT id, title FROM memories WHERE deleted_at IS NULL AND group_slug = ?", group)
 }
 
-// ListActiveMemoriesForSearch returns active entries inside the authorized
-// groups; body is projected only when includeBody is true.
-func ListActiveMemoriesForSearch(handle *sql.DB, scopes map[string]string, group string, includeBody bool) ([]map[string]any, error) {
-	return ListActiveMemoriesForSearchInWorkspace(handle, scopes, "", group, includeBody)
-}
-
-// ListActiveMemoriesForSearchInWorkspace narrows the result to the groups of
-// one memory workspace when workspaceID is non-empty; an empty workspaceID
-// keeps the workspace-less contract used by /mcp and the CLI.
-func ListActiveMemoriesForSearchInWorkspace(handle *sql.DB, scopes map[string]string, workspaceID, group string, includeBody bool) ([]map[string]any, error) {
+// ListMemoriesForCatalogAndSearch returns authorized memories covering active
+// and/or deleted entries in unified order; body is projected only when
+// includeBody is true.
+func ListMemoriesForCatalogAndSearch(handle *sql.DB, scopes map[string]string, workspaceID, group string, includeActive, includeDeleted, includeBody bool) ([]map[string]any, error) {
 	_, wildcard := scopes["*"]
 	slugs := sortedKeys(scopes)
-	if !wildcard && len(slugs) == 0 {
+	if (!wildcard && len(slugs) == 0) || (!includeActive && !includeDeleted) {
 		return []map[string]any{}, nil
 	}
-	conditions := []string{"deleted_at IS NULL"}
+	conditions := []string{}
 	params := []any{}
 	if !wildcard {
-		conditions = append(conditions, fmt.Sprintf("group_slug IN (%s)", placeholders(len(slugs))))
+		conditions = append(conditions, fmt.Sprintf("m.group_slug IN (%s)", placeholders(len(slugs))))
 		for _, slug := range slugs {
 			params = append(params, slug)
 		}
 	}
 	if workspaceID != "" {
-		conditions = append(conditions, "group_slug IN (SELECT slug FROM groups WHERE workspace_id = ?)")
+		conditions = append(conditions, "g.workspace_id = ?")
 		params = append(params, workspaceID)
 	}
 	if group != "" {
-		conditions = append(conditions, "group_slug = ?")
+		conditions = append(conditions, "m.group_slug = ?")
 		params = append(params, group)
 	}
-	fields := memorySearchFields
-	if includeBody {
-		fields = memorySearchWithBodyFields
+	if includeActive && !includeDeleted {
+		conditions = append(conditions, "m.deleted_at IS NULL")
+	} else if !includeActive && includeDeleted {
+		conditions = append(conditions, "m.deleted_at IS NOT NULL")
 	}
-	sqlText := fmt.Sprintf("SELECT %s FROM memories WHERE %s", fields, strings.Join(conditions, " AND "))
+	where := ""
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
+	}
+	fields := memoryBaseFields
+	if includeBody {
+		fields = memoryWithBodyFields
+	}
+	sqlText := fmt.Sprintf("SELECT %s FROM %s %s %s", fields, memoryJoin, where, memoryUnifiedOrder)
 	return queryMaps(handle, sqlText, params...)
 }
 
@@ -361,9 +396,33 @@ func TouchLastUsedAt(handle *sql.DB, keyID string) error {
 	return err
 }
 
+// UpdateKey updates name and scopes of an active key without changing its
+// token_hash. It returns "not_found", "already_revoked" or "updated".
+func UpdateKey(handle *sql.DB, keyID, name string, scopes map[string]string) (string, error) {
+	var revokedAt sql.NullString
+	err := handle.QueryRow("SELECT revoked_at FROM keys WHERE id = ?", keyID).Scan(&revokedAt)
+	if err == sql.ErrNoRows {
+		return "not_found", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if revokedAt.Valid {
+		return "already_revoked", nil
+	}
+	encoded, err := json.Marshal(scopes)
+	if err != nil {
+		return "", err
+	}
+	if _, err := handle.Exec("UPDATE keys SET name = ?, scopes = ? WHERE id = ?", name, string(encoded), keyID); err != nil {
+		return "", err
+	}
+	return "updated", nil
+}
+
 // InsertMemory inserts an entry. A generated id retries on a primary key clash;
 // a caller-supplied id fails immediately with DuplicateMemoryIDError.
-func InsertMemory(handle *sql.DB, groupSlug, title, summary, body string, tags []string, reviewAt *string, memoryID *string) (string, error) {
+func InsertMemory(handle *sql.DB, groupSlug, title, summary, body string, tags []string, persistent bool, expiresAt *string, memoryID *string) (string, error) {
 	stamp := db.UtcNow()
 	if tags == nil {
 		tags = []string{}
@@ -371,6 +430,10 @@ func InsertMemory(handle *sql.DB, groupSlug, title, summary, body string, tags [
 	encoded, err := json.Marshal(tags)
 	if err != nil {
 		return "", err
+	}
+	pinnedVal := 0
+	if persistent {
+		pinnedVal = 1
 	}
 	candidate := memoryID
 	lastID := ""
@@ -383,9 +446,9 @@ func InsertMemory(handle *sql.DB, groupSlug, title, summary, body string, tags [
 		}
 		lastID = current
 		_, err := handle.Exec(
-			"INSERT INTO memories (id, group_slug, title, summary, body, tags, review_at,"+
-				" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			current, groupSlug, title, summary, body, string(encoded), reviewAt, stamp, stamp)
+			"INSERT INTO memories (id, group_slug, title, summary, body, tags, pinned, expires_at,"+
+				" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			current, groupSlug, title, summary, body, string(encoded), pinnedVal, expiresAt, stamp, stamp)
 		if err != nil {
 			if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
 				return "", err
@@ -478,11 +541,24 @@ func SoftDeleteMemory(handle *sql.DB, memoryID, reason string) (bool, error) {
 	return affected > 0, nil
 }
 
-// RestoreMemory restores a soft-deleted entry, only when currently deleted.
-func RestoreMemory(handle *sql.DB, memoryID string) (bool, error) {
-	result, err := handle.Exec(
-		"UPDATE memories SET deleted_at = NULL, deleted_reason = NULL WHERE id = ? AND deleted_at IS NOT NULL",
-		memoryID)
+// RestoreMemory restores a soft-deleted entry. When newExpiresAt is non-nil it
+// atomically clears pinned=0 and sets expires_at to preserve the persistent vs
+// temporary exclusivity invariant; otherwise any already-expired expires_at is
+// automatically cleared so the entry stays active.
+func RestoreMemory(handle *sql.DB, memoryID string, newExpiresAt *string, now string) (bool, error) {
+	var (
+		result sql.Result
+		err    error
+	)
+	if newExpiresAt != nil {
+		result, err = handle.Exec(
+			"UPDATE memories SET pinned = 0, expires_at = ?, deleted_at = NULL, deleted_reason = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+			*newExpiresAt, memoryID)
+	} else {
+		result, err = handle.Exec(
+			"UPDATE memories SET deleted_at = NULL, deleted_reason = NULL, expires_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN NULL ELSE expires_at END WHERE id = ? AND deleted_at IS NOT NULL",
+			now, memoryID)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -491,6 +567,101 @@ func RestoreMemory(handle *sql.DB, memoryID string) (bool, error) {
 		return false, err
 	}
 	return affected > 0, nil
+}
+
+// PurgeMemory permanently deletes a single entry from the recycle bin.
+func PurgeMemory(handle *sql.DB, memoryID string) (bool, error) {
+	result, err := handle.Exec(
+		"DELETE FROM memories WHERE id = ? AND deleted_at IS NOT NULL", memoryID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// EmptyTrashMemories permanently deletes recycle-bin entries inside the
+// caller's writable group scope (optionally narrowed by workspaceID / group).
+func EmptyTrashMemories(handle *sql.DB, writableSlugs []string, wildcardWrite bool, workspaceID, group string) (int64, error) {
+	if !wildcardWrite && len(writableSlugs) == 0 {
+		return 0, nil
+	}
+	conditions := []string{"deleted_at IS NOT NULL"}
+	params := []any{}
+	if !wildcardWrite {
+		conditions = append(conditions, fmt.Sprintf("group_slug IN (%s)", placeholders(len(writableSlugs))))
+		params = append(params, stringSliceToAny(writableSlugs)...)
+	}
+	if workspaceID != "" {
+		conditions = append(conditions, "group_slug IN (SELECT slug FROM groups WHERE workspace_id = ?)")
+		params = append(params, workspaceID)
+	}
+	if group != "" {
+		conditions = append(conditions, "group_slug = ?")
+		params = append(params, group)
+	}
+	result, err := handle.Exec(
+		fmt.Sprintf("DELETE FROM memories WHERE %s", strings.Join(conditions, " AND ")), params...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// EditMemoryBody performs an atomic exact-text replacement on an active memory
+// body inside an exclusive write transaction. It returns the replacement count
+// and status: "empty_match", "not_found", "no_match", "ambiguous",
+// "empty_body", "body_too_long" or "edited".
+func EditMemoryBody(handle *sql.DB, memoryID, oldString, newString string, replaceAll bool, bodyMax int) (int, string, error) {
+	if oldString == "" {
+		return 0, "empty_match", nil
+	}
+	count := 0
+	status := ""
+	err := withImmediateTx(handle, func(ctx context.Context, conn *sql.Conn) (bool, error) {
+		var body string
+		err := conn.QueryRowContext(ctx,
+			"SELECT body FROM memories WHERE id = ? AND deleted_at IS NULL", memoryID).Scan(&body)
+		if err == sql.ErrNoRows {
+			status = "not_found"
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		count = strings.Count(body, oldString)
+		if count == 0 {
+			status = "no_match"
+			return false, nil
+		}
+		if count > 1 && !replaceAll {
+			status = "ambiguous"
+			return false, nil
+		}
+		replaced := strings.Replace(body, oldString, newString, 1)
+		if replaceAll {
+			replaced = strings.ReplaceAll(body, oldString, newString)
+		}
+		if strings.TrimSpace(replaced) == "" {
+			status = "empty_body"
+			return false, nil
+		}
+		if utf8.RuneCountInString(replaced) > bodyMax {
+			status = "body_too_long"
+			return false, nil
+		}
+		if _, err := conn.ExecContext(ctx,
+			"UPDATE memories SET body = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+			replaced, db.UtcNow(), memoryID); err != nil {
+			return false, err
+		}
+		status = "edited"
+		return true, nil
+	})
+	return count, status, err
 }
 
 // ListDeletedMemories lists recycle-bin entries ordered by deletion time.
@@ -504,16 +675,16 @@ func ListDeletedMemories(handle *sql.DB, groupSlug string) ([]map[string]any, er
 	return queryMaps(handle, sqlText+" ORDER BY deleted_at DESC, id DESC", params...)
 }
 
-// ListMemoriesForWeb pages active / overdue / deleted entries inside the
-// authorized groups, ordered by (pinned DESC, updated_at DESC, id DESC).
-// Keyword matching is deliberately absent: hits and ordering belong to retrieval.
-func ListMemoriesForWeb(handle *sql.DB, scopes map[string]string, status, group string, offset, limit int) ([]map[string]any, int, error) {
-	return ListMemoriesForWebInWorkspace(handle, scopes, "", status, group, offset, limit)
+// ListMemoriesForWeb pages active / deleted entries inside the authorized
+// groups in unified order.
+func ListMemoriesForWeb(handle *sql.DB, scopes map[string]string, status, tier, group string, offset, limit int) ([]map[string]any, int, error) {
+	return ListMemoriesForWebInWorkspace(handle, scopes, "", status, tier, group, offset, limit)
 }
 
 // ListMemoriesForWebInWorkspace narrows the page to one memory workspace when
-// workspaceID is non-empty. The return triple stays (rows, total, err).
-func ListMemoriesForWebInWorkspace(handle *sql.DB, scopes map[string]string, workspaceID, status, group string, offset, limit int) ([]map[string]any, int, error) {
+// workspaceID is non-empty. SQL handles persistent / temporary tier filters;
+// shallow / deep filtering belongs to the service layer via retrieval.ComputeTier.
+func ListMemoriesForWebInWorkspace(handle *sql.DB, scopes map[string]string, workspaceID, status, tier, group string, offset, limit int) ([]map[string]any, int, error) {
 	_, wildcard := scopes["*"]
 	slugs := sortedKeys(scopes)
 	if !wildcard && len(slugs) == 0 {
@@ -522,36 +693,38 @@ func ListMemoriesForWebInWorkspace(handle *sql.DB, scopes map[string]string, wor
 	conditions := []string{}
 	params := []any{}
 	if !wildcard {
-		conditions = append(conditions, fmt.Sprintf("group_slug IN (%s)", placeholders(len(slugs))))
+		conditions = append(conditions, fmt.Sprintf("m.group_slug IN (%s)", placeholders(len(slugs))))
 		params = append(params, stringSliceToAny(slugs)...)
 	}
 	if workspaceID != "" {
-		conditions = append(conditions, "group_slug IN (SELECT slug FROM groups WHERE workspace_id = ?)")
+		conditions = append(conditions, "g.workspace_id = ?")
 		params = append(params, workspaceID)
 	}
-	switch status {
-	case "active":
-		conditions = append(conditions, "deleted_at IS NULL")
-	case "deleted":
-		conditions = append(conditions, "deleted_at IS NOT NULL")
-	default:
-		conditions = append(conditions, "deleted_at IS NULL AND review_at IS NOT NULL AND review_at < ?")
-		params = append(params, db.UtcNow())
+	if status == "deleted" {
+		conditions = append(conditions, "m.deleted_at IS NOT NULL")
+	} else {
+		conditions = append(conditions, "m.deleted_at IS NULL")
+		switch tier {
+		case "persistent":
+			conditions = append(conditions, "m.pinned != 0")
+		case "temporary":
+			conditions = append(conditions, "m.pinned = 0 AND m.expires_at IS NOT NULL")
+		}
 	}
 	if group != "" {
-		conditions = append(conditions, "group_slug = ?")
+		conditions = append(conditions, "m.group_slug = ?")
 		params = append(params, group)
 	}
 	where := strings.Join(conditions, " AND ")
 	var total int
 	if err := handle.QueryRow(
-		fmt.Sprintf("SELECT COUNT(*) FROM memories WHERE %s", where), params...).Scan(&total); err != nil {
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s", memoryJoin, where), params...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	pageParams := append(append([]any{}, params...), limit, offset)
 	rows, err := queryMaps(handle,
-		fmt.Sprintf("SELECT %s FROM memories WHERE %s ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ? OFFSET ?",
-			strings.Join(WebListFields, ", "), where), pageParams...)
+		fmt.Sprintf("SELECT %s FROM %s WHERE %s %s LIMIT ? OFFSET ?",
+			memoryBaseFields, memoryJoin, where, memoryUnifiedOrder), pageParams...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -562,7 +735,7 @@ func ListMemoriesForWebInWorkspace(handle *sql.DB, scopes map[string]string, wor
 // bin can locate it.
 func GetMemoryForWeb(handle *sql.DB, memoryID string) (map[string]any, error) {
 	rows, err := queryMaps(handle,
-		fmt.Sprintf("SELECT %s FROM memories WHERE id = ?", strings.Join(WebItemFields, ", ")), memoryID)
+		fmt.Sprintf("SELECT %s FROM %s WHERE m.id = ?", memoryWithBodyFields, memoryJoin), memoryID)
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
@@ -575,7 +748,7 @@ func GetKey(handle *sql.DB, keyID string) (map[string]any, error) {
 	if keyID == permissions.AdminKeyID && permissions.AdminToken() != "" {
 		return map[string]any{"id": permissions.AdminKeyID, "name": "Admin", "scopes": permissions.AdminGrants}, nil
 	}
-	rows, err := queryMaps(handle, "SELECT id, name, scopes FROM keys WHERE id = ?", keyID)
+	rows, err := queryMaps(handle, "SELECT id, name, scopes, created_at, last_used_at, revoked_at FROM keys WHERE id = ?", keyID)
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}

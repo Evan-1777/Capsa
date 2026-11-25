@@ -23,6 +23,7 @@ const (
 	DefaultWorkspaceID   = "default"
 	DefaultWorkspaceName = "默认记忆工作区"
 	DefaultWorkspaceDesc = "系统默认记忆工作区"
+	DefaultShallowMonths = 3
 )
 
 // Schema is the idempotent DDL for every table. It is the single source of
@@ -35,6 +36,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     mode TEXT NOT NULL CHECK(mode IN ('memory', 'docs')),
+    shallow_months INTEGER NOT NULL DEFAULT 3,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -66,6 +68,7 @@ CREATE TABLE IF NOT EXISTS memories (
     tags TEXT NOT NULL DEFAULT '[]',
     review_at TEXT,
     pinned INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT,
@@ -78,6 +81,7 @@ CREATE TABLE IF NOT EXISTS doc_categories (
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     access_id TEXT UNIQUE NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -107,14 +111,19 @@ ON memories(group_slug, pinned DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_active_global
 ON memories(pinned DESC, updated_at DESC, id DESC) WHERE deleted_at IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_memories_overdue
-ON memories(review_at) WHERE deleted_at IS NULL AND review_at IS NOT NULL;
+DROP INDEX IF EXISTS idx_memories_overdue;
+
+CREATE INDEX IF NOT EXISTS idx_memories_expires
+ON memories(expires_at) WHERE deleted_at IS NULL AND expires_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_memories_deleted
 ON memories(deleted_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_categories_ws_name
 ON doc_categories(workspace_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_doc_categories_ws_order
+ON doc_categories(workspace_id, sort_order ASC, created_at ASC, id ASC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_public_path
 ON documents(workspace_id, path) WHERE category_id IS NULL;
@@ -205,15 +214,26 @@ func CloseShared() error {
 	return err
 }
 
-// InitSchema creates the tables, upgrades a legacy groups table with the
-// workspace column and seeds the default memory workspace. Running it
-// repeatedly is safe.
+// InitSchema creates the tables, applies idempotent column migrations and
+// seeds the default memory workspace. Running it repeatedly is safe.
 func InitSchema(handle *sql.DB) error {
 	if _, err := handle.Exec(Schema); err != nil {
 		return err
 	}
-	if err := ensureGroupWorkspaceColumn(handle); err != nil {
-		return err
+	migrations := []struct {
+		table    string
+		column   string
+		alterSQL string
+	}{
+		{"groups", "workspace_id", "ALTER TABLE groups ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"},
+		{"workspaces", "shallow_months", "ALTER TABLE workspaces ADD COLUMN shallow_months INTEGER NOT NULL DEFAULT 3"},
+		{"doc_categories", "sort_order", "ALTER TABLE doc_categories ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"},
+		{"memories", "expires_at", "ALTER TABLE memories ADD COLUMN expires_at TEXT"},
+	}
+	for _, m := range migrations {
+		if err := ensureColumn(handle, m.table, m.column, m.alterSQL); err != nil {
+			return err
+		}
 	}
 	if _, err := handle.Exec(IndexSchema); err != nil {
 		return err
@@ -221,13 +241,12 @@ func InitSchema(handle *sql.DB) error {
 	return seedDefaultWorkspace(handle)
 }
 
-// ensureGroupWorkspaceColumn adds groups.workspace_id to databases created
-// before the workspace model. CREATE TABLE IF NOT EXISTS is a no-op there, so
-// the column only appears through this migration. The added column carries no
-// REFERENCES clause: SQLite rejects a non-NULL default on a column that
-// declares one while foreign key enforcement is on.
-func ensureGroupWorkspaceColumn(handle *sql.DB) error {
-	rows, err := handle.Query("PRAGMA table_info(groups)")
+// ensureColumn adds a column to an existing table if absent. CREATE TABLE IF
+// NOT EXISTS is a no-op on legacy databases, so new columns arrive via this
+// idempotent migration. Added columns omit REFERENCES because SQLite rejects a
+// non-NULL default on a foreign-key column when foreign_keys is enabled.
+func ensureColumn(handle *sql.DB, table, column, alterSQL string) error {
+	rows, err := handle.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
 		return err
 	}
@@ -245,7 +264,7 @@ func ensureGroupWorkspaceColumn(handle *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &primaryKey); err != nil {
 			return err
 		}
-		if name == "workspace_id" {
+		if name == column {
 			present = true
 		}
 	}
@@ -255,15 +274,15 @@ func ensureGroupWorkspaceColumn(handle *sql.DB) error {
 	if present {
 		return nil
 	}
-	_, err = handle.Exec("ALTER TABLE groups ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'")
+	_, err = handle.Exec(alterSQL)
 	return err
 }
 
 func seedDefaultWorkspace(handle *sql.DB) error {
 	stamp := UtcNow()
 	_, err := handle.Exec(
-		"INSERT OR IGNORE INTO workspaces (id, name, description, mode, created_at, updated_at) VALUES (?, ?, ?, 'memory', ?, ?)",
-		DefaultWorkspaceID, DefaultWorkspaceName, DefaultWorkspaceDesc, stamp, stamp)
+		"INSERT OR IGNORE INTO workspaces (id, name, description, mode, shallow_months, created_at, updated_at) VALUES (?, ?, ?, 'memory', ?, ?, ?)",
+		DefaultWorkspaceID, DefaultWorkspaceName, DefaultWorkspaceDesc, DefaultShallowMonths, stamp, stamp)
 	return err
 }
 

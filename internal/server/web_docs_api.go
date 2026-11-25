@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -17,6 +18,8 @@ const (
 	workspaceDescMax = 200
 	categoryNameMax  = 60
 	categoryDescMax  = 200
+	shallowMonthsMin = 1
+	shallowMonthsMax = 120
 )
 
 // registerWorkspaceRoutes mounts the workspace and document console endpoints on
@@ -29,6 +32,7 @@ func registerWorkspaceRoutes(mux *http.ServeMux) {
 
 	mux.Handle("GET /api/workspaces/{ws_id}/categories", apiHandler(docCategoryList))
 	mux.Handle("POST /api/workspaces/{ws_id}/categories", apiHandler(docCategoryCreate))
+	mux.Handle("PUT /api/workspaces/{ws_id}/categories/reorder", apiHandler(docCategoryReorder))
 	mux.Handle("PUT /api/workspaces/{ws_id}/categories/{cat_id}", apiHandler(docCategoryUpdate))
 	mux.Handle("DELETE /api/workspaces/{ws_id}/categories/{cat_id}", apiHandler(docCategoryDelete))
 	mux.Handle("POST /api/workspaces/{ws_id}/categories/{cat_id}/rotate-token", apiHandler(docCategoryRotate))
@@ -88,6 +92,20 @@ func workspaceList(w http.ResponseWriter, r *http.Request) error {
 	return ok(w, map[string]any{"items": items, "total": len(items), "offset": 0, "limit": len(items)})
 }
 
+// parseShallowMonths strictly validates a JSON integer for shallow_months,
+// rejecting booleans, decimals and out-of-range values.
+func parseShallowMonths(raw any) (int, error) {
+	num, ok := raw.(float64)
+	if !ok || math.IsNaN(num) || math.IsInf(num, 0) || math.Trunc(num) != num {
+		return 0, validation(fmt.Sprintf("shallow_months 必须是 %d~%d 之间的整数", shallowMonthsMin, shallowMonthsMax))
+	}
+	months := int(num)
+	if months < shallowMonthsMin || months > shallowMonthsMax {
+		return 0, validation(fmt.Sprintf("shallow_months 取值范围为 %d~%d，本次传入 %d", shallowMonthsMin, shallowMonthsMax, months))
+	}
+	return months, nil
+}
+
 func workspaceCreate(w http.ResponseWriter, r *http.Request) error {
 	payload, err := jsonBody(r)
 	if err != nil {
@@ -109,10 +127,21 @@ func workspaceCreate(w http.ResponseWriter, r *http.Request) error {
 	if mode != "memory" && mode != "docs" {
 		return validation("mode 必须是 memory 或 docs")
 	}
+	shallowMonths := 0
+	if raw, present := payload["shallow_months"]; present {
+		if mode == "docs" {
+			return validation("文档工作区不支持浅层记忆周期配置")
+		}
+		parsed, err := parseShallowMonths(raw)
+		if err != nil {
+			return err
+		}
+		shallowMonths = parsed
+	}
 	var created map[string]any
 	if err := withDB(func(handle *sql.DB) error {
 		var err error
-		created, err = dal.CreateWorkspace(handle, name, description, mode)
+		created, err = dal.CreateWorkspace(handle, name, description, mode, shallowMonths)
 		return err
 	}); err != nil {
 		return err
@@ -132,7 +161,8 @@ func workspaceUpdate(w http.ResponseWriter, r *http.Request) error {
 	}
 	_, hasName := payload["name"]
 	_, hasDescription := payload["description"]
-	if !hasName && !hasDescription {
+	_, hasShallowMonths := payload["shallow_months"]
+	if !hasName && !hasDescription && !hasShallowMonths {
 		return validation("至少提供一个待更新字段")
 	}
 	var updated map[string]any
@@ -146,6 +176,7 @@ func workspaceUpdate(w http.ResponseWriter, r *http.Request) error {
 		}
 		nextName := workspace["name"].(string)
 		nextDescription := workspace["description"].(string)
+		var nextShallowMonths *int
 		if hasName {
 			value, message := requireText(stringValue(payload["name"]), workspaceNameMax, "工作区名称")
 			if message != "" {
@@ -160,7 +191,17 @@ func workspaceUpdate(w http.ResponseWriter, r *http.Request) error {
 			}
 			nextDescription = value
 		}
-		if _, err := dal.UpdateWorkspace(handle, workspaceID, nextName, nextDescription); err != nil {
+		if hasShallowMonths {
+			if workspace["mode"] == "docs" {
+				return validation("文档工作区不支持浅层记忆周期配置")
+			}
+			parsed, err := parseShallowMonths(payload["shallow_months"])
+			if err != nil {
+				return err
+			}
+			nextShallowMonths = &parsed
+		}
+		if _, err := dal.UpdateWorkspace(handle, workspaceID, nextName, nextDescription, nextShallowMonths); err != nil {
 			return err
 		}
 		updated, err = dal.GetWorkspace(handle, workspaceID)
@@ -323,6 +364,44 @@ func docCategoryDelete(w http.ResponseWriter, r *http.Request) error {
 		return validation("子项目下仍有文档，禁止删除")
 	}
 	return ok(w, map[string]any{"id": categoryID, "action": "deleted"})
+}
+
+func docCategoryReorder(w http.ResponseWriter, r *http.Request) error {
+	workspaceID := r.PathValue("ws_id")
+	payload, err := jsonBody(r)
+	if err != nil {
+		return err
+	}
+	rawIDs, okList := payload["ids"].([]any)
+	if !okList || len(rawIDs) == 0 {
+		return validation("ids 必须是非空字符串数组")
+	}
+	categoryIDs := make([]string, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		id, okStr := raw.(string)
+		if !okStr || strings.TrimSpace(id) == "" {
+			return validation("ids 必须是非空字符串数组")
+		}
+		categoryIDs = append(categoryIDs, id)
+	}
+	var items []map[string]any
+	if err := withDB(func(handle *sql.DB) error {
+		if refusal := requireWorkspaceMode(handle, workspaceID, "docs"); refusal != nil {
+			return refusal
+		}
+		status, err := dal.ReorderDocCategories(handle, workspaceID, categoryIDs)
+		if err != nil {
+			return err
+		}
+		if status == "mismatch" {
+			return validation("子项目排序列表与当前工作区子项目集合不匹配")
+		}
+		items, err = dal.ListDocCategories(handle, workspaceID)
+		return err
+	}); err != nil {
+		return err
+	}
+	return ok(w, map[string]any{"items": items, "total": len(items), "offset": 0, "limit": len(items)})
 }
 
 func docCategoryRotate(w http.ResponseWriter, r *http.Request) error {

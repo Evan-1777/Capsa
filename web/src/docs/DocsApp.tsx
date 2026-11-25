@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "../api";
-import { ErrorBanner, Skeleton } from "../components/ui";
+import { ErrorBanner, SideSheet, Skeleton } from "../components/ui";
 import { AppShell, type WorkspaceShellProps } from "../shell";
 import type { DocCategory, DocScope, DocumentSummary, KeyInfo, WorkspaceInfo } from "../types";
 import { DirectoryView } from "./DirectoryView";
@@ -14,6 +14,7 @@ import {
 import { DocumentPane } from "./DocumentPane";
 import { FileExplorer } from "./FileExplorer";
 import { SubprojectAccessDialog } from "./SubprojectAccessDialog";
+import { SubprojectRail } from "./SubprojectRail";
 import {
   ancestorDirs,
   buildFileTree,
@@ -71,6 +72,9 @@ export function DocsApp({
   const [currentDir, setCurrentDir] = useState("");
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [mobileView, setMobileView] = useState<MobileView>("explorer");
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railDrawerOpen, setRailDrawerOpen] = useState(false);
+  const [reorderError, setReorderError] = useState<string | null>(null);
 
   const [categoryEditing, setCategoryEditing] = useState<CategoryEditing | null>(null);
   const [deletingCategory, setDeletingCategory] = useState<DocCategory | null>(null);
@@ -231,6 +235,7 @@ export function DocsApp({
   }
 
   function selectContainer(scope: DocScope, categoryId: string | null) {
+    setRailDrawerOpen(false);
     if (scope === container.scope && categoryId === container.categoryId) return;
     if (!guardDirty()) return;
     setContainer({ scope, categoryId });
@@ -238,6 +243,27 @@ export function DocsApp({
     setCurrentDir("");
     setExpandedDirs(new Set());
     setFilter("");
+  }
+
+  async function handleReorderCategories(nextIds: string[]) {
+    const previous = categories;
+    const byId = new Map(previous.map((item) => [item.id, item]));
+    const optimistic = nextIds
+      .map((id, idx) => {
+        const found = byId.get(id);
+        return found ? { ...found, sort_order: idx } : null;
+      })
+      .filter((item): item is DocCategory => item !== null);
+    if (optimistic.length !== previous.length) return;
+    setCategories(optimistic);
+    setReorderError(null);
+    try {
+      const updated = await api.reorderDocCategories(workspace.id, nextIds);
+      setCategories(updated.items);
+    } catch (error) {
+      setCategories(previous);
+      setReorderError(error instanceof Error ? error.message : "排序保存失败");
+    }
   }
 
   function selectFolder(dirPath: string) {
@@ -316,18 +342,37 @@ export function DocsApp({
         <ErrorBanner message={categoriesError} onRetry={loadCategories} />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden bg-surface">
+          {!railCollapsed && (
+            <aside
+              aria-label="子项目导航"
+              className="hidden min-h-0 w-60 shrink-0 flex-col border-r border-outline-variant lg:flex"
+            >
+              <SubprojectRail
+                categories={categories}
+                publicCount={publicCount}
+                activeScope={container.scope}
+                activeCategoryId={container.categoryId}
+                reorderError={reorderError}
+                onSelectContainer={selectContainer}
+                onCreateCategory={() => setCategoryEditing({ mode: "create" })}
+                onOpenAccess={(category) => setAccessCategoryId(category.id)}
+                onReorderCategories={(ids) => void handleReorderCategories(ids)}
+                onDismissReorderError={() => setReorderError(null)}
+              />
+            </aside>
+          )}
+
           <aside
             aria-label="文件资源管理器"
             className={
               (mobileView === "explorer" ? "flex" : "hidden") +
-              " min-h-0 w-full flex-col border-outline-variant md:flex md:w-72 md:shrink-0 md:border-r lg:w-80"
+              " min-h-0 w-full flex-col border-outline-variant md:flex md:w-64 md:shrink-0 md:border-r xl:w-72"
             }
           >
             <FileExplorer
-              categories={categories}
-              publicCount={publicCount}
               activeScope={container.scope}
-              activeCategoryId={container.categoryId}
+              activeCategory={activeCategory}
+              railCollapsed={railCollapsed}
               tree={explorerTree}
               expandedDirs={effectiveExpandedDirs}
               currentDir={resolvedDir}
@@ -335,9 +380,11 @@ export function DocsApp({
               filter={filter}
               docsLoading={docsLoading}
               docsError={docsError}
-              onSelectContainer={selectContainer}
-              onCreateCategory={() => setCategoryEditing({ mode: "create" })}
-              onOpenAccess={(category) => setAccessCategoryId(category.id)}
+              onToggleRail={() => setRailCollapsed((value) => !value)}
+              onOpenRailDrawer={() => setRailDrawerOpen(true)}
+              onOpenAccess={
+                activeCategory ? () => setAccessCategoryId(activeCategory.id) : undefined
+              }
               onFilterChange={setFilter}
               onCreateDocument={openCreateDocument}
               onCollapseAll={() => setExpandedDirs(new Set())}
@@ -346,6 +393,35 @@ export function DocsApp({
               onRetryDocs={loadDocs}
             />
           </aside>
+
+          <SideSheet
+            open={railDrawerOpen}
+            onClose={() => setRailDrawerOpen(false)}
+            side="left"
+            aria-label="切换子项目"
+          >
+            <div className="h-full w-72 max-w-[82vw] overflow-hidden border-r border-outline-variant bg-surface-container">
+              <SubprojectRail
+                categories={categories}
+                publicCount={publicCount}
+                activeScope={container.scope}
+                activeCategoryId={container.categoryId}
+                reorderError={reorderError}
+                onSelectContainer={selectContainer}
+                onCreateCategory={() => {
+                  setRailDrawerOpen(false);
+                  setCategoryEditing({ mode: "create" });
+                }}
+                onOpenAccess={(category) => {
+                  setRailDrawerOpen(false);
+                  setAccessCategoryId(category.id);
+                }}
+                onReorderCategories={(ids) => void handleReorderCategories(ids)}
+                onDismissReorderError={() => setReorderError(null)}
+                onCloseDrawer={() => setRailDrawerOpen(false)}
+              />
+            </div>
+          </SideSheet>
 
           <section
             aria-label="文档主画布"

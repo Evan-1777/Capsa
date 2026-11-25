@@ -10,13 +10,19 @@ func TestWorkspaceLifecycle(t *testing.T) {
 		t.Fatalf("initial workspaces = %v err=%v", list, err)
 	}
 
-	memory, err := CreateWorkspace(handle, "记忆二区", "第二记忆区", "memory")
+	memory, err := CreateWorkspace(handle, "记忆二区", "第二记忆区", "memory", 6)
 	if err != nil || memory == nil {
 		t.Fatalf("create memory workspace: %v %v", memory, err)
 	}
-	docs, err := CreateWorkspace(handle, "文档区", "", "docs")
+	if memory["shallow_months"] != int64(6) {
+		t.Fatalf("memory shallow_months = %v, want 6", memory["shallow_months"])
+	}
+	docs, err := CreateWorkspace(handle, "文档区", "", "docs", 9)
 	if err != nil || docs == nil {
 		t.Fatalf("create docs workspace: %v %v", docs, err)
+	}
+	if docs["shallow_months"] != int64(3) {
+		t.Fatalf("docs shallow_months = %v, want default 3", docs["shallow_months"])
 	}
 	memoryID := memory["id"].(string)
 	docsID := docs["id"].(string)
@@ -26,11 +32,12 @@ func TestWorkspaceLifecycle(t *testing.T) {
 		t.Fatalf("workspace order = %v err=%v", list, err)
 	}
 
-	if updated, err := UpdateWorkspace(handle, memoryID, "改名工作区", "新描述"); err != nil || !updated {
+	nextMonths := 12
+	if updated, err := UpdateWorkspace(handle, memoryID, "改名工作区", "新描述", &nextMonths); err != nil || !updated {
 		t.Fatalf("update workspace: %v %v", updated, err)
 	}
 	reloaded, err := GetWorkspace(handle, memoryID)
-	if err != nil || reloaded["name"] != "改名工作区" || reloaded["mode"] != "memory" {
+	if err != nil || reloaded["name"] != "改名工作区" || reloaded["mode"] != "memory" || reloaded["shallow_months"] != int64(12) {
 		t.Fatalf("reloaded workspace = %v err=%v", reloaded, err)
 	}
 
@@ -56,15 +63,15 @@ func TestWorkspaceLifecycle(t *testing.T) {
 
 func TestMemoryWorkspaceIsolation(t *testing.T) {
 	handle := newTestDB(t)
-	workspaceA, err := CreateWorkspace(handle, "记忆 A", "", "memory")
+	workspaceA, err := CreateWorkspace(handle, "记忆 A", "", "memory", 3)
 	if err != nil {
 		t.Fatalf("create A: %v", err)
 	}
-	workspaceB, err := CreateWorkspace(handle, "记忆 B", "", "memory")
+	workspaceB, err := CreateWorkspace(handle, "记忆 B", "", "memory", 3)
 	if err != nil {
 		t.Fatalf("create B: %v", err)
 	}
-	workspaceDocs, err := CreateWorkspace(handle, "文档 D", "", "docs")
+	workspaceDocs, err := CreateWorkspace(handle, "文档 D", "", "docs", 3)
 	if err != nil {
 		t.Fatalf("create D: %v", err)
 	}
@@ -105,17 +112,17 @@ func TestMemoryWorkspaceIsolation(t *testing.T) {
 		t.Fatalf("plain group list in A = %v err=%v", plainA, err)
 	}
 
-	searchA, err := ListActiveMemoriesForSearchInWorkspace(handle, map[string]string{"*": "rw"}, idA, "", false)
+	searchA, err := ListMemoriesForCatalogAndSearch(handle, map[string]string{"*": "rw"}, idA, "", true, false, false)
 	if err != nil || len(searchA) != 1 || searchA[0]["group_slug"] != "alpha" {
 		t.Fatalf("search in A = %v err=%v", searchA, err)
 	}
-	webB, total, err := ListMemoriesForWebInWorkspace(handle, map[string]string{"*": "rw"}, idB, "active", "", 0, 20)
+	webB, total, err := ListMemoriesForWebInWorkspace(handle, map[string]string{"*": "rw"}, idB, "active", "", "", 0, 20)
 	if err != nil || total != 1 || webB[0]["group_slug"] != "beta" {
 		t.Fatalf("web list in B = total %d rows %v err=%v", total, webB, err)
 	}
 
 	// 无工作区入参的既有契约（/mcp 与 CLI）保持全局可见。
-	all, err := ListActiveMemoriesForSearch(handle, map[string]string{"*": "rw"}, "", false)
+	all, err := ListMemoriesForCatalogAndSearch(handle, map[string]string{"*": "rw"}, "", "", true, false, false)
 	if err != nil || len(all) != 2 {
 		t.Fatalf("workspace-less search = %v err=%v", all, err)
 	}
@@ -127,7 +134,7 @@ func TestMemoryWorkspaceIsolation(t *testing.T) {
 
 func TestListWorkspacesCounters(t *testing.T) {
 	handle := newTestDB(t)
-	workspace, err := CreateWorkspace(handle, "文档区", "", "docs")
+	workspace, err := CreateWorkspace(handle, "文档区", "", "docs", 3)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

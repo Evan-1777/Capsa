@@ -9,6 +9,7 @@ import {
   EmptyState,
   ErrorBanner,
   FormField,
+  IconButton,
   Input,
   Textarea,
 } from "../components/ui";
@@ -38,7 +39,7 @@ export function GroupManager({
       await onGroupsChange();
       setFailure(null);
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : "分类列表刷新失败");
+      setFailure(error instanceof Error ? error.message : "组别列表刷新失败");
     }
   }
 
@@ -46,14 +47,10 @@ export function GroupManager({
     <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
       <div className="mx-auto max-w-3xl space-y-4 px-5 py-6">
         <div className="flex items-center justify-between gap-4">
-          <h1 className="text-headline-small text-on-surface">分类管理</h1>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => setEditing({ mode: "create" })}
-          >
+          <h1 className="text-headline-small text-on-surface">组别管理</h1>
+          <Button variant="primary" size="sm" onClick={() => setEditing({ mode: "create" })}>
             <Plus className="h-4 w-4" aria-hidden />
-            <span>新建分类</span>
+            <span>新建组别</span>
           </Button>
         </div>
 
@@ -61,10 +58,10 @@ export function GroupManager({
 
         {groups.length === 0 ? (
           <EmptyState
-            message="暂无分类"
+            message="暂无组别"
             action={
               <Button variant="primary" size="sm" onClick={() => setEditing({ mode: "create" })}>
-                新建分类
+                新建组别
               </Button>
             }
           />
@@ -79,19 +76,23 @@ export function GroupManager({
                       {group.slug}
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Button
-                      variant="tonal"
-                      size="sm"
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <IconButton
+                      aria-label={`编辑组别 ${group.name}`}
+                      title="编辑"
                       onClick={() => setEditing({ mode: "edit", group })}
+                      className="!h-8 !w-8"
                     >
-                      <Pencil className="h-3.5 w-3.5" aria-hidden />
-                      <span>编辑</span>
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => setDeletingGroup(group)}>
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                      <span>删除</span>
-                    </Button>
+                      <Pencil className="h-4 w-4" aria-hidden />
+                    </IconButton>
+                    <IconButton
+                      aria-label={`删除组别 ${group.name}`}
+                      title="删除"
+                      onClick={() => setDeletingGroup(group)}
+                      className="!h-8 !w-8"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </IconButton>
                   </div>
                 </div>
                 <p className="line-clamp-2 text-body-small text-on-surface-variant">
@@ -174,18 +175,14 @@ function GroupDialog({
     <Dialog open onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
         <h2 className="text-title-large text-on-surface">
-          {existing ? "编辑分类" : "新建分类"}
+          {existing ? "编辑组别" : "新建组别"}
         </h2>
 
-        <FormField
-          label="分类标识"
-          id="group-slug"
-          hint={existing ? "标识不可修改" : "字母、数字、下划线或连字符，创建后不可修改"}
-        >
+        <FormField label="组别标识" id="group-slug">
           <Input
             id="group-slug"
             value={slug}
-            aria-label="分类标识"
+            aria-label="组别标识"
             disabled={Boolean(existing)}
             onChange={(event) => setSlug(event.target.value)}
             placeholder="research"
@@ -194,7 +191,7 @@ function GroupDialog({
         </FormField>
 
         <FormField
-          label="分类名称"
+          label="组别名称"
           id="group-name"
           counter={{
             current: name.length,
@@ -205,14 +202,14 @@ function GroupDialog({
           <Input
             id="group-name"
             value={name}
-            aria-label="分类名称"
+            aria-label="组别名称"
             invalid={name.length > NAME_MAX}
             onChange={(event) => setName(event.target.value)}
           />
         </FormField>
 
         <FormField
-          label="分类描述"
+          label="组别描述"
           id="group-desc"
           counter={{
             current: description.length,
@@ -223,7 +220,7 @@ function GroupDialog({
           <Textarea
             id="group-desc"
             value={description}
-            aria-label="分类描述"
+            aria-label="组别描述"
             rows={3}
             invalid={description.length > DESC_MAX}
             onChange={(event) => setDescription(event.target.value)}
@@ -283,9 +280,9 @@ function DeleteGroupDialog({
   return (
     <Dialog open onClose={onClose} panelClassName="max-w-sm">
       <div className="space-y-4">
-        <h2 className="text-title-large text-on-surface">删除分类</h2>
+        <h2 className="text-title-large text-on-surface">删除组别</h2>
         <p className="text-body-medium text-on-surface-variant">
-          确认删除分类「{group.name}」({group.slug}) 吗？此操作不可撤销。
+          确认删除组别「{group.name}」({group.slug}) 吗？此操作不可撤销。
         </p>
 
         {failure && (

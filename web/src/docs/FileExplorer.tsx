@@ -3,18 +3,19 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
+  FilePlus2,
   FileText,
   Folder,
   FolderOpen,
   FolderTree,
-  Plus,
+  PanelLeftClose,
+  PanelLeftOpen,
   Search,
   Settings2,
 } from "lucide-react";
 
 import type { ApiError } from "../api";
 import {
-  Badge,
   Button,
   EmptyState,
   ErrorBanner,
@@ -132,13 +133,13 @@ function TreeRows({
 }
 
 /**
- * 左侧文件资源管理器：承载公共文档与子项目作用域切换、路径过滤及层级目录树。
+ * 文档目录树面板：100% 视口高度专供当前容器的路径过滤与层级目录树。
+ * 桌面端提供子项目栏折叠按钮；窄屏端在顶部呈现紧凑容器切换条触发左侧抽屉。
  */
 export function FileExplorer({
-  categories,
-  publicCount,
   activeScope,
-  activeCategoryId,
+  activeCategory,
+  railCollapsed,
   tree,
   expandedDirs,
   currentDir,
@@ -146,8 +147,8 @@ export function FileExplorer({
   filter,
   docsLoading,
   docsError,
-  onSelectContainer,
-  onCreateCategory,
+  onToggleRail,
+  onOpenRailDrawer,
   onOpenAccess,
   onFilterChange,
   onCreateDocument,
@@ -156,10 +157,9 @@ export function FileExplorer({
   onSelectDocument,
   onRetryDocs,
 }: {
-  categories: DocCategory[];
-  publicCount: number;
   activeScope: DocScope;
-  activeCategoryId: string | null;
+  activeCategory: DocCategory | null;
+  railCollapsed: boolean;
   tree: TreeNode[];
   expandedDirs: Set<string>;
   currentDir: string;
@@ -167,9 +167,9 @@ export function FileExplorer({
   filter: string;
   docsLoading: boolean;
   docsError: ApiError | null;
-  onSelectContainer: (scope: DocScope, categoryId: string | null) => void;
-  onCreateCategory: () => void;
-  onOpenAccess: (category: DocCategory) => void;
+  onToggleRail: () => void;
+  onOpenRailDrawer: () => void;
+  onOpenAccess?: () => void;
   onFilterChange: (value: string) => void;
   onCreateDocument: () => void;
   onCollapseAll: () => void;
@@ -177,120 +177,92 @@ export function FileExplorer({
   onSelectDocument: (documentId: string) => void;
   onRetryDocs: () => void;
 }) {
-  const activeCategory = categories.find((item) => item.id === activeCategoryId) ?? null;
-
-  const containerButton = (active: boolean) =>
-    "md-state-layer flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-3 py-1.5 text-left transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary " +
-    (active ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant");
+  const containerTitle = activeScope === "public" ? "公共文档" : activeCategory?.name ?? "子项目";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-surface-container-low">
-      <div className="shrink-0 border-b border-outline-variant bg-surface-container">
-        <div className="space-y-1.5 p-3">
-          <button
-            type="button"
-            onClick={() => onSelectContainer("public", null)}
-            aria-current={activeScope === "public"}
-            className={containerButton(activeScope === "public") + " w-full"}
-          >
-            <span className="flex min-w-0 items-center gap-2">
-              <BookOpenCheck className="h-4 w-4 shrink-0" aria-hidden />
-              <span className="truncate text-label-large">工作区公共文档</span>
-            </span>
-            <Badge variant="neutral">{publicCount}</Badge>
-          </button>
-          <p className="px-3 text-body-small text-on-surface-variant">跨子项目只读共享</p>
-
-          <div className="flex items-center justify-between gap-2 px-1 pt-1.5">
-            <span className="text-label-medium text-on-surface-variant">子项目</span>
-            <Button
-              variant="text"
-              size="sm"
-              onClick={onCreateCategory}
-              className="!h-7 !px-2"
-            >
-              <Plus className="h-3.5 w-3.5" aria-hidden />
-              <span>新建子项目</span>
-            </Button>
-          </div>
-
-          {categories.length === 0 ? (
-            <p className="px-2 py-1 text-body-small text-on-surface-variant">
-              暂无子项目，创建后即可在其中维护文档
-            </p>
-          ) : (
-            <ul className="max-h-44 space-y-1 overflow-y-auto pr-0.5">
-              {categories.map((item) => {
-                const isActive = activeScope === "category" && activeCategoryId === item.id;
-                return (
-                  <li key={item.id} className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => onSelectContainer("category", item.id)}
-                      aria-current={isActive}
-                      className={containerButton(isActive)}
-                    >
-                      <span className="flex min-w-0 items-center gap-2">
-                        <FolderTree className="h-4 w-4 shrink-0" aria-hidden />
-                        <span className="truncate text-label-large">{item.name}</span>
-                      </span>
-                      <Badge variant="neutral">{item.doc_count}</Badge>
-                    </button>
-                    {isActive && (
-                      <IconButton
-                        aria-label="接入与设置"
-                        title="接入与设置"
-                        onClick={() => onOpenAccess(item)}
-                        className="!h-8 !w-8 shrink-0"
-                      >
-                        <Settings2 className="h-4 w-4" aria-hidden />
-                      </IconButton>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        <div className="space-y-2 border-t border-outline-variant px-3 py-2.5">
-          <div className="flex items-center gap-1.5">
-            <div className="relative min-w-0 flex-1">
-              <Search
-                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant"
-                aria-hidden
-              />
-              <Input
-                value={filter}
-                onChange={(event) => onFilterChange(event.target.value)}
-                placeholder="筛选文件或路径"
-                aria-label="筛选文档"
-                className="!h-8 !rounded-full !border-transparent !bg-surface-container-high pl-9 text-body-small"
-              />
-            </div>
+      <div className="shrink-0 space-y-2 border-b border-outline-variant bg-surface-container-low px-2.5 py-2.5">
+        <div className="flex items-center justify-between gap-1.5">
+          {/* 桌面端（lg+）：折叠/展开子项目栏 + 当前容器标题 */}
+          <div className="hidden min-w-0 flex-1 items-center gap-1 lg:flex">
             <IconButton
-              aria-label="折叠全部"
-              title="折叠全部"
-              onClick={onCollapseAll}
+              aria-label={railCollapsed ? "展开子项目栏" : "折叠子项目栏"}
+              title={railCollapsed ? "展开子项目栏" : "折叠子项目栏"}
+              onClick={onToggleRail}
               className="!h-8 !w-8 shrink-0"
             >
-              <ChevronsDownUp className="h-4 w-4" aria-hidden />
+              {railCollapsed ? (
+                <PanelLeftOpen className="h-4 w-4" aria-hidden />
+              ) : (
+                <PanelLeftClose className="h-4 w-4" aria-hidden />
+              )}
+            </IconButton>
+            <span className="min-w-0 truncate text-title-small text-on-surface">
+              {containerTitle}
+            </span>
+          </div>
+
+          {/* 窄屏/移动端（< lg）：紧凑容器切换条触发左侧 SideSheet */}
+          <button
+            type="button"
+            onClick={onOpenRailDrawer}
+            aria-label="切换文档容器"
+            className="md-state-layer flex min-w-0 flex-1 items-center gap-2 rounded-full bg-surface-container-high px-3 py-1.5 text-left text-on-surface transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary lg:hidden"
+          >
+            {activeScope === "public" ? (
+              <BookOpenCheck className="h-4 w-4 shrink-0 text-primary" aria-hidden />
+            ) : (
+              <FolderTree className="h-4 w-4 shrink-0 text-primary" aria-hidden />
+            )}
+            <span className="min-w-0 flex-1 truncate text-label-large">{containerTitle}</span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-on-surface-variant" aria-hidden />
+          </button>
+
+          <div className="flex shrink-0 items-center gap-0.5">
+            {onOpenAccess && (
+              <IconButton
+                aria-label="接入与设置"
+                title="接入与设置"
+                onClick={onOpenAccess}
+                className="!h-8 !w-8 lg:hidden"
+              >
+                <Settings2 className="h-4 w-4" aria-hidden />
+              </IconButton>
+            )}
+            <IconButton
+              aria-label="新建文档"
+              title="新建文档"
+              variant="tonal"
+              onClick={onCreateDocument}
+              className="!h-8 !w-8"
+            >
+              <FilePlus2 className="h-4 w-4" aria-hidden />
             </IconButton>
           </div>
-          <div className="flex items-center justify-between gap-2 px-1">
-            <span className="min-w-0 truncate text-label-medium text-on-surface-variant">
-              {activeScope === "public" ? "公共文档" : activeCategory?.name ?? "子项目"}
-            </span>
-            <Button
-              variant="tonal"
-              size="sm"
-              onClick={onCreateDocument}
-              className="!h-7 !px-3"
-            >
-              <Plus className="h-3.5 w-3.5" aria-hidden />
-              <span>新建文档</span>
-            </Button>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <div className="relative min-w-0 flex-1">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant"
+              aria-hidden
+            />
+            <Input
+              value={filter}
+              onChange={(event) => onFilterChange(event.target.value)}
+              placeholder="筛选路径"
+              aria-label="筛选文档"
+              className="!h-8 !rounded-full !border-transparent !bg-surface-container-high pl-9 text-body-small"
+            />
           </div>
+          <IconButton
+            aria-label="折叠全部"
+            title="折叠全部"
+            onClick={onCollapseAll}
+            className="!h-8 !w-8 shrink-0"
+          >
+            <ChevronsDownUp className="h-4 w-4" aria-hidden />
+          </IconButton>
         </div>
       </div>
 
@@ -303,7 +275,7 @@ export function FileExplorer({
           <ErrorBanner message={docsError.message} onRetry={onRetryDocs} />
         ) : tree.length === 0 ? (
           <EmptyState
-            message={filter.trim() ? "没有匹配的文档" : "当前容器下暂无文档"}
+            message={filter.trim() ? "没有匹配的文档" : "暂无文档"}
             action={
               <Button variant="primary" size="sm" onClick={onCreateDocument}>
                 新建文档

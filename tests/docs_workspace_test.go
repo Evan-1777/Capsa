@@ -583,14 +583,14 @@ func TestDocsMCPWriteContract(t *testing.T) {
 	}
 }
 
-func TestMCPMemoryEndpointKeepsSevenTools(t *testing.T) {
+func TestMCPMemoryEndpointKeepsElevenTools(t *testing.T) {
 	env := setup(t)
 	session := mcpSession(t, env)
 	list := mcpCall(t, env, session, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}")
 	result, _ := list["result"].(map[string]any)
 	tools, _ := result["tools"].([]any)
-	if len(tools) != 7 {
-		t.Fatalf("memory endpoint tools = %d, want 7", len(tools))
+	if len(tools) != 11 {
+		t.Fatalf("memory endpoint tools = %d, want 11", len(tools))
 	}
 	for _, raw := range tools {
 		name, _ := raw.(map[string]any)["name"].(string)
@@ -705,5 +705,53 @@ func TestDocsMCPMoveContract(t *testing.T) {
 			jsonObject(map[string]string{"path": path})); isError || !strings.Contains(text, want) {
 			t.Fatalf("read %s = %q %v", path, text, isError)
 		}
+	}
+}
+
+func TestDocCategoryReorderREST(t *testing.T) {
+	env := setup(t)
+	fixture := newDocsWorkspace(t, env, "排序文档区")
+	cat1 := fixture.categoryID
+
+	// Consecutive creations under SetMaxOpenConns(1) must not deadlock and must increment sort_order.
+	status, payload := env.envelope(t, "POST", "/api/workspaces/"+fixture.workspaceID+"/categories",
+		jsonObject(map[string]string{"name": "设计"}))
+	mustStatus(t, "create cat2", status, 201, payload)
+	cat2 := dataOf(payload)["id"].(string)
+
+	status, payload = env.envelope(t, "POST", "/api/workspaces/"+fixture.workspaceID+"/categories",
+		jsonObject(map[string]string{"name": "运维"}))
+	mustStatus(t, "create cat3", status, 201, payload)
+	cat3 := dataOf(payload)["id"].(string)
+
+	// Reorder to [cat3, cat1, cat2].
+	reorderBody, _ := json.Marshal(map[string]any{"ids": []string{cat3, cat1, cat2}})
+	status, payload = env.envelope(t, "PUT", "/api/workspaces/"+fixture.workspaceID+"/categories/reorder", string(reorderBody))
+	mustStatus(t, "reorder valid", status, 200, payload)
+	items := itemsOf(payload)
+	if len(items) != 3 ||
+		items[0].(map[string]any)["id"] != cat3 ||
+		items[1].(map[string]any)["id"] != cat1 ||
+		items[2].(map[string]any)["id"] != cat2 {
+		t.Fatalf("reordered items = %v", items)
+	}
+
+	// Verify persistence on fresh GET.
+	status, payload = env.envelope(t, "GET", "/api/workspaces/"+fixture.workspaceID+"/categories", "")
+	mustStatus(t, "get reordered", status, 200, payload)
+	got := itemsOf(payload)
+	if got[0].(map[string]any)["id"] != cat3 || got[2].(map[string]any)["id"] != cat2 {
+		t.Fatalf("persisted order mismatch: %v", got)
+	}
+
+	// Invalid sets (missing, duplicate, foreign) must return 422.
+	for _, ids := range [][]string{
+		{cat3, cat1},
+		{cat3, cat3, cat1},
+		{cat3, cat1, "cat_foreign"},
+	} {
+		badBody, _ := json.Marshal(map[string]any{"ids": ids})
+		status, payload = env.envelope(t, "PUT", "/api/workspaces/"+fixture.workspaceID+"/categories/reorder", string(badBody))
+		mustStatus(t, "reorder invalid", status, 422, payload)
 	}
 }
