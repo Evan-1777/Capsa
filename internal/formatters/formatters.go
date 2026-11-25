@@ -136,9 +136,9 @@ func FormatCatalog(depth string, items []map[string]any, total, offset int, scop
 }
 
 // FormatSearch renders the multi-layer search result listing.
-func FormatSearch(query string, ranked []map[string]any, scopes map[string]string, layers []string, returnTitle, returnSummary bool, now time.Time) string {
-	lines := []string{fmt.Sprintf(`# 记忆检索: "%s" | 命中 %d 条 | 层级: %s | 范围: %s`,
-		query, len(ranked), strings.Join(layers, ","), sortedScopes(scopes))}
+func FormatSearch(query string, ranked []map[string]any, scopes map[string]string, layers, searchIn []string, returnTitle, returnSummary bool, now time.Time) string {
+	lines := []string{fmt.Sprintf(`# 记忆检索: "%s" | 命中 %d 条 | 层级: %s | 区域: %s | 范围: %s`,
+		query, len(ranked), strings.Join(layers, ","), strings.Join(searchIn, ","), sortedScopes(scopes))}
 	ids := []string{}
 	for index, item := range ranked {
 		position := index + 1

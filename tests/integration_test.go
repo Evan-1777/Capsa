@@ -772,6 +772,61 @@ func TestMCPNewToolsAndLifecycle(t *testing.T) {
 	}
 }
 
+func TestMCPSearchConjunctionAndScopeEcho(t *testing.T) {
+	env := setup(t)
+	handle, err := db.Shared()
+	if err != nil {
+		t.Fatalf("db.Shared: %v", err)
+	}
+	sess := mcpSessionForToken(t, env, adminToken)
+
+	deviceID, err := dal.InsertMemory(handle, "proj", "设备记录", "主力设备", "本地开发环境", []string{"Windows 11", "设备"}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+	nvidiaID, err := dal.InsertMemory(handle, "proj", "显卡记录", "驱动记录", "驱动版本", []string{"NVIDIA", "2025-11"}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert nvidia: %v", err)
+	}
+	loopID, err := dal.InsertMemory(handle, "proj", "推理项目", "推理优化", "使用 Loop Transformer 推理", []string{"infra"}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert loop: %v", err)
+	}
+	githubID, err := dal.InsertMemory(handle, "proj", "GitHub 项目", "开源项目", "agent loop 调度", []string{"github"}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert github: %v", err)
+	}
+	gpqaID, err := dal.InsertMemory(handle, "proj", "GLM 记录", "推理模型", "使用 GPQA-Diamond 基准", []string{"GLM"}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert gpqa: %v", err)
+	}
+	serverID, err := dal.InsertMemory(handle, "proj", "VPS 记录", "个人VPS服务器", "部署说明", []string{"vps"}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+	serviceID, err := dal.InsertMemory(handle, "proj", "文档服务", "私人记忆与文档服务", "服务说明", []string{"docs"}, true, nil, nil)
+	if err != nil {
+		t.Fatalf("insert service: %v", err)
+	}
+
+	tagText, isErr := mcpToolCall(t, env, adminToken, sess, "memory_search", `{"query":"Windows 11","search_in":["tags"]}`)
+	if isErr || !strings.Contains(tagText, deviceID) || strings.Contains(tagText, nvidiaID) {
+		t.Fatalf("tag conjunction search unexpected: %s", tagText)
+	}
+	loopText, isErr := mcpToolCall(t, env, adminToken, sess, "memory_search", `{"query":"Loop Transformer","search_in":["body"]}`)
+	if isErr || !strings.Contains(loopText, loopID) || strings.Contains(loopText, githubID) {
+		t.Fatalf("body conjunction search unexpected: %s", loopText)
+	}
+	gpqaText, isErr := mcpToolCall(t, env, adminToken, sess, "memory_search", `{"query":"GPQA-Diamond","search_in":["body"]}`)
+	if isErr || !strings.Contains(gpqaText, gpqaID) || !strings.Contains(gpqaText, "区域: body") {
+		t.Fatalf("body scope echo unexpected: %s", gpqaText)
+	}
+	serverText, isErr := mcpToolCall(t, env, adminToken, sess, "memory_search", `{"query":"服务器","search_in":["summary"]}`)
+	if isErr || !strings.Contains(serverText, serverID) || strings.Contains(serverText, serviceID) || !strings.Contains(serverText, "区域: summary") {
+		t.Fatalf("summary precision search unexpected: %s", serverText)
+	}
+}
+
 func TestWebAPIv2Contracts(t *testing.T) {
 	env := setup(t)
 	handle, err := db.Shared()

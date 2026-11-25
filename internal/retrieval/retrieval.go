@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"capsa/internal/db"
 
@@ -29,13 +30,133 @@ func isCJK(r rune) bool {
 	return r >= '\u4e00' && r <= '\u9fff'
 }
 
-// Normalize applies NFC normalization (skipping already-NFC input) and
-// lowercases the text.
+// Normalize applies NFKC normalization (skipping already-NFKC input) and
+// lowercases the text. NFKC folds full-width letters, digits and spaces onto
+// their ASCII equivalents so both forms match the same stored text.
 func Normalize(text string) string {
-	if !norm.NFC.IsNormalString(text) {
-		text = norm.NFC.String(text)
+	if !norm.NFKC.IsNormalString(text) {
+		text = norm.NFKC.String(text)
 	}
 	return strings.ToLower(text)
+}
+
+// termKind classifies a search term for matching strategy.
+type termKind int
+
+const (
+	// termCJK matches a contiguous CJK run as a whole literal segment.
+	termCJK termKind = iota
+	// termWord matches a non-CJK alphanumeric run with character-class boundaries.
+	termWord
+	// termLiteral matches any other (symbol-only) query literally.
+	termLiteral
+)
+
+type searchTerm struct {
+	text string
+	kind termKind
+}
+
+// parseSearchTerms splits a query into deduplicated search terms: contiguous
+// CJK runs stay whole, non-CJK alphanumeric runs become boundary-checked words,
+// and a non-empty query without alphanumeric characters becomes one literal
+// term so it never degrades into a full-library browse.
+func parseSearchTerms(query string) []searchTerm {
+	trimmed := strings.TrimSpace(Normalize(query))
+	if trimmed == "" {
+		return nil
+	}
+	terms := []searchTerm{}
+	seen := map[string]struct{}{}
+	add := func(term searchTerm) {
+		if _, ok := seen[term.text]; ok {
+			return
+		}
+		seen[term.text] = struct{}{}
+		terms = append(terms, term)
+	}
+	for _, word := range words(trimmed) {
+		runes := []rune(word)
+		start := 0
+		for start < len(runes) {
+			runIsCJK := isCJK(runes[start])
+			end := start
+			for end < len(runes) && isCJK(runes[end]) == runIsCJK {
+				end++
+			}
+			segment := string(runes[start:end])
+			if runIsCJK {
+				add(searchTerm{text: segment, kind: termCJK})
+			} else {
+				add(searchTerm{text: segment, kind: termWord})
+			}
+			start = end
+		}
+	}
+	if len(terms) == 0 {
+		return []searchTerm{{text: trimmed, kind: termLiteral}}
+	}
+	return terms
+}
+
+// boundaryClass groups runes for word-boundary checks: CJK and punctuation both
+// count as "other", so mixed Chinese/English and hyphenated terms stay natural.
+type boundaryClass int
+
+const (
+	classOther boundaryClass = iota
+	classLetter
+	classDigit
+)
+
+func runeBoundaryClass(r rune) boundaryClass {
+	if isCJK(r) {
+		return classOther
+	}
+	if unicode.IsLetter(r) {
+		return classLetter
+	}
+	if unicode.IsNumber(r) {
+		return classDigit
+	}
+	return classOther
+}
+
+// containsTerm reports whether text contains term under its matching strategy.
+func containsTerm(text string, term searchTerm) bool {
+	switch term.kind {
+	case termCJK, termLiteral:
+		return strings.Contains(text, term.text)
+	}
+	firstRune, _ := utf8.DecodeRuneInString(term.text)
+	lastRune, _ := utf8.DecodeLastRuneInString(term.text)
+	firstClass := runeBoundaryClass(firstRune)
+	lastClass := runeBoundaryClass(lastRune)
+	offset := 0
+	for offset <= len(text)-len(term.text) {
+		index := strings.Index(text[offset:], term.text)
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		end := start + len(term.text)
+		leftOK := start == 0
+		if !leftOK {
+			left, _ := utf8.DecodeLastRuneInString(text[:start])
+			leftOK = runeBoundaryClass(left) != firstClass
+		}
+		rightOK := end == len(text)
+		if !rightOK {
+			right, _ := utf8.DecodeRuneInString(text[end:])
+			rightOK = runeBoundaryClass(right) != lastClass
+		}
+		if leftOK && rightOK {
+			return true
+		}
+		_, size := utf8.DecodeRuneInString(text[start:])
+		offset = start + size
+	}
+	return false
 }
 
 // words splits text into runs of alphanumeric characters.
@@ -240,64 +361,96 @@ func FindSimilarMemories(candidates []map[string]any, title string, threshold fl
 }
 
 // ScoreWithFields computes the weighted score of a memory for a token set using
-// only the enabled fields.
+// only the enabled fields. Every token must hit an enabled field; otherwise the
+// score is 0.
 func ScoreWithFields(memory map[string]any, terms map[string]struct{}, fields SearchFields) float64 {
 	score, _ := scoreMemoryWithFields(memory, terms, fields)
 	return score
 }
 
 func scoreMemoryWithFields(memory map[string]any, terms map[string]struct{}, fields SearchFields) (float64, bool) {
-	matched := false
-	total := 0.0
-	if fields.Title {
-		title := Normalize(stringField(memory, "title"))
-		for term := range terms {
-			if strings.Contains(title, term) {
-				total += 4
-				matched = true
-			}
+	classified := make([]searchTerm, 0, len(terms))
+	for term := range terms {
+		classified = append(classified, classifySearchToken(term))
+	}
+	return scoreMemoryWithTerms(memory, classified, fields)
+}
+
+// classifySearchToken maps a pre-tokenized term onto its matching strategy:
+// CJK runs stay whole, alphanumeric runs are boundary-checked words.
+func classifySearchToken(text string) searchTerm {
+	allCJK := len(text) > 0
+	for _, r := range text {
+		if !isCJK(r) {
+			allCJK = false
+			break
 		}
 	}
+	if allCJK {
+		return searchTerm{text: text, kind: termCJK}
+	}
+	return searchTerm{text: text, kind: termWord}
+}
+
+// scoreMemoryWithTerms applies conjunctive matching: every term must hit at
+// least one enabled field, otherwise the memory is not a hit. Scores are only
+// accumulated after the term set is fully satisfied.
+func scoreMemoryWithTerms(memory map[string]any, terms []searchTerm, fields SearchFields) (float64, bool) {
+	if len(terms) == 0 {
+		return 0, false
+	}
+	title, summary, body := "", "", ""
+	var tags []string
+	if fields.Title {
+		title = Normalize(stringField(memory, "title"))
+	}
 	if fields.Summary {
-		summary := Normalize(stringField(memory, "summary"))
-		for term := range terms {
-			if strings.Contains(summary, term) {
-				total += 1
-				matched = true
-			}
-		}
+		summary = Normalize(stringField(memory, "summary"))
 	}
 	if fields.Tags {
 		rawTags := tagsOf(memory)
-		tags := make([]string, len(rawTags))
+		tags = make([]string, len(rawTags))
 		for i, tag := range rawTags {
 			tags[i] = Normalize(tag)
 		}
-		for term := range terms {
+	}
+	if fields.Body {
+		body = Normalize(stringField(memory, "body"))
+	}
+	total := 0.0
+	bodyScore := 0.0
+	for _, term := range terms {
+		hit := false
+		if fields.Title && containsTerm(title, term) {
+			total += 4
+			hit = true
+		}
+		if fields.Tags {
 			for _, tag := range tags {
-				if strings.Contains(tag, term) {
+				if containsTerm(tag, term) {
 					total += 2
-					matched = true
+					hit = true
 					break
 				}
 			}
 		}
-	}
-	if fields.Body {
-		body := Normalize(stringField(memory, "body"))
-		bodyScore := 0.0
-		for term := range terms {
-			if strings.Contains(body, term) {
-				bodyScore += BodyHitWeight
-				matched = true
-			}
+		if fields.Summary && containsTerm(summary, term) {
+			total += 1
+			hit = true
 		}
-		total += math.Min(bodyScore, BodyScoreCap)
+		if fields.Body && containsTerm(body, term) {
+			bodyScore += BodyHitWeight
+			hit = true
+		}
+		if !hit {
+			return 0, false
+		}
 	}
+	total += math.Min(bodyScore, BodyScoreCap)
 	if IsPersistent(memory) {
 		total += 3
 	}
-	return round2(total), matched
+	return round2(total), true
 }
 
 type rankedEntry struct {
@@ -312,7 +465,7 @@ type rankedEntry struct {
 // (when query has tokens), unified tier priority (persistent < temporary <
 // other), update time descending and id descending.
 func RankMemoriesWithFields(memories []map[string]any, query string, fields SearchFields) []map[string]any {
-	terms := Tokenize(query)
+	terms := parseSearchTerms(query)
 	if len(terms) == 0 {
 		entries := make([]rankedEntry, len(memories))
 		for i, memory := range memories {
@@ -341,7 +494,7 @@ func RankMemoriesWithFields(memories []map[string]any, query string, fields Sear
 
 	entries := make([]rankedEntry, 0, len(memories))
 	for _, memory := range memories {
-		score, hit := scoreMemoryWithFields(memory, terms, fields)
+		score, hit := scoreMemoryWithTerms(memory, terms, fields)
 		if !hit {
 			continue
 		}

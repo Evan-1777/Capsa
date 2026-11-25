@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -206,6 +207,129 @@ func TestMCPCatalogSearchReadAndLifecycle(t *testing.T) {
 	row, _ := dal.GetMemoryForWeb(handle, persID)
 	if row["pinned"] != int64(0) || row["expires_at"] != future {
 		t.Fatalf("restored persistent with expires_at must have pinned=0: %v", row)
+	}
+}
+
+func sortedStrings(values []string) []string {
+	out := append([]string{}, values...)
+	sort.Strings(out)
+	return out
+}
+
+func assertEnum(t *testing.T, tool mcp.Tool, property string, want []string) {
+	t.Helper()
+	propertySchema, ok := tool.InputSchema.Properties[property].(map[string]any)
+	if !ok {
+		t.Fatalf("%s schema missing for property %s", tool.Name, property)
+	}
+	items, ok := propertySchema["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s.%s items schema missing", tool.Name, property)
+	}
+	values, ok := items["enum"].([]string)
+	if !ok {
+		t.Fatalf("%s.%s items.enum missing", tool.Name, property)
+	}
+	if !equalStringSlices(sortedStrings(values), sortedStrings(want)) {
+		t.Fatalf("%s.%s enum = %v, want %v", tool.Name, property, values, want)
+	}
+}
+
+func equalStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestMCPSearchArraySchemasHaveEnumItems(t *testing.T) {
+	tools := NewMCPServer().ListTools()
+	tool, ok := tools["memory_search"]
+	if !ok {
+		t.Fatal("memory_search tool missing")
+	}
+	assertEnum(t, tool.Tool, "layers", []string{"shallow", "deep", "trash"})
+	assertEnum(t, tool.Tool, "search_in", []string{"title", "summary", "tags", "body"})
+	assertEnum(t, tool.Tool, "return_fields", []string{"title", "summary"})
+}
+
+func TestMCPSearchPrecisionAndFieldIsolation(t *testing.T) {
+	setupMCPTestDB(t)
+	handle, _ := db.Shared()
+
+	deviceID, _ := dal.InsertMemory(handle, "proj", "Windows 开发设备", "主力设备", "本地开发环境", []string{"Windows 11", "设备"}, false, nil, nil)
+	nvidiaID, _ := dal.InsertMemory(handle, "proj", "英伟达驱动", "显卡驱动", "驱动版本", []string{"NVIDIA", "2025-11"}, false, nil, nil)
+	glmID, _ := dal.InsertMemory(handle, "proj", "GLM 模型", "推理模型", "使用 GPQA-Diamond 基准，部署于 Megaspeed", []string{"GLM"}, false, nil, nil)
+	loopID, _ := dal.InsertMemory(handle, "proj", "Transformer 项目", "推理优化", "使用 Loop Transformer 推理", []string{"infra"}, false, nil, nil)
+	githubLoopID, _ := dal.InsertMemory(handle, "proj", "GitHub Loop 项目", "开源项目", "agent loop 调度", []string{"github"}, false, nil, nil)
+	githubLoopbackID, _ := dal.InsertMemory(handle, "proj", "GitHub Loopback 项目", "开源项目", "loopback interface", []string{"github"}, false, nil, nil)
+	githubTransformerID, _ := dal.InsertMemory(handle, "proj", "GitHub Transformer 项目", "开源项目", "html-transformer 渲染", []string{"github"}, false, nil, nil)
+	serverID, _ := dal.InsertMemory(handle, "proj", "VPS 记录", "个人VPS服务器", "部署说明", []string{"vps"}, false, nil, nil)
+	serviceID, _ := dal.InsertMemory(handle, "proj", "文档服务", "私人记忆与文档服务", "服务说明", []string{"docs"}, true, nil, nil)
+
+	rwCtx := ctxWithGrants(map[string]string{"proj": "rw", "study": "r"})
+
+	tagText := ""
+	if res, _ := handleSearch(rwCtx, callReq(map[string]any{
+		"query": "Windows 11", "search_in": []any{"tags"},
+	})); res.IsError {
+		t.Fatalf("tag search error: %s", resultText(t, res))
+	} else {
+		tagText = resultText(t, res)
+	}
+	if !strings.Contains(tagText, deviceID) || strings.Contains(tagText, nvidiaID) {
+		t.Fatalf("Windows 11 tag search must only hit the device memory:\n%s", tagText)
+	}
+
+	loopText := ""
+	if res, _ := handleSearch(rwCtx, callReq(map[string]any{
+		"query": "Loop Transformer", "search_in": []any{"body"},
+	})); res.IsError {
+		t.Fatalf("loop search error: %s", resultText(t, res))
+	} else {
+		loopText = resultText(t, res)
+	}
+	if !strings.Contains(loopText, loopID) || strings.Contains(loopText, githubLoopID) || strings.Contains(loopText, githubLoopbackID) || strings.Contains(loopText, githubTransformerID) {
+		t.Fatalf("Loop Transformer body search must only hit the target memory:\n%s", loopText)
+	}
+
+	gpqaText := ""
+	if res, _ := handleSearch(rwCtx, callReq(map[string]any{
+		"query": "GPQA-Diamond", "search_in": []any{"body"},
+	})); res.IsError {
+		t.Fatalf("gpqa search error: %s", resultText(t, res))
+	} else {
+		gpqaText = resultText(t, res)
+	}
+	if !strings.Contains(gpqaText, glmID) || !strings.Contains(gpqaText, "区域: body") {
+		t.Fatalf("GPQA-Diamond body search unexpected:\n%s", gpqaText)
+	}
+
+	serverText := ""
+	if res, _ := handleSearch(rwCtx, callReq(map[string]any{
+		"query": "服务器", "search_in": []any{"summary"},
+	})); res.IsError {
+		t.Fatalf("server search error: %s", resultText(t, res))
+	} else {
+		serverText = resultText(t, res)
+	}
+	if !strings.Contains(serverText, serverID) || strings.Contains(serverText, serviceID) || !strings.Contains(serverText, "区域: summary") {
+		t.Fatalf("服务器 summary search unexpected:\n%s", serverText)
+	}
+
+	glmText, _ := handleSearch(rwCtx, callReq(map[string]any{
+		"query": "GLM", "search_in": []any{"tags"},
+	}))
+	megaspeedText, _ := handleSearch(rwCtx, callReq(map[string]any{
+		"query": "Megaspeed", "search_in": []any{"body"},
+	}))
+	if !strings.Contains(resultText(t, glmText), glmID) || !strings.Contains(resultText(t, megaspeedText), glmID) {
+		t.Fatalf("GLM/Megaspeed search unexpected:\n%s\n%s", resultText(t, glmText), resultText(t, megaspeedText))
 	}
 }
 

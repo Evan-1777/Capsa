@@ -157,6 +157,129 @@ func TestTitleSimilarityAndFind(t *testing.T) {
 	}
 }
 
+func sortedIDs(ids []string) []string {
+	out := append([]string{}, ids...)
+	sort.Strings(out)
+	return out
+}
+
+func TestRankMultiTermAndWordBoundary(t *testing.T) {
+	tagsOnly := SearchFields{Tags: true}
+	tagMemories := []map[string]any{
+		{"id": "mem_device", "tags": `["Windows 11","设备"]`},
+		{"id": "mem_device_compact", "tags": `["Windows11"]`},
+		{"id": "mem_nvidia_month", "tags": `["NVIDIA","2025-11"]`},
+		{"id": "mem_nvidia_cuda", "tags": `["NVIDIA","CUDA11"]`},
+		{"id": "mem_os", "tags": `["Windows","Linux"]`},
+	}
+	if got := sortedIDs(rankIDs(tagMemories, "Windows 11", tagsOnly)); !equalStrings(got, []string{"mem_device", "mem_device_compact"}) {
+		t.Fatalf("tags Windows 11 = %v, want [mem_device mem_device_compact]", got)
+	}
+
+	bodyOnly := SearchFields{Body: true}
+	loopMemories := []map[string]any{
+		{"id": "mem_loop_target", "body": "使用 Loop Transformer 模型"},
+		{"id": "mem_agent_loop", "body": "agent loop scheduler"},
+		{"id": "mem_loopback", "body": "loopback interface"},
+		{"id": "mem_transformer", "body": "html-transformer renderer"},
+	}
+	if got := rankIDs(loopMemories, "Loop Transformer", bodyOnly); !equalStrings(got, []string{"mem_loop_target"}) {
+		t.Fatalf("body Loop Transformer = %v, want [mem_loop_target]", got)
+	}
+
+	gpqaMemories := []map[string]any{
+		{"id": "mem_gpqa_hyphen", "body": "GPQA-Diamond 数据集"},
+		{"id": "mem_gpqa_space", "body": "GPQA Diamond 数据集"},
+		{"id": "mem_diamond", "body": "diamond benchmark"},
+	}
+	if got := sortedIDs(rankIDs(gpqaMemories, "GPQA-Diamond", bodyOnly)); !equalStrings(got, []string{"mem_gpqa_hyphen", "mem_gpqa_space"}) {
+		t.Fatalf("body GPQA-Diamond = %v", got)
+	}
+
+	summaryOnly := SearchFields{Summary: true}
+	serverMemories := []map[string]any{
+		{"id": "mem_server", "summary": "个人VPS服务器"},
+		{"id": "mem_service", "summary": "私人记忆与文档服务"},
+		{"id": "mem_scattered", "summary": "服务...任务器"},
+	}
+	if got := rankIDs(serverMemories, "服务器", summaryOnly); !equalStrings(got, []string{"mem_server"}) {
+		t.Fatalf("summary 服务器 = %v, want [mem_server]", got)
+	}
+
+	titleOnly := SearchFields{Title: true}
+	boundaryCases := []struct {
+		query string
+		text  string
+		want  bool
+	}{
+		{"GLM", "GLM", true},
+		{"GLM", "GLM-4.5", true},
+		{"GLM", "GLM4", true},
+		{"GLM", "GLMX", false},
+		{"Megaspeed", "Megaspeed", true},
+		{"go", "Go 1.27", true},
+		{"go", "Go语言", true},
+		{"go", "google", false},
+		{"go", "algorithm", false},
+		{"ai", "AI助手", true},
+		{"ai", "email", false},
+		{"ai", "main", false},
+		{"ai", "container", false},
+	}
+	for _, testCase := range boundaryCases {
+		memories := []map[string]any{{"id": "mem_boundary", "title": testCase.text}}
+		hit := len(rankIDs(memories, testCase.query, titleOnly)) == 1
+		if hit != testCase.want {
+			t.Fatalf("query %q against %q: hit=%v, want %v", testCase.query, testCase.text, hit, testCase.want)
+		}
+	}
+
+	crossField := SearchFields{Title: true, Summary: true}
+	crossMemories := []map[string]any{
+		{"id": "mem_cross", "title": "架构要点", "summary": "设计说明"},
+		{"id": "mem_partial", "title": "架构要点", "summary": "无关摘要"},
+	}
+	if got := rankIDs(crossMemories, "架构 设计", crossField); !equalStrings(got, []string{"mem_cross"}) {
+		t.Fatalf("cross-field conjunction = %v, want [mem_cross]", got)
+	}
+}
+
+func TestNormalizeNFKCAndSymbolOnlyQuery(t *testing.T) {
+	bodyOnly := SearchFields{Body: true}
+	wideQuery := []map[string]any{{"id": "mem_gpqa", "body": "GPQA-Diamond 数据集"}}
+	if got := rankIDs(wideQuery, "ＧＰＱＡ－Ｄｉａｍｏｎｄ", bodyOnly); !equalStrings(got, []string{"mem_gpqa"}) {
+		t.Fatalf("full-width query should match half-width text: %v", got)
+	}
+	wideStored := []map[string]any{{"id": "mem_wide", "body": "Ｗｉｎｄｏｗｓ　１１ 说明"}}
+	if got := rankIDs(wideStored, "Windows 11", bodyOnly); !equalStrings(got, []string{"mem_wide"}) {
+		t.Fatalf("half-width query should match full-width text: %v", got)
+	}
+
+	symbolMemories := []map[string]any{
+		{"id": "mem_symbols", "body": "连接 --- 标记"},
+		{"id": "mem_arrow", "body": "箭头 -> 右"},
+		{"id": "mem_plain", "body": "连接标记"},
+	}
+	if got := rankIDs(symbolMemories, "---", bodyOnly); !equalStrings(got, []string{"mem_symbols"}) {
+		t.Fatalf("symbol-only query --- = %v, want [mem_symbols]", got)
+	}
+	if got := rankIDs(symbolMemories, "->", bodyOnly); !equalStrings(got, []string{"mem_arrow"}) {
+		t.Fatalf("symbol-only query -> = %v, want [mem_arrow]", got)
+	}
+
+	persistent := map[string]any{"id": "mem_p", "title": "其他标题", "pinned": int64(1)}
+	if got := ScoreWithFields(persistent, Tokenize("架构"), titleOnlyFields()); got != 0 {
+		t.Fatalf("persistent memory without a full hit must score 0, got %v", got)
+	}
+	if got := ScoreWithFields(persistent, nil, SearchFields{Title: true}); got != 0 {
+		t.Fatalf("empty token set must score 0, got %v", got)
+	}
+}
+
+func titleOnlyFields() SearchFields {
+	return SearchFields{Title: true}
+}
+
 func TestNormalizeTimestamp(t *testing.T) {
 	got, err := NormalizeTimestamp("2026-09-01T08:00:00+08:00")
 	if err != nil {

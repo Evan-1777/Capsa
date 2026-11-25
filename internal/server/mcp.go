@@ -165,14 +165,14 @@ func NewMCPServer() *mcpserver.MCPServer {
 	), handleCatalog)
 
 	instance.AddTool(mcp.NewTool("memory_search",
-		mcp.WithDescription(fmt.Sprintf("按关键词、层级（shallow/deep/trash）、搜索区域（title/summary/tags/body）与返回字段检索记忆。默认在 shallow 层的标题、摘要与标签中检索并返回标题；仅当 search_in 含 body 且 query 非空时加载正文参与打分。单次最多返回 %d 条。", SearchLimit)),
+		mcp.WithDescription(fmt.Sprintf("按关键词、层级（shallow/deep/trash）、搜索区域（title/summary/tags/body）与返回字段检索记忆。默认在 shallow 层的标题、摘要与标签中检索并返回标题；仅当 search_in 含 body 且 query 非空时加载正文参与打分。多词关键词按全部词项在指定搜索区域内命中判定。单次最多返回 %d 条。", SearchLimit)),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query", mcp.Description("关键词；省略时按持久→临时→最近更新时间浏览")),
 		mcp.WithString("group", mcp.Description("只检索该组别（隔离记忆区）；省略时检索凭据可访问的全部组别")),
 		mcp.WithInteger("limit", mcp.Description(fmt.Sprintf("返回条数上限，取值 1~%d", SearchLimit)), mcp.DefaultNumber(10)),
-		mcp.WithArray("layers", mcp.Description("检索层级数组，默认 [\"shallow\"]，允许值：shallow / deep / trash"), mcp.WithStringItems()),
-		mcp.WithArray("search_in", mcp.Description("搜索区域数组，默认 [\"title\",\"summary\",\"tags\"]，允许值：title / summary / tags / body"), mcp.WithStringItems()),
-		mcp.WithArray("return_fields", mcp.Description("返回字段数组，默认 [\"title\"]，允许值：title / summary"), mcp.WithStringItems()),
+		mcp.WithArray("layers", mcp.Description("检索层级数组，默认 [\"shallow\"]，允许值：shallow / deep / trash"), mcp.WithStringEnumItems([]string{"shallow", "deep", "trash"})),
+		mcp.WithArray("search_in", mcp.Description("搜索区域数组，默认 [\"title\",\"summary\",\"tags\"]，允许值：title / summary / tags / body"), mcp.WithStringEnumItems([]string{"title", "summary", "tags", "body"})),
+		mcp.WithArray("return_fields", mcp.Description("返回字段数组，默认 [\"title\"]，允许值：title / summary"), mcp.WithStringEnumItems([]string{"title", "summary"})),
 	), handleSearch)
 
 	instance.AddTool(mcp.NewTool("memory_read",
@@ -579,7 +579,7 @@ func handleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 	if len(ranked) > limit {
 		ranked = ranked[:limit]
 	}
-	return toolText(formatters.FormatSearch(query, ranked, scopes, layers, returnTitle, returnSummary, now))
+	return toolText(formatters.FormatSearch(query, ranked, scopes, layers, searchIn, returnTitle, returnSummary, now))
 }
 
 func handleRead(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -53,8 +53,8 @@ func TestFormatSearchFieldsAndTrash(t *testing.T) {
 			"updated_at": "2026-09-01T03:04:05.000000+00:00", "tags": `[]`, "title": "回收条目", "summary": "回收摘要",
 			"deleted_at": "2026-10-05T00:00:00.000000+00:00", "deleted_reason": "临时记忆到期自动归档"},
 	}
-	got := FormatSearch("关键词", ranked, map[string]string{"proj": "rw", "study": "r"}, []string{"shallow", "trash"}, true, true, testNow)
-	want := "# 记忆检索: \"关键词\" | 命中 3 条 | 层级: shallow,trash | 范围: proj,study\n" +
+	got := FormatSearch("关键词", ranked, map[string]string{"proj": "rw", "study": "r"}, []string{"shallow", "trash"}, []string{"title", "summary", "tags"}, true, true, testNow)
+	want := "# 记忆检索: \"关键词\" | 命中 3 条 | 层级: shallow,trash | 区域: title,summary,tags | 范围: proj,study\n" +
 		"[1] mem_abc123 | [无权访问]\n" +
 		"[2] mem_1 | proj | [浅层] | 2026-10-01 | 标签: α,β\n    标题一\n    摘要: 摘要一\n" +
 		"[3] mem_2 | proj | [已归档/垃圾桶 归档于 2026-10-05 | 原因: 临时记忆到期自动归档] | 2026-09-01 | 标签: -\n    回收条目\n    摘要: 回收摘要\n" +
@@ -63,7 +63,7 @@ func TestFormatSearchFieldsAndTrash(t *testing.T) {
 		t.Fatalf("FormatSearch mismatch:\n got %q\nwant %q", got, want)
 	}
 
-	summaryOnly := FormatSearch("关键词", ranked[1:2], map[string]string{"proj": "rw"}, []string{"shallow"}, false, true, testNow)
+	summaryOnly := FormatSearch("关键词", ranked[1:2], map[string]string{"proj": "rw"}, []string{"shallow"}, []string{"summary"}, false, true, testNow)
 	if strings.Contains(summaryOnly, "标题一") || !strings.Contains(summaryOnly, "摘要: 摘要一") {
 		t.Fatalf("summary-only search unexpected:\n%s", summaryOnly)
 	}
